@@ -83,8 +83,7 @@ def test_every_atomic_test_is_flagged() -> None:
 def test_below_llvm_line_hands_the_llvm_stages_to_the_continuation(monkeypatch) -> None:
     from pathlib import Path as _P
 
-    from ttsem import harness
-    from ttsem import pytest_ttsem
+    from ttsem import harness, pytest_ttsem
 
     record = harness.capture_launches(_P(__file__).resolve().parent / "fixtures" / "p1.py", "cpu")[
         0
@@ -107,3 +106,26 @@ def test_below_llvm_line_hands_the_llvm_stages_to_the_continuation(monkeypatch) 
     # the JSONL row truncates the pass name at 80 characters, and some pipeline spellings
     # (`initialize-ws-cluster-barriers{compute-capability=.. ptx-version=..}`) are longer
     assert [name[:80] for name in seen[0]] == [row["pass"] for row in line["below"]]
+
+
+def test_diff_keeps_a_reparametrized_test_out_of_the_unflagged_news(tmp_path: Path) -> None:
+    base = {"launch": "2", "fn": "k", "stage": "ttgir", "n_diff": 4, "message": ""}
+    prev = _run(tmp_path, "prev", [{**base, "nodeid": "t.py::test_nan", "verdict": "mismatch"}])
+    cur = _run(
+        tmp_path,
+        "cur",
+        [
+            {**base, "nodeid": "t.py::test_nan[dtype0]", "verdict": "mismatch"},
+            {**base, "nodeid": "t.py::test_nan[dtype1]", "verdict": "mismatch"},
+            {**base, "nodeid": "t.py::test_nan[dtype0]", "launch": "3", "verdict": "mismatch"},
+            {**base, "nodeid": "t.py::test_new[0]", "verdict": "mismatch"},
+        ],
+    )
+    d = bot.diff(bot.load(prev), bot.load(cur))
+    assert len(d.new_bad) == 4
+    # launch 2 of both parametrizations was bad before; launch 3 and test_new are real news
+    assert sorted(f"{r['nodeid']}:{r['launch']}" for r in d.new_unflagged) == [
+        "t.py::test_nan[dtype0]:3",
+        "t.py::test_new[0]:2",
+    ]
+    assert bot.render(d).count("bad before under another parametrization") == 2

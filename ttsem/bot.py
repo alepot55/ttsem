@@ -61,12 +61,24 @@ class Diff:
 
     @property
     def new_unflagged(self) -> list[dict[str, Any]]:
-        return [r for r in self.new_bad if not is_flagged(str(r["nodeid"]))]
+        return [
+            r
+            for r in self.new_bad
+            if not is_flagged(str(r["nodeid"])) and not r.get("reparametrized")
+        ]
+
+
+def _base(nodeid: str) -> str:
+    """The test without its parametrization: `t.py::test_a[0]` -> `t.py::test_a`."""
+    return nodeid.split("[")[0]
 
 
 def diff(prev: dict[Key, dict[str, Any]], cur: dict[Key, dict[str, Any]]) -> Diff:
     new_bad, gone_bad = [], []
     trans: collections.Counter[tuple[str, str]] = collections.Counter()
+    # A test parametrized (or renamed) upstream between the two runs shows up as `absent -> bad`;
+    # when the same test at the same launch was already bad before, it is the old verdict, not news.
+    bad_before = {(_base(n), la, st) for (n, la, st), r in prev.items() if str(r["verdict"]) in BAD}
     for key, r in cur.items():
         before = prev.get(key)
         old = str(before["verdict"]) if before else "absent"
@@ -74,7 +86,10 @@ def diff(prev: dict[Key, dict[str, Any]], cur: dict[Key, dict[str, Any]]) -> Dif
         if old != new:
             trans[(old, new)] += 1
         if new in BAD and old not in BAD:
-            new_bad.append({**r, "was": old})
+            row = {**r, "was": old}
+            if old == "absent" and (_base(key[0]), key[1], key[2]) in bad_before:
+                row["reparametrized"] = True
+            new_bad.append(row)
     for key, r in prev.items():
         after = cur.get(key)
         new = str(after["verdict"]) if after else "absent"
@@ -85,6 +100,8 @@ def diff(prev: dict[Key, dict[str, Any]], cur: dict[Key, dict[str, Any]]) -> Dif
 
 def _row(r: dict[str, Any], extra: str) -> str:
     flag = " (nondeterministic on the device)" if is_flagged(str(r["nodeid"])) else ""
+    if r.get("reparametrized"):
+        flag += " (bad before under another parametrization)"
     msg = str(r.get("message") or "")[:100]
     return f"- `{r['nodeid']}` launch {r['launch']}: {extra}{flag} {msg}".rstrip()
 
