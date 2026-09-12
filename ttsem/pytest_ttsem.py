@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,14 @@ def pytest_configure(config: Any) -> None:
         nodeid="?",
         launch_idx=0,
     )
+    if not _state["triton_opt"]:
+        # No `triton-opt` (a wheel): the dumps must come out generic, and the printer switch
+        # only takes before the first compile of the process, so it happens here and not in
+        # `dump_for_launch`, which runs after the test's own compile.
+        try:
+            harness.mlir.enable_generic_printing()
+        except RuntimeError as e:
+            warnings.warn(f"ttsem: cannot switch the printer to generic form: {e}", stacklevel=1)
     _install_hook()
 
 

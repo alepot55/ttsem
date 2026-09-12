@@ -143,7 +143,7 @@ class Comparison:
 
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)
-        d["reads"] = None if self.reads is None else int(len(self.reads))
+        d["reads"] = None if self.reads is None else len(self.reads)
         return d
 
 
@@ -174,7 +174,7 @@ def compare(
         return {"equal": False, "n_diff": -1, "diffs": [], "note": "shape or dtype differs"}
     where = np.nonzero(_bits(ref) != _bits(dev))[0]
     diffs = [[int(p), ref[p].item(), dev[p].item()] for p in where[:max_diffs]]
-    out: dict[str, Any] = {"equal": len(where) == 0, "n_diff": int(len(where)), "diffs": diffs}
+    out: dict[str, Any] = {"equal": len(where) == 0, "n_diff": len(where), "diffs": diffs}
     if not len(where):
         return out
     if np.issubdtype(ref.dtype, np.floating):
@@ -911,7 +911,25 @@ def ir_for_launch(
     asm = _compile_asm(record.fn, record.args, record.kwargs, target)
     pretty = asm[stage]
     assert isinstance(pretty, str)
-    return mlir.to_generic(pretty, triton_opt)
+    try:
+        return mlir.to_generic(pretty, triton_opt)
+    except mlir.NotGeneric:
+        if triton_opt:
+            raise
+    # A wheel: `compiled.asm[...]` comes pretty whatever the printer flags say, and there is no
+    # `triton-opt` to convert it. The `MLIR_ENABLE_DUMP` trace does honour the generic switch,
+    # so the same stage is read off the dump: the last module before the LLVM conversion for
+    # `ttgir`, the last one without a TritonGPU encoding for `ttir`.
+    from ttsem import validate  # local: validate imports this module
+
+    stages = validate.split_dump(dump_for_launch(record, target))
+    if stage == "ttgir":
+        texts = [text for _, text in stages if "llvm.func" not in text]
+    else:
+        texts = [text for _, text in stages if "#ttg." not in text and " ttg." not in text]
+    if not texts:
+        raise mlir.NotGeneric(f"no {stage} stage in the dump of {record.fn_name}")
+    return mlir.to_generic(texts[-1], None)
 
 
 def _runtime_param_names(record: LaunchRecord) -> list[str]:
