@@ -1604,3 +1604,20 @@ def test_descriptor_store_notes_the_padded_granule() -> None:
     )
     assert data.reshape(4, 4)[2].tolist() == [1.0, 2.0, 3.0, 0.0]  # row 2 stored, element 3 clipped
     assert memory.pad_writes == {4096 + (2 * 4 + 3) * 4: np.float32(4.0).tobytes()}
+
+
+def test_descriptor_reduce_min_max_follow_the_descriptor_signedness() -> None:
+    memory = Memory()
+    data = np.full(16, -1, np.int32)  # 0xFFFFFFFF: the largest uint32, the smallest int32
+    memory.register(4096, data)
+    types = [tensordesc((2, 2), "i32"), tensor((2, 2), "i32"), I32, I32]
+    o = op("tt.descriptor_reduce", types, [])
+    o.attrs["kind"] = "#tt.descriptor_reduce_kind<max>"
+    one_block = np.ones((2, 2), np.int32)
+    signed = Descriptor(4096, (3, 3), (4, 1), (2, 2), I32, "zero")
+    evaluate(o, [signed, one_block, np.int32(0), np.int32(0)], memory=memory)
+    assert data[0] == 1  # signed: 1 > -1
+    data[:] = -1
+    unsigned = Descriptor(4096, (3, 3), (4, 1), (2, 2), I32, "zero", unsigned=True)
+    evaluate(o, [unsigned, one_block, np.int32(0), np.int32(0)], memory=memory)
+    assert data[0] == -1  # unsigned: 0xFFFFFFFF > 1

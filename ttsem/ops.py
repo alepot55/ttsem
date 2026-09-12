@@ -1211,6 +1211,8 @@ def _tensormap_create(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
         "byte_strides": [_scalar(s) for s in strides],
         # fill_mode 1 is CU_TENSOR_MAP_FLOAT_OOB_FILL_NAN_REQUEST_ZERO_FMA: the NaN padding
         "pad": "nan" if _int_attr(op, "fill_mode", 0) == 1 else "zero",
+        # CUtensorMapDataType: UINT8 0, UINT16 1, UINT32 2, INT32 3, UINT64 4, INT64 5, ...
+        "unsigned": _int_attr(op, "elem_type", -1) in (0, 1, 2, 4),
     }
     return []
 
@@ -1232,7 +1234,17 @@ def _reinterpret_desc(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     outer = [s // elem_bytes for s in reversed(entry["byte_strides"])]
     strides = tuple(outer + [1])
     block = tuple(ty.shape or reversed(entry["box"]))
-    return [Descriptor(entry["base"], shape, strides, block, elem, entry.get("pad", "zero"))]
+    return [
+        Descriptor(
+            entry["base"],
+            shape,
+            strides,
+            block,
+            elem,
+            entry.get("pad", "zero"),
+            bool(entry.get("unsigned", False)),
+        )
+    ]
 
 
 def _desc_pointers(desc: Descriptor, offsets: Sequence[Value]) -> tuple[np.ndarray, np.ndarray]:
@@ -1343,9 +1355,9 @@ def _desc_reduce(
     """A descriptor store that combines each element with what global memory holds.
 
     Element by element and relaxed, as `cp.reduce.async.bulk.tensor` is documented; the block
-    clips to the tensor like a store does. Integers are signless in the IR and reduce in the
-    storage type numpy gives them (signed): a `min`/`max` over unsigned values past 2**31
-    would need the tensormap's data type, which the IR does not carry at this level.
+    clips to the tensor like a store does. Integers are signless in the IR; `min` and `max`
+    compare as unsigned when the descriptor says so (a host descriptor over a `uint32`
+    tensor, a tensormap with an unsigned data type: `test_tensor_descriptor_reduce`).
     """
     ptrs, mask = _desc_pointers(desc, coords)
     dtype = to_numpy(desc.elem)
@@ -1369,8 +1381,12 @@ def _desc_reduce(
             "or": np.bitwise_or,
             "xor": np.bitwise_xor,
         }
-        with np.errstate(over="ignore"):
-            new = fns[kind](cur, src).astype(dtype)
+        if desc.unsigned and kind in ("min", "max"):
+            udt = uint_dtype(desc.elem)
+            new = fns[kind](cur.view(udt), src.view(udt)).view(dtype)
+        else:
+            with np.errstate(over="ignore"):
+                new = fns[kind](cur, src).astype(dtype)
     interp.memory.store(ptrs, new, mask)
 
 

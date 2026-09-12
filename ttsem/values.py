@@ -44,6 +44,9 @@ class Descriptor:
     block_shape: tuple[int, ...]
     elem: Type
     pad: str = "zero"
+    # The IR's integers are signless; a host descriptor over a `uint32` tensor and a
+    # tensormap with an unsigned data type say so here, and `min`/`max` reductions listen.
+    unsigned: bool = False
 
 
 @dataclass
