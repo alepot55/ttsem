@@ -1,0 +1,635 @@
+{
+ "program": "e15_repro.py",
+ "launches": [
+  {
+   "launch_id": 0,
+   "fn_name": "kernel",
+   "passes": [
+    {
+     "pass_name": "Before InlinerPass: inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4 }",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before CanonicalizerPass: canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true}",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonCombineOps: triton-combine",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonReorderBroadcast: triton-reorder-broadcast",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before CSEPass: cse",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before SymbolDCEPass: symbol-dce",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonLoopUnroll: triton-loop-unroll",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before ConvertTritonToTritonGPU: convert-triton-to-tritongpu{enable-source-remat=false num-ctas=1 num-warps=4 target=cuda:120 threads-per-warp=32}",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUCoalesce: tritongpu-coalesce",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUF32DotTC: tritongpu-F32DotTC{emu-tf32=true}",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPUAssignCGALayoutsPass: triton-nvidia-gpu-assign-cga-layouts",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPURemoveLayoutConversions: tritongpu-remove-layout-conversions{disable-remat-splitting=false}",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPUOptimizeCTALocalityPass: triton-nvidia-gpu-optimize-cta-locality",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPURemoveLayoutConversions: tritongpu-remove-layout-conversions{disable-remat-splitting=false}",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUOptimizeThreadLocality: tritongpu-optimize-thread-locality",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUAccelerateMatmul: tritongpu-accelerate-matmul",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPUCheckMatmulTwoCTAPass: triton-nvidia-check-matmul-two-cta",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPURemoveLayoutConversions: tritongpu-remove-layout-conversions{disable-remat-splitting=false}",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUOptimizeDotOperands: tritongpu-optimize-dot-operands{hoist-layout-conversion=true}",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before CanonicalizerPass: canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true}",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPUOptimizeDescriptorEncodingPass: triton-nvidia-optimize-descriptor-encoding",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonLoopAwareCSE: triton-loop-aware-cse",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUFuseNestedLoops: tritongpu-fuse-nested-loops",
+     "verdict": "mismatch",
+     "n_diff": 320,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before CanonicalizerPass: canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true}",
+     "verdict": "unsupported",
+     "n_diff": -1,
+     "unsupported": [
+      "arith.ceildivsi"
+     ],
+     "message": "arith.ceildivsi: %11 = \"arith.ceildivsi\"(%10, %1) : (i32, i32) -> i32"
+    },
+    {
+     "pass_name": "Before TritonLoopInvariantCodeMotion: triton-licm",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUOptimizeAccumulatorInit: tritongpu-optimize-accumulator-init",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUHoistTMEMAlloc: tritongpu-hoist-tmem-alloc{post-pipeline=false}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPUPromoteLHSToTMemPass: tritongpu-promote-lhs-to-tmem",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUAssignLatencies: tritongpu-assign-latencies{num-stages=3}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUScheduleLoops: tritongpu-schedule-loops",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUAutomaticWarpSpecialization: tritongpu-automatic-warp-specialization{num-stages=3}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUNormalizeWSWhileLoops: tritongpu-normalize-ws-while-loops",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUPartitionScheduling: tritongpu-partition-scheduling",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before {anonymous}::VerifyWarpSpecializationPartitions: unknown<{anonymous}::VerifyWarpSpecializationPartitions>",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before NVWSHoistTmemStore: nvws-hoist-tmem-store",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before {anonymous}::VerifyWarpSpecializationPartitions: unknown<{anonymous}::VerifyWarpSpecializationPartitions>",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before NVWSInsertAref: nvws-insert-aref",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before {anonymous}::VerifyWarpSpecializationPartitions: unknown<{anonymous}::VerifyWarpSpecializationPartitions>",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before NVWSInsertTmemAref: nvws-insert-tmem-aref",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before {anonymous}::VerifyWarpSpecializationPartitions: unknown<{anonymous}::VerifyWarpSpecializationPartitions>",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before SCCPPass: sccp",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before {anonymous}::VerifyWarpSpecializationPartitions: unknown<{anonymous}::VerifyWarpSpecializationPartitions>",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before CSEPass: cse",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before {anonymous}::VerifyWarpSpecializationPartitions: unknown<{anonymous}::VerifyWarpSpecializationPartitions>",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before NVWSLowerAref: nvws-lower-aref{num-stages=3}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before NVWSAssignStagePhase: nvws-assign-stage-phase",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before {anonymous}::VerifyWarpSpecializationPartitions: unknown<{anonymous}::VerifyWarpSpecializationPartitions>",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUPartitionLoops: tritongpu-partition-loops",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before NVWSLowerWarpGroup: nvws-lower-warp-group",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUScheduleLoops: tritongpu-schedule-loops",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUPipeline: tritongpu-pipeline{dump-intermediate-steps=true num-stages=3}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUPipeline: tritongpu-pipeline{dump-intermediate-steps=true num-stages=3} (step 1)",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUPipeline: tritongpu-pipeline{dump-intermediate-steps=true num-stages=3} (step 2)",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUOptimizePartitionWarps: tritongpu-optimize-partition-warps",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUCombineTensorSelectAndIf: tritongpu-combine-tensor-select-and-if",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUHoistTMEMAlloc: tritongpu-hoist-tmem-alloc{post-pipeline=true}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPURemoveTMEMTokensPass: triton-nvidia-gpu-remove-tmem-tokens",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before CanonicalizerPass: canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true}",
+     "verdict": "unsupported",
+     "n_diff": -1,
+     "unsupported": [
+      "type: !ttg.async.token"
+     ],
+     "message": "type: !ttg.async.token"
+    },
+    {
+     "pass_name": "Before TritonLoopAwareCSE: triton-loop-aware-cse",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUOptimizeDotOperands: tritongpu-optimize-dot-operands{hoist-layout-conversion=true}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before CanonicalizerPass: canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUCoalesceAsyncCopy: tritongpu-coalesce-async-copy",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPUOptimizeTMemLayoutsPass: triton-nvidia-optimize-tmem-layouts",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPUFuseTMEMLoadReducePass: triton-nvidia-tmem-load-reduce",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPUTMALoweringPass: triton-nvidia-tma-lowering",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPULowerCLCPass: triton-nvidia-gpu-lower-clc",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPURemoveLayoutConversions: tritongpu-remove-layout-conversions{disable-remat-splitting=false}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPUInterleaveTMemPass: triton-nvidia-interleave-tmem",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUReduceDataDuplication: tritongpu-reduce-data-duplication",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUReorderInstructions: tritongpu-reorder-instructions",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonLoopAwareCSE: triton-loop-aware-cse",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before SymbolDCEPass: symbol-dce",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUFenceInsertion: triton-nvidia-gpu-fence-insertion{compute-capability=120}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPUMMALoweringPass: triton-nvidia-mma-lowering",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPUHoistMBarrierLifecyclePass: triton-nvidia-gpu-hoist-mbarrier-lifecycle{compute-capability=120}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before SCCPPass: sccp",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before CSEPass: cse",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before CanonicalizerPass: canonicalize{cse-between-iterations=false    max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUCombineTensorSelectAndIf: tritongpu-combine-tensor-select-and-if",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUAllocateWarpGroups: tritongpu-allocate-warp-groups{instrumented=false}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before SCFToControlFlowPass: convert-scf-to-cf{allow-pattern-rollback=true}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before GluonInline: gluon-inline",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before AllocateSharedMemoryNv: allocate-shared-memory-nv{compute-capability=120 ptx-version=93}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonTensorMemoryAllocationPass: triton-tensor-memory-allocation",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonGPUProxyFenceInsertion: triton-nvidia-gpu-proxy-fence-insertion{compute-capability=120}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before TritonNvidiaGPUTMemBarrierInsertionPass: triton-nvidia-gpu-tmem-barrier-insertion",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before ConvertTritonGPUToLLVM: convert-triton-gpu-to-llvm{compute-capability=120 enable-concurrency-sanitizer=false ptx-version=93}",
+     "verdict": "match",
+     "n_diff": 0,
+     "unsupported": [],
+     "message": ""
+    },
+    {
+     "pass_name": "Before InitializeWSClusterBarriers: initialize-ws-cluster-barriers{compute-capability=120 ptx-version=93}",
+     "verdict": "unsupported",
+     "n_diff": -1,
+     "unsupported": [
+      "<llvm dialect>"
+     ],
+     "message": "past lowering"
+    }
+   ],
+   "first_bad_pass": "Before InlinerPass: inline{default-pipeline=canonicalize inlining-threshold=4294967295 max-iterations=4 }",
+   "culprit": "Before TritonGPUFuseNestedLoops: tritongpu-fuse-nested-loops"
+  }
+ ]
+}

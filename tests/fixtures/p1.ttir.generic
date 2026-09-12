@@ -1,0 +1,33 @@
+"builtin.module"() ({
+  "tt.func"() <{arg_attrs = [{tt.divisibility = 16 : i32}, {tt.divisibility = 16 : i32}], function_type = (!tt.ptr<i8>, !tt.ptr<i32>) -> (), sym_name = "kernel", sym_visibility = "public"}> ({
+  ^bb0(%arg0: !tt.ptr<i8>, %arg1: !tt.ptr<i32>):
+    %0 = "arith.constant"() <{value = dense<512> : tensor<1024xi32>}> : () -> tensor<1024xi32>
+    %1 = "arith.constant"() <{value = dense<10> : tensor<1024xi32>}> : () -> tensor<1024xi32>
+    %2 = "arith.constant"() <{value = dense<0> : tensor<1024xi32>}> : () -> tensor<1024xi32>
+    %3 = "arith.constant"() <{value = dense<1> : tensor<1024xi32>}> : () -> tensor<1024xi32>
+    %4 = "arith.constant"() <{value = dense<100> : tensor<1024xi32>}> : () -> tensor<1024xi32>
+    %5 = "arith.constant"() <{value = dense<4096> : tensor<1024xi32>}> : () -> tensor<1024xi32>
+    %6 = "arith.constant"() <{value = dense<23> : tensor<1024xi32>}> : () -> tensor<1024xi32>
+    %7 = "arith.constant"() <{value = dense<9> : tensor<1024xi32>}> : () -> tensor<1024xi32>
+    %8 = "tt.make_range"() <{end = 1024 : i32, start = 0 : i32}> : () -> tensor<1024xi32>
+    %9 = "arith.muli"(%8, %7) <{overflowFlags = #arith.overflow<none>}> : (tensor<1024xi32>, tensor<1024xi32>) -> tensor<1024xi32>
+    %10 = "arith.addi"(%9, %6) <{overflowFlags = #arith.overflow<none>}> : (tensor<1024xi32>, tensor<1024xi32>) -> tensor<1024xi32>
+    %11 = "arith.remsi"(%10, %5) : (tensor<1024xi32>, tensor<1024xi32>) -> tensor<1024xi32>
+    %12 = "arith.remsi"(%8, %4) : (tensor<1024xi32>, tensor<1024xi32>) -> tensor<1024xi32>
+    %13 = "arith.andi"(%11, %3) : (tensor<1024xi32>, tensor<1024xi32>) -> tensor<1024xi32>
+    %14 = "arith.cmpi"(%13, %2) <{predicate = 0 : i64}> : (tensor<1024xi32>, tensor<1024xi32>) -> tensor<1024xi1>
+    %15 = "tt.splat"(%arg1) : (!tt.ptr<i32>) -> tensor<1024x!tt.ptr<i32>>
+    %16 = "tt.addptr"(%15, %11) : (tensor<1024x!tt.ptr<i32>>, tensor<1024xi32>) -> tensor<1024x!tt.ptr<i32>>
+    %17 = "tt.load"(%16, %14, %12) <{cache = 1 : i32, evict = 1 : i32, isVolatile = false, operandSegmentSizes = array<i32: 1, 1, 1>}> : (tensor<1024x!tt.ptr<i32>>, tensor<1024xi1>, tensor<1024xi32>) -> tensor<1024xi32>
+    %18 = "arith.remsi"(%17, %4) : (tensor<1024xi32>, tensor<1024xi32>) -> tensor<1024xi32>
+    %19 = "arith.trunci"(%18) <{overflowFlags = #arith.overflow<none>}> : (tensor<1024xi32>) -> tensor<1024xi8>
+    %20 = "arith.remsi"(%8, %1) : (tensor<1024xi32>, tensor<1024xi32>) -> tensor<1024xi32>
+    %21 = "arith.trunci"(%20) <{overflowFlags = #arith.overflow<none>}> : (tensor<1024xi32>) -> tensor<1024xi8>
+    %22 = "arith.addi"(%19, %21) <{overflowFlags = #arith.overflow<none>}> : (tensor<1024xi8>, tensor<1024xi8>) -> tensor<1024xi8>
+    %23 = "arith.cmpi"(%8, %0) <{predicate = 2 : i64}> : (tensor<1024xi32>, tensor<1024xi32>) -> tensor<1024xi1>
+    %24 = "tt.splat"(%arg0) : (!tt.ptr<i8>) -> tensor<1024x!tt.ptr<i8>>
+    %25 = "tt.addptr"(%24, %8) : (tensor<1024x!tt.ptr<i8>>, tensor<1024xi32>) -> tensor<1024x!tt.ptr<i8>>
+    "tt.store"(%25, %22, %23) <{cache = 1 : i32, evict = 1 : i32}> : (tensor<1024x!tt.ptr<i8>>, tensor<1024xi8>, tensor<1024xi1>) -> ()
+    "tt.return"() : () -> ()
+  }) {noinline = false} : () -> ()
+}) : () -> ()

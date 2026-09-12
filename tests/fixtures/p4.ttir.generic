@@ -1,0 +1,27 @@
+"builtin.module"() ({
+  "tt.func"() <{function_type = (!tt.tensordesc<16x64xf32>, i32, i32, i64, i64, !tt.tensordesc<16x16xbf16>, i32, i32, i64, i64, !tt.tensordesc<16x64xbf16>, i32, i32, i64, i64, i32) -> (), sym_name = "kernel", sym_visibility = "public"}> ({
+  ^bb0(%arg0: !tt.tensordesc<16x64xf32>, %arg1: i32, %arg2: i32, %arg3: i64, %arg4: i64, %arg5: !tt.tensordesc<16x16xbf16>, %arg6: i32, %arg7: i32, %arg8: i64, %arg9: i64, %arg10: !tt.tensordesc<16x64xbf16>, %arg11: i32, %arg12: i32, %arg13: i64, %arg14: i64, %arg15: i32):
+    %0 = "arith.constant"() <{value = 15 : i32}> : () -> i32
+    %1 = "arith.constant"() <{value = dense<0.000000e+00> : tensor<16x64xf32>}> : () -> tensor<16x64xf32>
+    %2 = "arith.constant"() <{value = 1 : i32}> : () -> i32
+    %3 = "arith.constant"() <{value = 0 : i32}> : () -> i32
+    %4 = "arith.constant"() <{value = 64 : i32}> : () -> i32
+    %5 = "arith.constant"() <{value = 16 : i32}> : () -> i32
+    %6 = "tt.get_program_id"() <{axis = 0 : i32}> : () -> i32
+    %7 = "arith.muli"(%6, %5) <{overflowFlags = #arith.overflow<none>}> : (i32, i32) -> i32
+    %8 = "tt.get_program_id"() <{axis = 1 : i32}> : () -> i32
+    %9 = "arith.muli"(%8, %4) <{overflowFlags = #arith.overflow<none>}> : (i32, i32) -> i32
+    %10 = "arith.addi"(%arg15, %0) <{overflowFlags = #arith.overflow<none>}> : (i32, i32) -> i32
+    %11 = "arith.divsi"(%10, %5) : (i32, i32) -> i32
+    %12 = "scf.for"(%3, %11, %2, %1) ({
+    ^bb0(%arg16: i32, %arg17: tensor<16x64xf32>):
+      %13 = "arith.muli"(%arg16, %5) <{overflowFlags = #arith.overflow<none>}> : (i32, i32) -> i32
+      %14 = "tt.descriptor_load"(%arg5, %7, %13) <{cache = 1 : i32, evict = 1 : i32}> : (!tt.tensordesc<16x16xbf16>, i32, i32) -> tensor<16x16xbf16>
+      %15 = "tt.descriptor_load"(%arg10, %13, %9) <{cache = 1 : i32, evict = 1 : i32}> : (!tt.tensordesc<16x64xbf16>, i32, i32) -> tensor<16x64xbf16>
+      %16 = "tt.dot"(%14, %15, %arg17) <{inputPrecision = 0 : i32, maxNumImpreciseAcc = 0 : i32}> : (tensor<16x16xbf16>, tensor<16x64xbf16>, tensor<16x64xf32>) -> tensor<16x64xf32>
+      "scf.yield"(%16) : (tensor<16x64xf32>) -> ()
+    }) {tt.num_stages = 2 : i32, tt.warp_specialize} : (i32, i32, i32, tensor<16x64xf32>) -> tensor<16x64xf32>
+    "tt.descriptor_store"(%arg0, %12, %7, %9) : (!tt.tensordesc<16x64xf32>, tensor<16x64xf32>, i32, i32) -> ()
+    "tt.return"() : () -> ()
+  }) {noinline = false} : () -> ()
+}) : () -> ()

@@ -1,0 +1,57 @@
+"builtin.module"() ({
+^bb0:
+}) {ttg.shared = 0 : i32} : () -> ()
+// -----
+"builtin.module"() ({
+  "tt.func"() <{function_type = (tensor<16x16xf16>) -> (), sym_name = "subslice_offsets_after_reinterpret", sym_visibility = "public"}> ({
+  ^bb0(%arg0: tensor<16x16xf16>):
+    %0 = "ttg.local_alloc"() {allocation.offset = 0 : i32} : () -> !ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>
+    %1 = "ttg.memdesc_subslice"(%0) <{offsets = array<i32: 16, 0>}> : (!ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>) -> !ttg.memdesc<16x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>
+    "ttg.local_store"(%arg0, %1) : (tensor<16x16xf16>, !ttg.memdesc<16x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>) -> ()
+    %2 = "ttg.memdesc_reinterpret"(%0) : (!ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>) -> !ttg.memdesc<16x32xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>
+    %3 = "ttg.memdesc_subslice"(%2) <{offsets = array<i32: 8, 0>}> : (!ttg.memdesc<16x32xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>) -> !ttg.memdesc<8x32xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 16x32>
+    "ttg.barrier"() <{addrSpace = 1 : i32}> : () -> ()
+    %4 = "ttg.local_load"(%3) : (!ttg.memdesc<8x32xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 16x32>) -> tensor<8x32xf16>
+    "tt.return"() : () -> ()
+  }) : () -> ()
+}) {ttg.shared = 1024 : i32} : () -> ()
+// -----
+"builtin.module"() ({
+  "tt.func"() <{function_type = (tensor<16x16xf16>) -> (), sym_name = "subslice_offsets_same_shape_stay_disjoint", sym_visibility = "public"}> ({
+  ^bb0(%arg0: tensor<16x16xf16>):
+    %0 = "ttg.local_alloc"() {allocation.offset = 0 : i32} : () -> !ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>
+    %1 = "ttg.memdesc_subslice"(%0) <{offsets = array<i32: 16, 0>}> : (!ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>) -> !ttg.memdesc<16x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>
+    "ttg.local_store"(%arg0, %1) : (tensor<16x16xf16>, !ttg.memdesc<16x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>) -> ()
+    %2 = "ttg.memdesc_subslice"(%0) <{offsets = array<i32: 0, 0>}> : (!ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>) -> !ttg.memdesc<16x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>
+    %3 = "ttg.local_load"(%2) : (!ttg.memdesc<16x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>) -> tensor<16x16xf16>
+    "tt.return"() : () -> ()
+  }) : () -> ()
+}) {ttg.shared = 1024 : i32} : () -> ()
+// -----
+"builtin.module"() ({
+  "tt.func"() <{function_type = (tensor<16x16xf32>) -> (), sym_name = "subslice_offsets_after_reinterpret_element_type", sym_visibility = "public"}> ({
+  ^bb0(%arg0: tensor<16x16xf32>):
+    %0 = "ttg.local_alloc"() {allocation.offset = 0 : i32} : () -> !ttg.memdesc<32x16xf32, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>
+    %1 = "ttg.memdesc_subslice"(%0) <{offsets = array<i32: 0, 0>}> : (!ttg.memdesc<32x16xf32, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>) -> !ttg.memdesc<16x16xf32, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>
+    "ttg.local_store"(%arg0, %1) : (tensor<16x16xf32>, !ttg.memdesc<16x16xf32, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>) -> ()
+    %2 = "ttg.memdesc_reinterpret"(%0) : (!ttg.memdesc<32x16xf32, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>) -> !ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>
+    %3 = "ttg.memdesc_subslice"(%2) <{offsets = array<i32: 16, 0>}> : (!ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>) -> !ttg.memdesc<16x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>
+    "ttg.barrier"() <{addrSpace = 1 : i32}> : () -> ()
+    %4 = "ttg.local_load"(%3) : (!ttg.memdesc<16x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>) -> tensor<16x16xf16>
+    "tt.return"() : () -> ()
+  }) : () -> ()
+}) {ttg.shared = 2048 : i32} : () -> ()
+// -----
+"builtin.module"() ({
+  "tt.func"() <{function_type = (tensor<16x16xf16>) -> (), sym_name = "subslice_offsets_through_identical_views", sym_visibility = "public"}> ({
+  ^bb0(%arg0: tensor<16x16xf16>):
+    %0 = "ttg.local_alloc"() {allocation.offset = 0 : i32} : () -> !ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>
+    %1 = "ttg.memdesc_reinterpret"(%0) : (!ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>) -> !ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>
+    %2 = "ttg.memdesc_subslice"(%1) <{offsets = array<i32: 0, 0>}> : (!ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>) -> !ttg.memdesc<16x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>
+    "ttg.local_store"(%arg0, %2) : (tensor<16x16xf16>, !ttg.memdesc<16x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>) -> ()
+    %3 = "ttg.memdesc_reinterpret"(%0) : (!ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>) -> !ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>
+    %4 = "ttg.memdesc_subslice"(%3) <{offsets = array<i32: 16, 0>}> : (!ttg.memdesc<32x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable>) -> !ttg.memdesc<16x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>
+    %5 = "ttg.local_load"(%4) : (!ttg.memdesc<16x16xf16, #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>, #ttg.shared_memory, mutable, 32x16>) -> tensor<16x16xf16>
+    "tt.return"() : () -> ()
+  }) : () -> ()
+}) {ttg.shared = 1024 : i32} : () -> ()

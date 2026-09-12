@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ttsem"
+version = "0.1.0"
+description = "An executable semantics of Triton's TTIR and TTGIR, with a per-pass validator"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "Alessandro Potenza" }]
+keywords = ["triton", "mlir", "compiler", "semantics", "gpu", "interpreter"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+# The tool interprets IR without a GPU; Triton is needed only to produce IR from a Python
+# kernel, and to record the launch the semantics is checked against.
+triton = ["triton==3.8.0", "torch"]
+test = ["pytest", "pytest-xdist"]
+
+[project.urls]
+Homepage = "https://github.com/alepot55/ttsem"
+Source = "https://github.com/alepot55/ttsem"
+Issues = "https://github.com/alepot55/ttsem/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ttsem"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "ttsem",
+    "tests",
+    "examples",
+    "docs",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LEDGER.md",
+    "LICENSE",
+    "pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

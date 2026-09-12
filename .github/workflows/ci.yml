@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The package is numpy and nothing else: the interpreter, the layout checks, the race
+  # detector and the recorded demo all run here. This is the job the badge reports on.
+  cpu:
+    name: no GPU, no Triton wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      - name: Tests
+        run: pytest -q -x
+
+      - name: Demo
+        run: python -m ttsem demo
+
+  # The wheel adds what only a compiler can do: recording a launch and dumping the module
+  # every pass receives. Still no GPU (the fake driver supplies a target). Allowed to fail:
+  # it depends on one pinned Triton build and on the torch CPU index, neither of which the
+  # package controls, and nothing here is a statement about the GPU-free path above.
+  wheel:
+    name: with the Triton wheel (no GPU)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install, with the pinned wheel
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu \
+                      --extra-index-url https://pypi.org/simple \
+                      -e ".[test,triton]"
+
+      - name: Tests, including the ones that need a compile
+        run: pytest -q
+
+      - name: Live demo
+        run: python -m ttsem demo --live
