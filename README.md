@@ -51,7 +51,7 @@ $ python -m ttsem demo --live
 
 That compiles `examples/e15_repro.py` through the fake driver with `MLIR_ENABLE_DUMP=1`, runs the
 module every pass receives through the interpreter on the launch's own inputs, and names the same
-pass. It takes tens of seconds. The reference differs (Triton's own interpreter here, a GPU in the
+pass. It takes about ten seconds. The reference differs (Triton's own interpreter here, a GPU in the
 recording), so the run of mismatches sits on the other side of the boundary:
 
 ```
@@ -77,13 +77,13 @@ the differential fuzzer they share named the culprit pass or produced the witnes
 | [triton#11519](https://github.com/triton-lang/triton/issues/11519) | `tritongpu-fuse-nested-loops`, `matchPositiveTripCount` | fixed | [#11521](https://github.com/triton-lang/triton/pull/11521) by LiRunGuo, `8f80860f1`, merged by peterbell10 |
 | [triton#11601](https://github.com/triton-lang/triton/issues/11601) | `tritongpu-fuse-nested-loops`, `flatten=True` | filed, fix PR open | [#11692](https://github.com/triton-lang/triton/pull/11692) by alepot55 |
 | [triton#11612](https://github.com/triton-lang/triton/issues/11612) | `tritongpu-fuse-nested-loops`, assertion on a flattened nest | filed, fix PR open | [#11617](https://github.com/triton-lang/triton/pull/11617) by sweiglbosker |
-| [triton#11614](https://github.com/triton-lang/triton/issues/11614) | cross-warp `tt.reduce` epilogue, unpredicated shared store | filed, fix PR open | [#11630](https://github.com/triton-lang/triton/pull/11630), reworked at `20365b7` after review by ThomasRaoux |
+| [triton#11614](https://github.com/triton-lang/triton/issues/11614) | cross-warp `tt.reduce` epilogue, unpredicated shared store | filed, fix PR open | [#11630](https://github.com/triton-lang/triton/pull/11630) by YuvrajSinghBhadoria2, reworked at `20365b7` after review by ThomasRaoux |
 | [triton#11407](https://github.com/triton-lang/triton/issues/11407) | `tritongpu-pipeline`, `predicateOp` | closed; fix landed then reverted, the UB is still on `main` | [#11410](https://github.com/triton-lang/triton/pull/11410) by lezcano, `ad81746db`, reverted by [#11427](https://github.com/triton-lang/triton/pull/11427) by ThomasRaoux, `bf9ad8723` |
 | [triton#11544](https://github.com/triton-lang/triton/issues/11544) | `AxisInfo`, `remsi` / `remui` divisibility | fixed, three hours after the report | [#11546](https://github.com/triton-lang/triton/pull/11546) by lezcano, `4af25c84e` |
 | [triton#11548](https://github.com/triton-lang/triton/pull/11548) | `AxisInfo`, constancy of a masked `tt.load` with `other` | fixed; found and fixed upstream the same afternoon our witness existed | [#11548](https://github.com/triton-lang/triton/pull/11548) by lezcano, `36cb2499e` |
 | [triton#7749](https://github.com/triton-lang/triton/issues/7749) | `AxisInfo`, `divsi` / `remsi` on negative dividends | confirmed, made observable on device by us; fix PR parked by design review | [#11569](https://github.com/triton-lang/triton/pull/11569) by alepot55, open without further commits at the maintainer's request |
 | [triton#11583](https://github.com/triton-lang/triton/issues/11583) | `desc.store` (TMA), writes past the inner extent to the 16-byte boundary | filed, open | none |
-| [triton#11586](https://github.com/triton-lang/triton/issues/11586) | `NVGPUWarpSpecialization`, `WGMMAOpPattern::getPtxAsm` (int8 wgmma) | filed, reproduced by a third party and re-confirmed by us on `main` | none |
+| [triton#11586](https://github.com/triton-lang/triton/issues/11586) | `NVGPUWarpSpecialization`, `WGMMAOpPattern::getPtxAsm` (int8 wgmma) | filed, reproduced by a third party and re-confirmed by us on `main` | diagnostic instead of the assertion: [#11728](https://github.com/triton-lang/triton/pull/11728) by alepot55, open; the layout fix is with a third-party contributor |
 | [triton#11587](https://github.com/triton-lang/triton/issues/11587) | `NVGPUWarpSpecialization`, tile partitioning with host descriptors | filed, open | candidate [#11596](https://github.com/triton-lang/triton/pull/11596) by layahaasini |
 | [triton#11600](https://github.com/triton-lang/triton/issues/11600) | `setOptimizedGatherLayout`, leftover warps on the gather axis | fixed in `main`, not in the 3.8.0 release | [#10838](https://github.com/triton-lang/triton/pull/10838) by Jokeren, `2c008494e` |
 | [triton#11581](https://github.com/triton-lang/triton/issues/11581) | ptxas 12.9.86 loses the immediate of the second `add.s16x2` | filed, no response | none (fix is on the LLVM side or in the pinned ptxas) |
@@ -93,6 +93,8 @@ the differential fuzzer they share named the culprit pass or produced the witnes
 | [triton#11404](https://github.com/triton-lang/triton/issues/11404) | `Membar`, a relaxed `ttng.cluster_barrier` treated as a full sync | fixed | [#11462](https://github.com/triton-lang/triton/pull/11462) by gaoxiaomo, `c0901bf1c` |
 
 ## Calibration
+
+The numbers below come from runs against the upstream test suite and a GPU; the recordings behind them are not in this repository (only the two examples under `examples/` ship), so they are reported, not reproducible from a clone. The methods and every device deviation are written in `docs/RESULTS.md` and `docs/SEMANTICS.md`.
 
 A semantics is only worth what it has been checked against. The calibration corpus is Triton's own
 language test suite, run under the pytest plugin, which validates every launch the suite makes.
@@ -123,7 +125,7 @@ language test suite, run under the pytest plugin, which validates every launch t
 **Level 1: TTIR and TTGIR with layouts erased.** Tensors are numpy arrays in logical index order,
 pointers are int64 addresses into a flat byte-addressed memory, control flow is executed, async
 copies are sequentialised in program order. `ttsem/mlir.py` parses the generic form, which is regular
-enough that one parser covers every dialect; `ttsem/ops.py` gives each of 151 ops a meaning; `ttsem/interp.py`
+enough that one parser covers every dialect; `ttsem/ops.py` gives each of 158 op names a meaning (130 distinct handlers, a few shared across dialects); `ttsem/interp.py`
 runs a region, a function, or a whole grid, and raises `Unsupported` by name on anything it does
 not model, so coverage is measurable instead of silent. `ttsem/harness.py` records real launches, copies
 the arguments to the host at their device addresses, runs the grid, and compares every output

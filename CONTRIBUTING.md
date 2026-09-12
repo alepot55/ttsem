@@ -1,6 +1,6 @@
 # Contributing
 
-1. **Run the tests**: `python -m pytest -q tests` (about 450 CPU tests, no GPU and no `triton-opt`
+1. **Run the tests**: `python -m pytest -q tests` (554 tests, 538 of them without the Triton wheel, no GPU and no `triton-opt`
    needed). Anything marked `gpu` needs a card and a Triton build; run it with `-m gpu`.
 2. **Add an op** in `ttsem/ops.py`: one function per op name, registered in `OPS`, with the
    signature `fn(interp, op, args) -> list[Value]`. Region-carrying ops call

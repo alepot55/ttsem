@@ -44,7 +44,7 @@ In Python:
   from ttsem import parse, Interp, Memory        # level 1, numpy only
   from ttsem import check_module                 # level 2, layouts
   from ttsem import detect                       # level 3, races
-  from ttsem import validate_stages, culprit_of  # the per-pass validator, needs Triton
+  from ttsem import validate_stages, culprit_of  # validate_stages needs Triton, culprit_of does not
 """
 
 
