@@ -786,3 +786,39 @@ def test_a_buffer_that_differs_only_where_exchanged_is_device_ordered() -> None:
         {"out": "torch.int64"},
     )
     assert not harness._only_exchanged_differ(mem, other, "out", want, got)
+
+
+def test_unwrap_reaches_the_tensor_behind_a_wrapper_with_a_torch_dtype() -> None:
+    torch = pytest.importorskip("torch")
+    base = torch.zeros(4, dtype=torch.int8)
+
+    class Wrapper:  # triton.reinterpret(t, torch.float8_e5m2): dtype is a torch dtype
+        def __init__(self, base: object, dtype: object) -> None:
+            self.base, self.dtype = base, dtype
+
+    assert harness._unwrap(Wrapper(base, torch.float8_e5m2)) is base
+    assert harness._unwrap(Wrapper(Wrapper(base, torch.float8_e5m2), torch.int8)) is base
+
+
+def test_scalar_value_encodes_a_narrow_float_scalar_as_its_bits() -> None:
+    from conftest import ty
+
+    assert harness._scalar_value(42.0, ty("bf16")).tolist() == 0x4228
+    assert harness._scalar_value(42.0, ty("f16")).dtype == np.float16
+    assert harness._scalar_value(3, ty("i32")).dtype == np.int32
+
+
+def test_flat_args_names_the_leaves_of_a_tuple_argument() -> None:
+    from collections import namedtuple
+
+    pair = namedtuple("pair", "a b")
+    assert harness._flat_args("shape", (4, 8)) == [("shape.0", 4), ("shape.1", 8)]
+    assert harness._flat_args("p", pair(1, (2, 3))) == [("p.0", 1), ("p.1.0", 2), ("p.1.1", 3)]
+    assert harness._flat_args("x", 7) == [("x", 7)]
+    typed = harness._flat_typed("shape", (4, 8), ("i32", "constexpr"))
+    assert typed == [("shape.0", 4, "i32"), ("shape.1", 8, "constexpr")]
+
+
+def test_torch_elem_covers_the_unsigned_integers() -> None:
+    assert harness._TORCH_ELEM["torch.uint32"] == ("int", 32, "i32")
+    assert harness._TORCH_ELEM["torch.uint16"] == ("int", 16, "i16")

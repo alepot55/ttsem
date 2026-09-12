@@ -1481,3 +1481,57 @@ def test_two_lanes_storing_different_values_to_one_address_is_poison() -> None:
     assert mem.load(np.array([4]), None, None, np.int32)[0] == 2
     with pytest.raises(Poison):
         mem.store(addrs, np.array([1, 5, 6, 3], np.int32), None)
+
+
+def test_fp8_encode_keeps_the_sign_of_zero() -> None:
+    # tiny values round to zero; the zero keeps the sign of the input, as the device does
+    tiny = np.array([1e-9, -1e-9, 0.0, -0.0], np.float32)
+    assert from_float(tiny, ty("f8E5M2")).tolist() == [0x00, 0x80, 0x00, 0x80]
+    assert from_float(tiny, ty("f8E4M3FN")).tolist() == [0x00, 0x80, 0x00, 0x80]
+
+
+def test_make_tensor_descriptor_reads_the_padding_option() -> None:
+    result = tensordesc((2, 2), "f32")
+    types = [ptr("f32"), I32, I32, I64, I64]
+    args = [np.int64(4096), np.int32(3), np.int32(3), np.int64(4), np.int64(1)]
+    o = op("tt.make_tensor_descriptor", types, result)
+    o.attrs["padding"] = "#tt.padding_option<nan>"
+    assert evaluate(o, args)[0].pad == "nan"
+    o.attrs["padding"] = "#tt.padding_option<zero>"
+    assert evaluate(o, args)[0].pad == "zero"
+
+
+def test_descriptor_reduce_combines_with_memory() -> None:
+    memory = Memory()
+    data = np.arange(16, dtype=np.float32)
+    memory.register(4096, data)
+    desc = _descriptor()
+    types = [tensordesc((2, 2), "f32"), tensor((2, 2), "f32"), I32, I32]
+    o = op("tt.descriptor_reduce", types, [])
+    o.attrs["kind"] = "#tt.descriptor_reduce_kind<add>"
+    half = np.full((2, 2), 0.5, np.float32)
+    evaluate(o, [desc, half, np.int32(1), np.int32(1)], memory=memory)
+    # the block at (1, 1) of the 3x3 tensor with row stride 4: elements 5, 6, 9, 10
+    assert data[[5, 6, 9, 10]].tolist() == [5.5, 6.5, 9.5, 10.5]
+    o.attrs["kind"] = "#tt.descriptor_reduce_kind<max>"
+    seven = np.full((2, 2), 7.0, np.float32)
+    evaluate(o, [desc, seven, np.int32(1), np.int32(1)], memory=memory)
+    assert data[[5, 6, 9, 10]].tolist() == [7.0, 7.0, 9.5, 10.5]
+    # a block that reaches past the tensor clips like a store
+    evaluate(o, [desc, np.full((2, 2), 99.0, np.float32), np.int32(2), np.int32(2)], memory=memory)
+    assert data[10] == 99.0 and data[11] == 11.0 and data[14] == 14.0
+    o.attrs["kind"] = "#tt.descriptor_reduce_kind<inc>"
+    with pytest.raises(Unsupported):
+        evaluate(o, [desc, seven, np.int32(1), np.int32(1)], memory=memory)
+
+
+def test_descriptor_reduce_on_integers_is_bitwise() -> None:
+    memory = Memory()
+    data = np.full(16, 0b1100, np.int32)
+    memory.register(4096, data)
+    desc = Descriptor(4096, (3, 3), (4, 1), (2, 2), I32, "zero")
+    types = [tensordesc((2, 2), "i32"), tensor((2, 2), "i32"), I32, I32]
+    o = op("tt.descriptor_reduce", types, [])
+    o.attrs["kind"] = "#tt.descriptor_reduce_kind<xor>"
+    evaluate(o, [desc, np.full((2, 2), 0b1010, np.int32), np.int32(0), np.int32(0)], memory=memory)
+    assert data[0] == 0b0110 and data[1] == 0b0110 and data[3] == 0b1100

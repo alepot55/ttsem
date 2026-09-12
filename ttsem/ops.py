@@ -14,6 +14,7 @@ stored `int32`. Every integer result wraps modulo 2**width. Float ops decode to 
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Sequence
 from fractions import Fraction
 from typing import TYPE_CHECKING
@@ -1137,8 +1138,16 @@ def _make_desc(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     shape = tuple(_scalar(a) for a in args[1 : 1 + ndim])
     strides = tuple(_scalar(a) for a in args[1 + ndim : 1 + 2 * ndim])
     elem = ty.elem if ty.elem is not None else ty
-    pad = str(_attr(op, "padding", "zero")).lower()
-    return [Descriptor(_scalar(args[0]), shape, strides, block, elem, pad)]
+    return [
+        Descriptor(_scalar(args[0]), shape, strides, block, elem, _pad_of(_attr(op, "padding")))
+    ]
+
+
+def _pad_of(attr: object) -> str:
+    """`nan` or `zero` from a `#tt.padding_option<...>` attribute, a bare name, or nothing.
+    The generic printer spells the attribute in full, so the test is on the word, not on
+    equality (test_tensor_descriptor_padding: our zeros where the device had NaN)."""
+    return "nan" if "nan" in str(attr).lower() else "zero"
 
 
 _SCRATCH_BASE = 0x7000_0000_0000
@@ -1173,6 +1182,8 @@ def _tensormap_create(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
         "box": [_scalar(b) for b in box],
         "dims": [_scalar(d) for d in dims],
         "byte_strides": [_scalar(s) for s in strides],
+        # fill_mode 1 is CU_TENSOR_MAP_FLOAT_OOB_FILL_NAN_REQUEST_ZERO_FMA: the NaN padding
+        "pad": "nan" if _int_attr(op, "fill_mode", 0) == 1 else "zero",
     }
     return []
 
@@ -1194,7 +1205,7 @@ def _reinterpret_desc(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     outer = [s // elem_bytes for s in reversed(entry["byte_strides"])]
     strides = tuple(outer + [1])
     block = tuple(ty.shape or reversed(entry["box"]))
-    return [Descriptor(entry["base"], shape, strides, block, elem)]
+    return [Descriptor(entry["base"], shape, strides, block, elem, entry.get("pad", "zero"))]
 
 
 def _desc_pointers(desc: Descriptor, offsets: Sequence[Value]) -> tuple[np.ndarray, np.ndarray]:
@@ -1235,6 +1246,63 @@ def _desc_load(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
 def _desc_store(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     ptrs, mask = _desc_pointers(_desc(op, args), args[2:])
     interp.memory.store(ptrs, np.asarray(args[1]), mask)
+    return []
+
+
+_REDUCE_KINDS = ("add", "min", "max", "and", "or", "xor")
+
+
+def _reduce_kind(op: Op) -> str:
+    """The kind of a descriptor reduce, from `#tt.descriptor_reduce_kind<...>` or a bare name.
+    `inc` and `dec` (the atomicInc/atomicDec wrap-around) are left unsupported."""
+    text = str(_attr(op, "kind", "")).lower()
+    found = re.search(r"<(\w+)>", text)
+    kind = found.group(1) if found else text
+    if kind not in _REDUCE_KINDS:
+        raise Unsupported(op.name, f"reduce kind {kind!r}")
+    return kind
+
+
+def _desc_reduce(
+    interp: Interp, desc: Descriptor, src: np.ndarray, coords: Sequence[Value], kind: str
+) -> None:
+    """A descriptor store that combines each element with what global memory holds.
+
+    Element by element and relaxed, as `cp.reduce.async.bulk.tensor` is documented; the block
+    clips to the tensor like a store does. Integers are signless in the IR and reduce in the
+    storage type numpy gives them (signed): a `min`/`max` over unsigned values past 2**31
+    would need the tensormap's data type, which the IR does not carry at this level.
+    """
+    ptrs, mask = _desc_pointers(desc, coords)
+    dtype = to_numpy(desc.elem)
+    cur = interp.memory.load(ptrs, mask, np.zeros((), dtype), dtype)
+    src = np.asarray(src).astype(dtype, copy=False)
+    if desc.elem.scalar.kind == "float":
+        if kind not in ("add", "min", "max"):
+            raise Unsupported("tt.descriptor_reduce", f"{kind} on a float tensor")
+        a, b = to_float(cur, desc.elem), to_float(src, desc.elem)
+        if kind == "add":
+            combined = a + b
+        else:
+            combined = np.minimum(a, b) if kind == "min" else np.maximum(a, b)
+        new = from_float(combined, desc.elem)
+    else:
+        fns = {
+            "add": np.add,
+            "min": np.minimum,
+            "max": np.maximum,
+            "and": np.bitwise_and,
+            "or": np.bitwise_or,
+            "xor": np.bitwise_xor,
+        }
+        with np.errstate(over="ignore"):
+            new = fns[kind](cur, src).astype(dtype)
+    interp.memory.store(ptrs, new, mask)
+
+
+@register("tt.descriptor_reduce")
+def _desc_reduce_op(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    _desc_reduce(interp, _desc(op, args), args[1], args[2:], _reduce_kind(op))
     return []
 
 
@@ -1594,4 +1662,12 @@ def _tma_to_global(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     desc, md = _desc(op, args), _md(op, args, len(args) - 1)
     ptrs, mask = _desc_pointers(desc, args[1:-1])
     interp.memory.store(ptrs, np.asarray(md.data), mask)
+    return []
+
+
+@register("ttng.async_tma_reduce")
+def _tma_reduce(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """A synchronous `tt.descriptor_reduce` whose source is a shared-memory buffer."""
+    desc, md = _desc(op, args), _md(op, args, len(args) - 1)
+    _desc_reduce(interp, desc, np.asarray(md.data), args[1:-1], _reduce_kind(op))
     return []

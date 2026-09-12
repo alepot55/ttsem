@@ -165,6 +165,10 @@ def compare(
     """Compare two flat buffers (no padding layout here:
     level-1 buffers are compared whole).
 
+    Each entry of ``diffs`` is ``[index, ref, dev]`` in the order of the arguments, and
+    :func:`run_launch` passes the device's buffer first and the semantics' second: read a
+    record's triple as ``[index, device, semantics]``.
+
     The comparison is always bitwise first, so ``equal`` keeps meaning *bit for bit*. When it
     fails and the buffer holds floats, ``policy`` says which of the differences the device is
     allowed to have: the result then carries ``approx`` (every difference is explained),
@@ -501,7 +505,9 @@ def _unwrap(value: Any) -> Any:
     dtype): the storage and its bytes are the wrapper's base tensor's."""
     import torch
 
-    while not isinstance(getattr(value, "dtype", None), torch.dtype) and hasattr(value, "base"):
+    # `triton.reinterpret(t, torch_dtype)` gives a wrapper whose `dtype` *is* a torch dtype
+    # (test_typeconvert_downcast_clamping), so the test is on the class, not the dtype.
+    while hasattr(value, "base") and not isinstance(value, torch.Tensor):
         value = value.base
     return value
 
@@ -522,8 +528,11 @@ _TORCH_ELEM = {
     "torch.int8": ("int", 8, "i8"),
     "torch.uint8": ("int", 8, "i8"),
     "torch.int16": ("int", 16, "i16"),
+    "torch.uint16": ("int", 16, "i16"),
     "torch.int32": ("int", 32, "i32"),
+    "torch.uint32": ("int", 32, "i32"),
     "torch.int64": ("int", 64, "i64"),
+    "torch.uint64": ("int", 64, "i64"),
     "torch.bool": ("int", 1, "i1"),
 }
 
@@ -566,14 +575,54 @@ def descriptor_values(desc: Any, base_ptr: int, emulated: bool = False) -> list[
     return [*head, *ints]
 
 
+def _flat_args(name: str, value: Any) -> list[tuple[str, Any]]:
+    """A launch argument and its leaves, named by path.
+
+    The frontend flattens a tuple argument (a namedtuple or a list too) into one block
+    argument per leaf, in order, and walks it the same way in ``find_paths_if``; a descriptor
+    is a leaf although it is a dataclass. ``shape=(M, N)`` gives ``shape.0`` and ``shape.1``
+    (test_tensor_descriptor_load_nd), a descriptor in a tuple gives ``descs.0``
+    (test_host_tensor_descriptor_in_tuple).
+    """
+    if isinstance(value, (tuple, list)) and not _is_descriptor(value):
+        leaves: list[tuple[str, Any]] = []
+        for i, item in enumerate(value):
+            leaves.extend(_flat_args(f"{name}.{i}", item))
+        return leaves
+    return [(name, value)]
+
+
+def _flat_typed(name: str, value: Any, ty: Any) -> list[tuple[str, Any, Any]]:
+    """The leaves of one signature entry as ``(leaf name, value, leaf type)``, on the same
+    paths as :func:`_flat_args`. The type of a tuple argument is a tuple of leaf types, with
+    ``"constexpr"`` for the leaves the frontend folded away."""
+    if isinstance(ty, (tuple, list)):
+        items = list(value) if isinstance(value, (tuple, list)) else [None] * len(ty)
+        out: list[tuple[str, Any, Any]] = []
+        for i, (item, leaf_ty) in enumerate(zip(items, ty, strict=False)):
+            out.extend(_flat_typed(f"{name}.{i}", item, leaf_ty))
+        return out
+    return [(name, value, ty)]
+
+
+def _leaf_bound(record: LaunchRecord) -> dict[str, Any]:
+    """Every leaf argument of a record by its path name."""
+    return {
+        leaf: value
+        for name, bound in record.bound.items()
+        for leaf, value in _flat_args(name, bound)
+    }
+
+
 def _arg_values(
     record: LaunchRecord, runtime_names: list[str], block: Any, emulated: bool
 ) -> list[Any]:
     """The block-argument values of a launch, in signature order."""
     arg_values: list[Any] = []
+    leaves = _leaf_bound(record)
     for name in runtime_names:
         # The cpu path keeps only the scalars in `bound`: tensors live in pre/post/ptrs.
-        bound_value = record.bound.get(name)
+        bound_value = leaves.get(name)
         if _is_descriptor(bound_value):
             arg_values.extend(descriptor_values(bound_value, record.ptrs[name], emulated))
         elif name in record.ptrs:
@@ -781,8 +830,9 @@ def record_launch(
     bound = _bind_names(fn.arg_names, args, kwargs, _param_defaults(fn))
     if callable(grid):
         grid = grid(bound)
-    tensors = {name: v for name, v in bound.items() if _is_tensor_like(v)}
-    tensors.update({name: v.base for name, v in bound.items() if _is_descriptor(v)})
+    leaves = [(leaf, v) for name, value in bound.items() for leaf, v in _flat_args(name, value)]
+    tensors = {leaf: v for leaf, v in leaves if _is_tensor_like(v)}
+    tensors.update({leaf: v.base for leaf, v in leaves if _is_descriptor(v)})
     copies = {name: storage_copy(v) for name, v in tensors.items()}
     pre = {name: arr for name, (_, arr) in copies.items()}
     ptrs = {name: int(v.data_ptr()) for name, v in tensors.items()}
@@ -968,7 +1018,12 @@ def _runtime_param_names(record: LaunchRecord) -> list[str]:
     _options, signature, _constexprs, _attrs = _specialize(
         record.fn, record.args, record.kwargs, target
     )
-    return [name for name, ty in signature.items() if ty != "constexpr"]
+    return [
+        leaf
+        for name, ty in signature.items()
+        for leaf, _value, leaf_ty in _flat_typed(name, record.bound.get(name), ty)
+        if leaf_ty != "constexpr"
+    ]
 
 
 def _grid3(grid: tuple[Any, ...]) -> tuple[int, int, int]:
@@ -993,11 +1048,15 @@ def _describe(e: BaseException) -> str:
 
 
 def _scalar_value(value: Any, ty: Any) -> np.ndarray:
-    """A non-pointer runtime argument (e.g. a stride) as the numpy value ``ty`` expects."""
-    if values is not None:
+    """A non-pointer runtime argument (e.g. a stride) as the numpy value ``ty`` expects.
+
+    A float scalar of a narrow type travels as its bit pattern like every other value of that
+    type: ``val: tl.bfloat16 = 42.0`` is ``0x4228``, not the integer 42 in a ``uint16``
+    (test_float_annotation read the latter back as ``3.9e-39`` after ``arith.extf``).
+    """
+    if values is not None and ty is not None:
         try:
-            dtype = values.to_numpy(ty)
-            return np.array(value, dtype=dtype)
+            return values.cast_to(np.asarray(value), ty)
         except Exception:
             pass
     return np.array(value)
@@ -1061,7 +1120,7 @@ def execute(record: LaunchRecord, ir_text: str, trace_reads: bool = False) -> Ex
 
     arg_values = _arg_values(record, runtime_names, block, emulated=False)
     if len(arg_values) != len(block.args) and any(
-        _is_descriptor(record.bound.get(name)) for name in runtime_names
+        _is_descriptor(value) for value in _leaf_bound(record).values()
     ):
         arg_values = _arg_values(record, runtime_names, block, emulated=True)
     if len(arg_values) != len(block.args):

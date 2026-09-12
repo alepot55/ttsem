@@ -225,6 +225,14 @@ def _fp8_encode(x: np.ndarray, name: str) -> np.ndarray:
     out = np.where(flat >= vals[-1], codes[-1], out)
     out = np.where(np.isposinf(flat), np.uint8(pos_inf), out)
     out = np.where(np.isneginf(flat), np.uint8(neg_inf), out)
+    # The two zero codes are the same value, so the nearest-value search cannot tell them
+    # apart and would give a tiny positive the code its stable order happens to put first.
+    # The result keeps the sign of the input, as the hardware does (test_typeconvert_downcast
+    # on sm_120 against the 3.8.0 wheel: our +0 where the device had -0, and the reverse).
+    is_zero = _FP8_TABLES[name][out] == 0
+    has_negative_zero = FLOAT_FORMATS[name][3] != "fnuz"
+    zero_code = np.where(np.signbit(flat) & has_negative_zero, np.uint8(0x80), np.uint8(0))
+    out = np.where(is_zero, zero_code, out)
     return np.where(np.isnan(flat), np.uint8(nan_code), out).astype(np.uint8).reshape(np.shape(x))
 
 

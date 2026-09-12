@@ -86,9 +86,9 @@ def test_below_llvm_line_hands_the_llvm_stages_to_the_continuation(monkeypatch) 
     from ttsem import harness
     from ttsem import pytest_ttsem
 
-    record = harness.capture_launches(
-        _P(__file__).resolve().parent / "fixtures" / "p1.py", "cpu"
-    )[0]
+    record = harness.capture_launches(_P(__file__).resolve().parent / "fixtures" / "p1.py", "cpu")[
+        0
+    ]
     monkeypatch.setattr(pytest_ttsem, "_target", lambda: harness.GPUTarget("cuda", 90, 32))
     seen: list[list[str]] = []
 
