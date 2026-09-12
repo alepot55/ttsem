@@ -822,3 +822,39 @@ def test_flat_args_names_the_leaves_of_a_tuple_argument() -> None:
 def test_torch_elem_covers_the_unsigned_integers() -> None:
     assert harness._TORCH_ELEM["torch.uint32"] == ("int", 32, "i32")
     assert harness._TORCH_ELEM["torch.uint16"] == ("int", 16, "i16")
+
+
+def test_elem_type_reads_a_triton_dtype_spelling() -> None:
+    assert harness._elem_type("uint32").name == "i32"
+    assert harness._elem_type("tl.float8e5").name == "f8E5M2"
+    assert harness._elem_type("torch.bfloat16").name == "bf16"
+
+
+def test_only_pad_writes_differ_excuses_the_padded_granule_and_nothing_else() -> None:
+    class Mem:
+        pad_writes = {4096 + 3 * 4: np.float32(4.0).tobytes()}
+
+    record = harness.LaunchRecord(
+        launch_id=0,
+        fn=None,
+        fn_name="k",
+        fn_file="",
+        grid=(1,),
+        args=(),
+        kwargs={},
+        bound={},
+        pre={},
+        post={},
+        ptrs={"out": 4096},
+        bases={"out": 4096},
+        elems={"out": "torch.float32"},
+    )
+    got = np.zeros(8, np.float32)
+    want = got.copy()
+    want[3] = 4.0  # the device wrote the block's value into the padding
+    assert harness._only_pad_writes_differ(Mem(), record, "out", want, got)
+    want[5] = 1.0  # any other difference is a mismatch
+    assert not harness._only_pad_writes_differ(Mem(), record, "out", want, got)
+    want[5] = 0.0
+    want[3] = 5.0  # a value the block did not have there is a mismatch too
+    assert not harness._only_pad_writes_differ(Mem(), record, "out", want, got)

@@ -685,12 +685,18 @@ def test_fp_to_fp() -> None:
     assert np.array_equal(to_float(got, BF16), src)
 
 
-def test_fp_to_fp_rejects_round_toward_zero() -> None:
-    with pytest.raises(Unsupported):
-        one(
-            op("tt.fp_to_fp", [tensor((1,), "f32")], tensor((1,), "bf16"), attrs={"rounding": 0}),
-            [np.array([1.5], np.float32)],
-        )
+def test_fp_to_fp_rounds_toward_zero_when_asked() -> None:
+    # 1.1 is 0x3F8CCCCD as f32: chopped to bf16 it is 0x3F8C (1.09375), rounded 0x3F8D
+    got = one(
+        op("tt.fp_to_fp", [tensor((2,), "f32")], tensor((2,), "bf16"), attrs={"rounding": 0}),
+        [np.array([1.1, -1.1], np.float32)],
+    )
+    assert got.tolist() == [0x3F8C, 0xBF8C]
+    nearest = one(
+        op("tt.fp_to_fp", [tensor((2,), "f32")], tensor((2,), "bf16"), attrs={"rounding": 1}),
+        [np.array([1.1, -1.1], np.float32)],
+    )
+    assert nearest.tolist() == [0x3F8D, 0xBF8D]
 
 
 def test_assert_passes_and_fails() -> None:
@@ -1499,6 +1505,10 @@ def test_make_tensor_descriptor_reads_the_padding_option() -> None:
     assert evaluate(o, args)[0].pad == "nan"
     o.attrs["padding"] = "#tt.padding_option<zero>"
     assert evaluate(o, args)[0].pad == "zero"
+    o.attrs["padding"] = 2  # the TTIR spelling: the enum's value, PAD_NAN
+    assert evaluate(o, args)[0].pad == "nan"
+    o.attrs["padding"] = 1
+    assert evaluate(o, args)[0].pad == "zero"
 
 
 def test_descriptor_reduce_combines_with_memory() -> None:
@@ -1535,3 +1545,62 @@ def test_descriptor_reduce_on_integers_is_bitwise() -> None:
     o.attrs["kind"] = "#tt.descriptor_reduce_kind<xor>"
     evaluate(o, [desc, np.full((2, 2), 0b1010, np.int32), np.int32(0), np.int32(0)], memory=memory)
     assert data[0] == 0b0110 and data[1] == 0b0110 and data[3] == 0b1100
+
+
+def test_fp_to_fp_downcast_saturates_like_cvt_satfinite() -> None:
+    from values import from_float_rtz, max_finite
+
+    big = np.finfo(np.float32).max  # past every narrower type's range, bf16 included
+    src = np.array([np.inf, -np.inf, big, -big, np.nan, 1.5], np.float32)
+    for name in ("f8E5M2", "f8E4M3FN", "f16", "bf16"):
+        got = one(op("tt.fp_to_fp", [tensor((6,), "f32")], tensor((6,), name)), [src])
+        back = to_float(got, ty(name)).astype(np.float64)
+        limit = max_finite(ty(name))
+        assert back[:4].tolist() == [limit, -limit, limit, -limit], name
+        assert np.isnan(back[4]) and back[5] == 1.5
+    # round toward zero: 1.1 in e5m2 is 1.0, not 1.25; 65519 in f16 is 65504, not inf
+    assert from_float_rtz(np.array([1.1, -1.1], np.float32), ty("f8E5M2")).tolist() == [0x3C, 0xBC]
+    assert from_float_rtz(np.array([65519.0], np.float32), ty("f16")).tolist() == [65504.0]
+    assert from_float_rtz(np.array([1.00390625], np.float32), ty("bf16")).tolist() == [0x3F80]
+
+
+def test_reduce_kind_accepts_the_enum_value() -> None:
+    memory = Memory()
+    data = np.zeros(16, np.int32)
+    memory.register(4096, data)
+    desc = Descriptor(4096, (3, 3), (4, 1), (2, 2), I32, "zero")
+    types = [tensordesc((2, 2), "i32"), tensor((2, 2), "i32"), I32, I32]
+    o = op("tt.descriptor_reduce", types, [])
+    o.attrs["kind"] = 1  # TTGIR prints #tt.descriptor_reduce_kind<add> as its value
+    evaluate(o, [desc, np.full((2, 2), 5, np.int32), np.int32(0), np.int32(0)], memory=memory)
+    assert data[0] == 5 and data[5] == 5 and data[2] == 0
+
+
+def test_select_picks_a_descriptor() -> None:
+    a = Descriptor(4096, (3, 3), (4, 1), (2, 2), F32, "zero")
+    b = Descriptor(8192, (3, 3), (4, 1), (2, 2), F32, "nan")
+    types = [ty("i1"), tensordesc((2, 2), "f32"), tensordesc((2, 2), "f32")]
+    assert (
+        evaluate(op("arith.select", types, tensordesc((2, 2), "f32")), [np.bool_(True), a, b])[0]
+        is a
+    )
+    assert (
+        evaluate(op("arith.select", types, tensordesc((2, 2), "f32")), [np.bool_(False), a, b])[0]
+        is b
+    )
+
+
+def test_descriptor_store_notes_the_padded_granule() -> None:
+    # a 3-wide f32 tensor ends 12 bytes into a 16-byte granule: element 3 of each row shares
+    # the granule of element 2, element 4 (next granule) and a row past the end do not
+    memory = Memory()
+    data = np.zeros(16, np.float32)
+    memory.register(4096, data)
+    desc = Descriptor(4096, (3, 3), (4, 1), (2, 4), F32, "zero")
+    types = [tensordesc((2, 4), "f32"), tensor((2, 4), "f32"), I32, I32]
+    block = np.arange(8, dtype=np.float32).reshape(2, 4) + 1
+    evaluate(
+        op("tt.descriptor_store", types, []), [desc, block, np.int32(2), np.int32(0)], memory=memory
+    )
+    assert data.reshape(4, 4)[2].tolist() == [1.0, 2.0, 3.0, 0.0]  # row 2 stored, element 3 clipped
+    assert memory.pad_writes == {4096 + (2 * 4 + 3) * 4: np.float32(4.0).tobytes()}

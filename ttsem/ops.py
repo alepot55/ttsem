@@ -32,8 +32,10 @@ from ttsem.values import (
     float_bits,
     from_bits,
     from_float,
+    from_float_rtz,
     is_bool,
     is_float,
+    max_finite,
     to_bits,
     to_float,
     to_numpy,
@@ -416,8 +418,9 @@ OPS["arith.negf"] = _float_unop(np.negative)
 
 @register("arith.select", "tt.select")
 def _select(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
-    if isinstance(args[1], MemDesc) or isinstance(args[2], MemDesc):
-        # a scalar condition choosing between two shared views: one of them, as it is
+    if isinstance(args[1], (MemDesc, Descriptor)) or isinstance(args[2], (MemDesc, Descriptor)):
+        # a scalar condition choosing between two shared views, or between two descriptors
+        # (a loop-carried descriptor: test_make_tensor_descriptor_loop_carried): one of them
         return [args[1] if bool(np.asarray(args[0]).reshape(-1)[0]) else args[2]]
     cond, a, b = args[0], args[1], args[2]
     return [np.asarray(np.where(cond, a, b), dtype=to_numpy(_rty(op)))]
@@ -1106,10 +1109,31 @@ def _mulhiui(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
 
 @register("tt.fp_to_fp")
 def _fp_to_fp(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """A float conversion. A downcast saturates: the NVIDIA lowering is `cvt.rn.satfinite`
+    (and `cvt.rz.satfinite` for `rounding = rtz`), so an infinite or out-of-range source becomes
+    the largest finite value of its sign and only a NaN stays a NaN; `test_typeconvert_downcast`
+    and its `_clamping` variant pin exactly that. An upcast is exact."""
+    src_ty, dst_ty = op.operand_types[0], _rty(op)
+    x = to_float(args[0], src_ty)
     rounding = _attr(op, "rounding")
-    if rounding is not None and int(rounding) == 0:
-        raise Unsupported(op.name, "round-toward-zero conversion")
-    return [from_float(to_float(args[0], op.operand_types[0]), _rty(op))]
+    toward_zero = (
+        rounding is not None and str(rounding).strip("0123456789 :i") == "" and int(rounding) == 0
+    )
+    if _float_width(dst_ty) >= _float_width(src_ty):
+        return [from_float(x, dst_ty)]
+    out = from_float_rtz(x, dst_ty) if toward_zero else from_float(x, dst_ty)
+    back = to_float(out, dst_ty)
+    # an infinite source, or a finite one the nearest rounding pushed to infinity or to the
+    # NaN of a kind without infinities, lands on the largest finite value of its sign
+    over = ~np.isnan(x) & (np.isinf(x) | np.isinf(back) | (np.isnan(back) & np.isfinite(x)))
+    limit = max_finite(dst_ty)
+    saturated = from_float(np.where(over, np.copysign(limit, x), 0.0).astype(np.float32), dst_ty)
+    return [np.where(over, saturated, out).astype(out.dtype)]
+
+
+def _float_width(ty: Type) -> int:
+    """Bits of a float type, so a conversion knows whether it narrows."""
+    return int(ty.scalar.width or 0)
 
 
 @register("tt.assert")
@@ -1144,10 +1168,13 @@ def _make_desc(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
 
 
 def _pad_of(attr: object) -> str:
-    """`nan` or `zero` from a `#tt.padding_option<...>` attribute, a bare name, or nothing.
-    The generic printer spells the attribute in full, so the test is on the word, not on
-    equality (test_tensor_descriptor_padding: our zeros where the device had NaN)."""
-    return "nan" if "nan" in str(attr).lower() else "zero"
+    """`nan` or `zero` from the `padding` attribute of a descriptor, however it is spelled.
+
+    The generic printer writes `#tt.padding_option<nan>` on TTGIR and the enum's value on
+    TTIR (`padding = 2 : i32`, where PAD_ZERO is 1 and PAD_NAN is 2); an older reading took
+    both for zero (test_tensor_descriptor_padding: our zeros where the device had NaN)."""
+    text = str(attr).strip().lower()
+    return "nan" if "nan" in text or text.split(":")[0].strip() == "2" else "zero"
 
 
 _SCRATCH_BASE = 0x7000_0000_0000
@@ -1210,16 +1237,49 @@ def _reinterpret_desc(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
 
 def _desc_pointers(desc: Descriptor, offsets: Sequence[Value]) -> tuple[np.ndarray, np.ndarray]:
     """Addresses of a descriptor block, and the mask of the lanes inside the tensor."""
+    ptrs, mask, _pad = _desc_addressing(desc, offsets)
+    return ptrs, mask
+
+
+def _desc_addressing(
+    desc: Descriptor, offsets: Sequence[Value]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Addresses of a descriptor block, the mask of the lanes inside the tensor, and the mask
+    of the lanes just past the inner extent that share a 16-byte granule with a lane inside
+    it (in bounds on every other dimension). The semantics never write the latter; the TMA
+    unit does, with the block's values (triton#11583), and a comparison may excuse exactly
+    those bytes."""
     step = max(1, to_numpy(desc.elem).itemsize)
     ptrs = np.full(desc.block_shape, desc.base, dtype=np.int64)
     mask = np.ones(desc.block_shape, dtype=bool)
+    outer_ok = np.ones(desc.block_shape, dtype=bool)
+    granule = np.zeros(desc.block_shape, dtype=bool)
+    last = len(desc.block_shape) - 1
     for dim, extent in enumerate(desc.block_shape):
         bshape = [1] * len(desc.block_shape)
         bshape[dim] = extent
         off = (_scalar(offsets[dim]) + np.arange(extent, dtype=np.int64)).reshape(bshape)
         ptrs = ptrs + step * off * np.int64(desc.strides[dim])
-        mask = mask & (off >= 0) & (off < desc.shape[dim])
-    return ptrs, mask
+        inside = (off >= 0) & (off < desc.shape[dim])
+        mask = mask & inside
+        if dim == last:
+            edge = (desc.shape[dim] - 1) * step // 16
+            granule = granule | ((off >= desc.shape[dim]) & (off * step // 16 == edge))
+        else:
+            outer_ok = outer_ok & inside
+    return ptrs, mask, granule & outer_ok
+
+
+def _note_pad_writes(
+    interp: Interp, desc: Descriptor, offsets: Sequence[Value], values: np.ndarray
+) -> None:
+    """Remember what a descriptor store would have put in the padded granule."""
+    ptrs, _mask, pad = _desc_addressing(desc, offsets)
+    if not pad.any():
+        return
+    flat_vals = np.ascontiguousarray(np.asarray(values)).reshape(-1)
+    for addr, value in zip(ptrs[pad].tolist(), flat_vals[pad.reshape(-1)], strict=True):
+        interp.memory.pad_writes[int(addr)] = value.tobytes()
 
 
 def _desc(op: Op, args: list[Value]) -> Descriptor:
@@ -1244,12 +1304,25 @@ def _desc_load(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
 
 @register("tt.descriptor_store")
 def _desc_store(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
-    ptrs, mask = _desc_pointers(_desc(op, args), args[2:])
+    desc = _desc(op, args)
+    ptrs, mask = _desc_pointers(desc, args[2:])
     interp.memory.store(ptrs, np.asarray(args[1]), mask)
+    _note_pad_writes(interp, desc, args[2:], np.asarray(args[1]))
     return []
 
 
 _REDUCE_KINDS = ("add", "min", "max", "and", "or", "xor")
+# TT_DescriptorReduceKindAttr: ADD=1 MIN=2 MAX=3 INC=4 DEC=5 AND=6 OR=7 XOR=8
+_REDUCE_KIND_BY_VALUE = {
+    "1": "add",
+    "2": "min",
+    "3": "max",
+    "4": "inc",
+    "5": "dec",
+    "6": "and",
+    "7": "or",
+    "8": "xor",
+}
 
 
 def _reduce_kind(op: Op) -> str:
@@ -1258,6 +1331,7 @@ def _reduce_kind(op: Op) -> str:
     text = str(_attr(op, "kind", "")).lower()
     found = re.search(r"<(\w+)>", text)
     kind = found.group(1) if found else text
+    kind = _REDUCE_KIND_BY_VALUE.get(kind, kind)  # TTGIR spells the enum by its value
     if kind not in _REDUCE_KINDS:
         raise Unsupported(op.name, f"reduce kind {kind!r}")
     return kind
@@ -1662,6 +1736,7 @@ def _tma_to_global(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     desc, md = _desc(op, args), _md(op, args, len(args) - 1)
     ptrs, mask = _desc_pointers(desc, args[1:-1])
     interp.memory.store(ptrs, np.asarray(md.data), mask)
+    _note_pad_writes(interp, desc, args[1:-1], np.asarray(md.data))
     return []
 
 

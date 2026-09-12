@@ -537,8 +537,33 @@ _TORCH_ELEM = {
 }
 
 
-def _elem_type(torch_dtype: Any) -> Any:
-    kind, width, name = _TORCH_ELEM[str(torch_dtype)]
+_TL_ELEM = {  # a `triton.reinterpret` wrapper's dtype is a Triton dtype, spelled without `torch.`
+    "float32": ("float", 32, "f32"),
+    "float64": ("float", 64, "f64"),
+    "float16": ("float", 16, "f16"),
+    "bfloat16": ("float", 16, "bf16"),
+    "float8e4nv": ("float", 8, "f8E4M3FN"),
+    "float8e5": ("float", 8, "f8E5M2"),
+    "float8e4b8": ("float", 8, "f8E4M3FNUZ"),
+    "float8e5b16": ("float", 8, "f8E5M2FNUZ"),
+    "int8": ("int", 8, "i8"),
+    "uint8": ("int", 8, "i8"),
+    "int16": ("int", 16, "i16"),
+    "uint16": ("int", 16, "i16"),
+    "int32": ("int", 32, "i32"),
+    "uint32": ("int", 32, "i32"),
+    "int64": ("int", 64, "i64"),
+    "uint64": ("int", 64, "i64"),
+    "int1": ("int", 1, "i1"),
+}
+
+
+def _elem_type(dtype: Any) -> Any:
+    """The element type of a buffer or descriptor, from a torch dtype or a Triton one (the
+    dtype of a `triton.reinterpret` wrapper: `to_triton(x, dst_type="uint32")` in the
+    descriptor tests wraps a tensor torch may not even have a dtype for)."""
+    spelled = str(dtype)
+    kind, width, name = _TORCH_ELEM.get(spelled) or _TL_ELEM[spelled.removeprefix("tl.")]
     return values.Type(kind=kind, shape=None, elem=None, width=width, name=name, encoding=None)
 
 
@@ -1173,6 +1198,14 @@ def run_launch(record: LaunchRecord, ir_text: str, trace_reads: bool = False) ->
                 cmp["note"] = (
                     "a buffer of atomic exchanges: the device's arrival order, not a result"
                 )
+            if not cmp.get("approx") and _only_pad_writes_differ(
+                ex.memory, record, name, want, got
+            ):
+                cmp["approx"] = True
+                cmp["note"] = (
+                    "a descriptor store wrote the 16-byte granule past the inner extent with "
+                    "the block's values, as triton#11583 describes"
+                )
             diffs.append({"name": name, **cmp})
 
     if ex.unsupported:
@@ -1182,6 +1215,25 @@ def run_launch(record: LaunchRecord, ir_text: str, trace_reads: bool = False) ->
     if all(d.get("approx") for d in diffs):
         return Comparison("approx", n_diff, diffs, [], _approx_note(scan.classes), reads=reads)
     return Comparison("mismatch", n_diff, diffs, [], reads=reads)
+
+
+def _only_pad_writes_differ(
+    memory: Any, record: LaunchRecord, name: str, want: np.ndarray, got: np.ndarray
+) -> bool:
+    """True when every differing element is one a descriptor store padded on the device: an
+    element just past the inner extent, in the 16-byte granule of the last element inside it,
+    holding the value the block had there (triton#11583). The semantics leave those bytes
+    alone; the TMA unit writes whole granules."""
+    pads = getattr(memory, "pad_writes", None)
+    if not pads:
+        return False
+    base = record.bases.get(name, record.ptrs[name])
+    want = np.asarray(want).reshape(-1)
+    where = np.nonzero(_bits(want) != _bits(np.asarray(got).reshape(-1)))[0]
+    if not len(where):
+        return False
+    step = want.dtype.itemsize
+    return all(pads.get(base + int(p) * step) == want[p].tobytes() for p in where)
 
 
 def _only_exchanged_differ(

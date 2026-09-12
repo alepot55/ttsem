@@ -306,6 +306,42 @@ def from_float(x: np.ndarray, ty: Type) -> np.ndarray:
     raise Unsupported("type", f"not a float: {name}")
 
 
+def max_finite(ty: Type) -> float:
+    """The largest finite value of a float type, as a Python float."""
+    name = ty.scalar.name
+    if name in NATIVE_FLOATS:
+        return float(np.finfo(NATIVE_FLOATS[name]).max)
+    if name == "bf16":
+        return float(np.array([0x7F7F0000], dtype=np.uint32).view(np.float32)[0])
+    if name in FP8_NAMES:
+        return float(_FP8_ENCODERS[name][0][-1])
+    raise Unsupported("type", f"not a float: {name}")
+
+
+def from_float_rtz(x: np.ndarray, ty: Type) -> np.ndarray:
+    """Round a numpy float array into the storage encoding of `ty` toward zero.
+
+    Round to nearest first, then step one representable value toward zero wherever the
+    nearest one overshot in magnitude: for a native dtype with `nextafter`, for `bf16` and
+    the fp8 kinds by taking one off the magnitude bits of the code (their codes order by
+    magnitude within a sign). An infinity or NaN passes through as nearest gives it.
+    """
+    name = ty.scalar.name
+    x = np.asarray(x)
+    nearest = from_float(x, ty)
+    back = to_float(nearest, ty).astype(np.float64)
+    overshot = np.isfinite(x) & np.isfinite(back) & (np.abs(back) > np.abs(x))
+    if name in NATIVE_FLOATS:
+        dtype = NATIVE_FLOATS[name]
+        stepped = np.nextafter(nearest.astype(dtype), np.zeros((), dtype=dtype))
+        return np.where(overshot, stepped, nearest).astype(dtype)
+    codes = np.asarray(nearest)
+    sign_bit = np.array(0x8000 if name == "bf16" else 0x80, dtype=codes.dtype)
+    magnitude = codes & ~sign_bit
+    stepped = (codes & sign_bit) | np.where(magnitude > 0, magnitude - 1, magnitude)
+    return np.where(overshot, stepped, codes).astype(codes.dtype)
+
+
 def cast_to(x: np.ndarray, ty: Type) -> np.ndarray:
     """Store an already-computed numpy array as a value of `ty`, without reinterpreting bits."""
     if is_float(ty):

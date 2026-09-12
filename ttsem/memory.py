@@ -70,6 +70,9 @@ class Memory:
     def __init__(self) -> None:
         self._bases: list[int] = []
         self.exchanged: list[np.ndarray] = []  # addresses hit by atomic xchg / cas
+        # byte address -> the bytes a descriptor store would put there if it wrote whole
+        # 16-byte granules past the inner extent, as the TMA unit does (triton#11583)
+        self.pad_writes: dict[int, bytes] = {}
         self._arrays: list[np.ndarray] = []
         self._views: list[np.ndarray] = []
         self._sizes: list[int] = []
