@@ -179,6 +179,11 @@ def compare(
         return out
     if np.issubdtype(ref.dtype, np.floating):
         out["max_ulp"] = int(_ulp_distance(ref[where], dev[where]).max())
+    if policy is not None and policy.multiset:
+        if np.array_equal(np.sort(_bits(ref)), np.sort(_bits(dev))):
+            out["approx"] = True
+            out["note"] = "the same values in another order, which the program leaves unspecified"
+            return out
     whole = _decode_floats(ref, policy)
     fref = _decode_floats(ref[where], policy)
     fdev = _decode_floats(dev[where], policy)
@@ -300,6 +305,9 @@ class FloatPolicy:
     elem: str = ""
     rtol: float = 0.0
     atol: float = 0.0
+    # the program leaves the order of the elements unspecified (`tt.cat` with `can_reorder`):
+    # the same multiset of bit patterns in another order is explained, anything else is not
+    multiset: bool = False
 
 
 def _float_type(elem: str) -> Any:
@@ -387,6 +395,11 @@ def scan_inexact(module: Any) -> InexactScan:
     elems: set[str] = set()
     table = _definers(module)
     for op in _walk_ops(module.ops):
+        if op.name == "tt.cat" and _truthy_attr(op, "can_reorder"):
+            # `can_reorder = true` says the result may hold the elements in any order: the
+            # semantics concatenates, a lowering may interleave, and both are the program
+            classes.add("reorder")
+            continue
         cls = INEXACT_OPS.get(op.name)
         if cls is None and op.name in ("arith.addf", "arith.subf") and table is not None:
             feeders = [table.get(id(op), {}).get(name) for name in op.operands]
@@ -401,6 +414,14 @@ def scan_inexact(module: Any) -> InexactScan:
             classes.add(cls)
             elems |= found
     return InexactScan(frozenset(classes), frozenset(elems))
+
+
+def _truthy_attr(op: Any, key: str) -> bool:
+    attrs = getattr(op, "attrs", None) or {}
+    value = attrs.get(key)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().split(":")[0].strip().lower() in ("true", "1")
 
 
 def _definers(module: Any) -> Any:
@@ -420,9 +441,10 @@ def float_policy(elem: str, scan: InexactScan) -> FloatPolicy:
     rather than in the buffer's; anything wider moves the whole launch to the relative band,
     because no ulp count bounds a reassociated sum.
     """
-    if values is None or elem not in values.FLOAT_FORMATS or not scan.classes:
+    classes = scan.classes - {"reorder"}  # an order, not a rounding: handled by `multiset`
+    if values is None or elem not in values.FLOAT_FORMATS or not classes:
         return FloatPolicy(elem)
-    if scan.classes <= {"div", "contract"}:  # a few ulp: `div.full.f32`, or one fused rounding
+    if classes <= {"div", "contract"}:  # a few ulp: `div.full.f32`, or one fused rounding
         # in the widest of the types the launch computes in and the buffer's own: one rounding
         # of an f32 product still flips the last bit of the bf16 it is stored as
         widths = ({e for e in scan.elems if e in ULP_AS_RTOL} | {elem}) & set(ULP_AS_RTOL)
@@ -1082,6 +1104,8 @@ def run_launch(record: LaunchRecord, ir_text: str, trace_reads: bool = False) ->
         if got is None:
             return Comparison("error", -1, [], [], f"buffer {name!r} missing after run")
         policy = float_policy(_elem_spelling(record, name), scan)
+        if "reorder" in scan.classes:
+            policy = dataclasses.replace(policy, multiset=True)
         cmp = compare(want.reshape(-1), got.reshape(-1), policy=policy)
         n_diff += max(cmp["n_diff"], 0)
         if not cmp["equal"]:
@@ -1149,6 +1173,8 @@ def _elem_spelling(record: LaunchRecord, name: str) -> str:
 
 
 def _approx_note(classes: frozenset[str]) -> str:
+    if "reorder" in classes:
+        return "the same values in an order the program leaves unspecified (tt.cat can_reorder)"
     if classes == {"div"}:
         return f"floats within {APPROX_ULP} ulp (approximate device division)"
     if classes:

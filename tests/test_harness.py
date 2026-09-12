@@ -380,6 +380,30 @@ def test_scan_inexact_finds_a_float_reduction() -> None:
 
 
 @pytest.mark.skipif(not _HAS_SEMANTICS, reason="mlir.py not available yet")
+@pytest.mark.parametrize("flag, expect", [("true", {"reorder"}), ("false", set())])
+def test_scan_inexact_reads_can_reorder_on_a_cat(flag: str, expect: set[str]) -> None:
+    body = (
+        '  "tt.func"() <{sym_name = "k"}> ({\n'
+        f'    %0 = "tt.cat"(%arg0, %arg1) <{{can_reorder = {flag}}}> '
+        ": (tensor<4xi32>, tensor<4xi32>) -> tensor<8xi32>\n"
+        '    "tt.return"() : () -> ()\n'
+        "  }) : () -> ()"
+    )
+    assert harness.scan_inexact(_module(body)).classes == expect
+
+
+def test_compare_multiset_explains_a_permutation_and_nothing_else() -> None:
+    policy = harness.FloatPolicy("i32", multiset=True)
+    ref = np.array([1, 2, 3, 4], np.int32)
+    same_values = harness.compare(ref, np.array([4, 3, 2, 1], np.int32), policy=policy)
+    assert same_values["approx"] and same_values["n_diff"] == 4
+    other_values = harness.compare(ref, np.array([4, 3, 2, 2], np.int32), policy=policy)
+    assert not other_values.get("approx")
+    # without the policy a permutation of an integer buffer stays a plain mismatch
+    assert "approx" not in harness.compare(ref, np.array([4, 3, 2, 1], np.int32))
+
+
+@pytest.mark.skipif(not _HAS_SEMANTICS, reason="mlir.py not available yet")
 def test_scan_inexact_finds_only_the_division() -> None:
     body = (
         '  "tt.func"() <{sym_name = "k"}> ({\n'
