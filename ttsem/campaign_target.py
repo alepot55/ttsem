@@ -102,7 +102,9 @@ class TritonTarget:
         except c.ConvergenceError as exc:
             raise c.OracleFailure(str(exc)) from exc
         differences = list(self.emit_cuda.compare(expected, launched.outputs))
-        if not differences and self.per_pass:
+        # On a device mismatch too: that is when naming the culprit pass is worth the most.
+        # The device difference stays first; the `pass:` difference follows it.
+        if self.per_pass:
             differences += self._per_pass_differences(launched, digest)
         return et.Verdict(
             program_hash=digest,
