@@ -1548,7 +1548,7 @@ def test_descriptor_reduce_on_integers_is_bitwise() -> None:
 
 
 def test_fp_to_fp_downcast_saturates_like_cvt_satfinite() -> None:
-    from values import from_float_rtz, max_finite
+    from ttsem.values import from_float_rtz, max_finite
 
     big = np.finfo(np.float32).max  # past every narrower type's range, bf16 included
     src = np.array([np.inf, -np.inf, big, -big, np.nan, 1.5], np.float32)
