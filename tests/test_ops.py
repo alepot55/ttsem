@@ -1992,3 +1992,80 @@ def test_local_scatter_takes_values_then_indices_and_local_gather_reads_them_bac
         [md, idx.astype(np.int32)],
     )
     assert np.array_equal(got, np.take_along_axis(want, idx, axis=0))
+
+
+def test_a_dot_on_the_fma_path_multiplies_f32_in_full() -> None:
+    blocked = (
+        "#ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], "
+        "order = [1, 0]}>"
+    )
+    fma_a = Type(
+        "tensor",
+        (2, 2),
+        F32,
+        encoding=f"#ttg.dot_op<{{opIdx = 0, parent = {blocked}, kWidth = 0}}>",
+    )
+    fma_b = Type(
+        "tensor",
+        (2, 2),
+        F32,
+        encoding=f"#ttg.dot_op<{{opIdx = 1, parent = {blocked}, kWidth = 0}}>",
+    )
+    acc = tensor((2, 2), "f32")
+    a = np.full((2, 2), 1.0 + 2.0**-12, np.float32)  # below the tf32 lsb
+    b = np.eye(2, dtype=np.float32)
+    c = np.zeros((2, 2), np.float32)
+    on_fma = one(op("tt.dot", [fma_a, fma_b, acc], acc), [a, b, c])
+    assert np.array_equal(on_fma, a)
+    # the same dot with tensor-core operands rounds to tf32 first
+    mma = (
+        "#ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [4, 1], "
+        "instrShape = [16, 8]}>"
+    )
+    mma_a = Type(
+        "tensor", (2, 2), F32, encoding=f"#ttg.dot_op<{{opIdx = 0, parent = {mma}, kWidth = 2}}>"
+    )
+    mma_b = Type(
+        "tensor", (2, 2), F32, encoding=f"#ttg.dot_op<{{opIdx = 1, parent = {mma}, kWidth = 2}}>"
+    )
+    on_mma = one(op("tt.dot", [mma_a, mma_b, acc], acc), [a, b, c])
+    assert np.array_equal(on_mma, np.ones((2, 2), np.float32))
+
+
+def test_a_gather_over_a_cluster_split_buffer_is_unsupported() -> None:
+    split = Type(
+        "memdesc",
+        (128,),
+        ty("i32"),
+        encoding="#ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0], "
+        "CGALayout = [[1], [2]]}>",
+    )
+    md = _alloc(memdesc((128,), "i32"))
+    with pytest.raises(Unsupported):
+        evaluate(
+            op(
+                "ttg.local_gather",
+                [split, tensor((128,), "i32")],
+                tensor((128,), "i32"),
+                attrs={"axis": 0},
+            ),
+            [md, np.arange(128, dtype=np.int32)],
+        )
+    # a CGA layout with only zero bases is one CTA's buffer
+    plain = Type(
+        "memdesc",
+        (128,),
+        ty("i32"),
+        encoding="#ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0], "
+        "CGALayout = [[0]]}>",
+    )
+    got = one(
+        op(
+            "ttg.local_gather",
+            [plain, tensor((128,), "i32")],
+            tensor((128,), "i32"),
+            attrs={"axis": 0},
+        ),
+        [md, np.arange(128, dtype=np.int32)],
+    )
+    assert got.shape == (128,)

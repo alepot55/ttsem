@@ -815,6 +815,17 @@ def _to_tf32(x: np.ndarray) -> np.ndarray:
     return (bits & np.uint32(0xFFFFE000)).view(np.float32)
 
 
+def _fma_dot(op: Op) -> bool:
+    """A dot whose operands carry a `dot_op` layout over a *blocked* parent is lowered to
+    scalar FMAs, which multiply f32 in full whatever `inputPrecision` says (the tf32 rounding
+    is the tensor core's, and this dot never reaches one): gluon's `dot_fma`, and a `tt.dot`
+    the layout assignment left on the FMA path."""
+    return any(
+        "dot_op<" in (t.encoding or "") and "parent = #ttg.blocked<" in (t.encoding or "")
+        for t in op.operand_types[:2]
+    )
+
+
 @register("tt.dot")
 def _dot(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     ta, tb, tc = op.operand_types[0], op.operand_types[1], op.operand_types[2]
@@ -826,7 +837,7 @@ def _dot(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     acc_dtype = np.float64 if rty.scalar.name == "f64" else np.float32
     a = to_float(args[0], ta).astype(acc_dtype)
     b = to_float(args[1], tb).astype(acc_dtype)
-    if _int_attr(op, "inputPrecision", 0) == 0 and ta.scalar.name == "f32":
+    if _int_attr(op, "inputPrecision", 0) == 0 and ta.scalar.name == "f32" and not _fma_dot(op):
         a, b = _to_tf32(a), _to_tf32(b)
     out = np.matmul(a, b, dtype=acc_dtype) + to_float(args[2], tc).astype(acc_dtype)
     return [from_float(out, rty)]
@@ -1685,8 +1696,21 @@ def _memdesc_reinterpret(interp: Interp, op: Op, args: list[Value]) -> list[Valu
     return [MemDesc(flat[:want].reshape(ty.shape or ()), elem, dict(md.attrs))]
 
 
+_CGA_SPLIT = re.compile(r"CGALayout = \[\[[^\]]*[1-9]")
+
+
+def _cluster_wide(op: Op, i: int = 0) -> None:
+    """A shared buffer split over the CTAs of a cluster (a `CGALayout` with a non-zero basis)
+    is read and written across CTAs through DSMEM by a gather or scatter; level 1 runs one
+    CTA with a shared memory of its own and cannot say what the other CTAs' buffers hold."""
+    enc = op.operand_types[i].encoding or "" if i < len(op.operand_types) else ""
+    if _CGA_SPLIT.search(enc):
+        raise Unsupported(op.name, "a gather or scatter across the CTAs of a cluster (DSMEM)")
+
+
 @register("ttg.local_gather")
 def _local_gather(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    _cluster_wide(op)
     md = _md(op, args)
     idx = np.asarray(args[1]).astype(np.int64)
     return [np.take_along_axis(md.data, idx, axis=_int_attr(op, "axis"))]
@@ -1698,6 +1722,7 @@ def _local_scatter(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     `local_scatter %dst[%indices], %values`, but the operands are declared `dst, values,
     indices` and that is their order in the generic form (an older reading swapped the two
     tensors: `test_scatter_padded` indexed the buffer with its values)."""
+    _cluster_wide(op)
     md = _md(op, args)
     values = np.asarray(args[1])
     idx = np.asarray(args[2]).astype(np.int64)
