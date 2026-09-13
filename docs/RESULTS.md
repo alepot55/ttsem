@@ -671,3 +671,46 @@ minimum is the reachable form and matches the nine-line Python reproducer: an ou
 `tt.flatten` loop whose body runs one inner `scf.for` with a carried value that a store uses
 afterwards (`examples/e11612_repro_min.mlir`, 23 lines from 31 in 16 trials; the 97-line
 verifier-error twin went to 35).
+
+## The night of 13-14 Sep: `main` 972d18aa0 on sm_120, per pass, tensor memory, the detector per CTA
+
+`main` 972d18aa0 built from source at 20:51 (12 minutes), the plugin with the partition scheduler,
+the nvws arefs, the TMA gather and the Gluon recompile of 13 Sep, plus what the night itself added.
+
+| corpus | launches or programs | match | approx | mismatch | unsupported | error | note |
+|---|---|---|---|---|---|---|---|
+| layoutfuzz `wsdesc` seed 30, device | 200 programs | | | 0 | | 7 device compile errors | all the sm_120 shared-memory limit (f32 128x64x64 blocks) |
+| layoutfuzz `tma` seed 30, device | 200 programs | | | 0 | | 3 device compile errors | idem |
+| `wsdesc` per pass, sm_120 | 194 programs, 193 launches, 17,756 stages | 8,502 | 8,125 | 0 | 193 (the llvm stage) | 184 (#11752) + 752 (the relink window; the 12 programs rerun: 450 match, 630 approx, 0 mismatch, 0 error) | last night 118 of 177 verdicts were `unsupported` |
+| `tma` per pass, sm_120 | 198 programs, 197 launches, 18,124 stages | 12,722 | 5,178 | 0 | 197 (the llvm stage) | 27 (#11752) | |
+| `wsdesc` per pass, **sm_100 on the cpu** | 24 launches, 2,215 stages | 2,160 | 0 | 0 | 24 (the llvm stage) | 24 (#11752) + 7 (nested pipeline) | 1,207 `unsupported` (`ttng.tmem_alloc`) before the tensor-memory semantics |
+| `tma` per pass, **sm_100 on the cpu** | 24 launches, 2,208 stages | 2,182 | 0 | 0 | 24 (the llvm stage) + 2 (#11752) | 0 | tcgen05 and TMEM through the non-warp-specialized pipeline |
+| layoutfuzz `wsdesc` seed 31, device | 200 programs | | | 0 | | 9 device compile errors | all the sm_120 shared-memory limit |
+| layoutfuzz `tma` seed 31, device | 200 programs | | | 0 | | 0 | |
+| `wsdesc` seed 31 per pass, sm_120 (fixed plugin) | 192 programs, 191 launches, 17,572 stages | 9,630 | 7,560 | 0 | 191 (the llvm stage) + 191 (#11752, classified) | 0 | |
+| `tma` seed 31 per pass, sm_120 (fixed plugin) | 201 programs, 200 launches, 18,400 stages | 12,820 | 5,360 | 0 | 200 (the llvm stage) + 20 (#11752, classified) | 0 | |
+| `test_core` TTGIR | 14,403 | 12,668 | 1,501 | 168 | 65 | 0 (+1 poison) | diff vs 12-13 Sep: 14 new bad, all the atomic-order class, 49 no longer bad; 1 upstream failure (`test_gather`, 128 KB) |
+| 20 language files TTGIR | 3,088 | 2,718 | 308 | 0 | 30 | 9 (#11738) + 23 poison | diff: nothing new |
+| `gluon` TTGIR, first pass | 5,858 | 5,607 | 47 | 15 | 165 | 24 | 128 no longer bad vs 12-13 Sep; 12 errors + 5 mismatches = the `local_scatter` operand order, 7 = cluster gathers, 2 = FMA dots, 1 = the reduction tree order |
+| `gluon` TTGIR, second pass (fixed plugin) | 5,858 | 5,628 | 49 | 5 | 176 | 0 | 34 no longer bad vs the first pass; the 5 = 4 cluster gathers (broadcast variants, `unsupported` since `fd5884f`) + the reduction tree order; 141 of the unsupported are instrumentation modes |
+| `unit/cuda` TTGIR, first pass | 40 | 16 | 4 | 12 | 8 | 0 | 11 fpsan, 1 tf32 descriptor |
+| `unit/cuda` TTGIR, second pass (fixed plugin) | 40 | 17 | 4 | 0 | 19 | 0 | fpsan and consan `unsupported` by policy, the tf32 descriptor `match` |
+| races, `test_core` corpus | 9,649 files, 9,435 ran | | | | | | 0 with barriers, 1,437 without |
+| races, language corpus | 1,939 files, 1,910 ran | | | | | | **0 with barriers** (16 last night, the two-CTA modules), 547 without |
+| races, gluon corpus | 5,712 files, 5,667 ran | | | | | | first pass 2 with barriers, both a `ttng.cluster_barrier` the detector did not count; with the fix **0 with barriers**, 392 without |
+
+What the night changed in the tool (all committed, mirrored to the public package, shipped to the plugin):
+`round_f32_to_tf32` on host descriptors (`ea55512`); the race detector with a shared memory per CTA
+(`de84baa`: the 17 two-CTA "races with barriers" of 12-13 Sep were a fallback of the detector);
+instrumentation modes as `unsupported` (`3b60bf4`); tensor memory and tcgen05 at level 1 (`4b4ba3d`);
+stages `triton-opt` cannot re-read classified with the diagnostic (`242fcfb`); `ttg.local_scatter`
+operand order (`b4b598b`); FMA dots in full f32 and cluster-wide gathers unsupported (`3833dce`, `fd5884f`);
+`ttng.cluster_barrier` counted by the race detector unless relaxed (`18bcb68`).
+Upstream: PR #11751 (the interpreter drops `round_f32_to_tf32`), PR #11752 (`nvws.warp_group` does
+not round-trip: its printer drops the result types; every `MLIR_ENABLE_DUMP` stage between
+`nvws-lower-aref` and `nvws-lower-warp-group` of a warp-specialized loop is unparsable).
+
+Gaps left: level 2 has no checks on the tensor-memory ops; `tc_gen5_mma_scaled` and the
+blocked-scales `tmem_copy`; DSMEM (cluster gathers, multicast MMA); the reduction tree order under
+cancellation (`test_reduction_matches_loop`: 1e20 + 1 - 1e20 + 1, the device's tree gives 0, the
+program order 1; a cancellation-aware band would call it approx); `tmem_load` with `redOp`.
