@@ -1702,3 +1702,52 @@ def test_nvws_descriptor_gather_lands_the_rows_in_shared_memory() -> None:
     args = [_row_descriptor(), np.array([0, 2], np.int32), np.int32(2), smem]
     evaluate(op("nvws.descriptor_gather", types, [], attrs={"txCount": 16}), args, memory=memory)
     assert np.array_equal(smem.data, np.array([[2.0, 0.0], [10.0, 0.0]], np.float32))
+
+
+def test_local_atomic_scatter_rmw_serializes_collisions_and_returns_the_old_values() -> None:
+    smem = _alloc(memdesc((4, 2), "i32"))
+    smem.data[...] = 10
+    types = [memdesc((4, 2), "i32"), tensor((3, 2), "i32"), tensor((3, 2), "i32")]
+    values = np.array([[1, 2], [3, 4], [5, 6]], np.int32)
+    indices = np.array([[0, 0], [2, 0], [0, 3]], np.int32)  # rows 0 and 0 collide in column 0
+    got = one(
+        op(
+            "ttg.local_atomic_scatter_rmw",
+            types,
+            tensor((3, 2), "i32"),
+            attrs={"atomic_rmw_op": 4, "axis": 0},
+        ),
+        [smem, values, indices],
+    )
+    # column 0: row 0 gets 1 then 5 (old values 10, then 11), row 2 gets 3; column 1: rows 0, 0, 3
+    assert (
+        smem.data[0, 0] == 16
+        and smem.data[2, 0] == 13
+        and smem.data[0, 1] == 16
+        and smem.data[3, 1] == 16
+    )
+    assert np.array_equal(got, np.array([[10, 10], [10, 12], [11, 10]], np.int32))
+
+
+def test_local_atomic_scatter_rmw_skips_masked_positions() -> None:
+    smem = _alloc(memdesc((2, 2), "i32"))
+    smem.data[...] = 0
+    types = [
+        memdesc((2, 2), "i32"),
+        tensor((2, 2), "i32"),
+        tensor((2, 2), "i32"),
+        tensor((2, 2), "i1"),
+    ]
+    values = np.array([[7, 7], [7, 7]], np.int32)
+    indices = np.array([[1, 1], [0, 0]], np.int32)
+    mask = np.array([[True, False], [False, True]])
+    one(
+        op(
+            "ttg.local_atomic_scatter_rmw",
+            types,
+            tensor((2, 2), "i32"),
+            attrs={"atomic_rmw_op": 6, "axis": 0},
+        ),
+        [smem, values, indices, mask],
+    )
+    assert np.array_equal(smem.data, np.array([[0, 7], [7, 0]], np.int32))

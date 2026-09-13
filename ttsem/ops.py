@@ -1677,6 +1677,49 @@ def _local_scatter(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     return []
 
 
+def _rmw_apply(kind: str, old: np.ndarray, val: np.ndarray) -> np.ndarray:
+    """One read-modify-write step of `tt.atomic_rmw`'s kinds on plain numpy values."""
+    if kind in ("add", "fadd"):
+        return old + val
+    if kind == "and":
+        return old & val
+    if kind == "or":
+        return old | val
+    if kind == "xor":
+        return old ^ val
+    if kind in ("max", "umax"):
+        return np.maximum(old, val)
+    if kind in ("min", "umin"):
+        return np.minimum(old, val)
+    if kind == "xchg":
+        return val
+    raise Unsupported("ttg.local_atomic_scatter_rmw", f"rmw op {kind!r}")
+
+
+@register("ttg.local_atomic_scatter_rmw")
+def _local_atomic_scatter_rmw(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """`dst[.., indices[I], ..] = rmw(dst[..], values[I])` along `axis`, one position after
+    the other in index order (the device serializes colliding positions in an order of its
+    own); the result is the old value at each updated position, zero where masked off."""
+    raw = _attr(op, "atomic_rmw_op", _attr(op, "rmw_op"))
+    kind = _RMW_KINDS.get(int(raw), "") if isinstance(raw, (int, float)) else str(raw).lower()
+    md = _md(op, args)
+    values = np.asarray(args[1])
+    idx = np.asarray(args[2]).astype(np.int64)
+    mask = np.asarray(args[3]).astype(bool) if len(args) > 3 else np.ones(values.shape, bool)
+    axis = _int_attr(op, "axis")
+    old = np.zeros(values.shape, dtype=md.data.dtype)
+    for pos in np.ndindex(*values.shape):
+        if not mask[pos]:
+            continue
+        coord = list(pos)
+        coord[axis] = int(idx[pos])
+        where = tuple(coord)
+        old[pos] = md.data[where]
+        md.data[where] = _rmw_apply(kind, md.data[where], values[pos])
+    return [old.astype(to_numpy(_rty(op)))]
+
+
 @register("ttg.memdesc_reshape")
 def _memdesc_reshape(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     md = _md(op, args)
