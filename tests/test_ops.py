@@ -1632,3 +1632,73 @@ def test_descriptor_reduce_min_max_follow_the_descriptor_signedness() -> None:
     unsigned = Descriptor(4096, (3, 3), (4, 1), (2, 2), I32, "zero", unsigned=True)
     evaluate(o, [unsigned, one_block, np.int32(0), np.int32(0)], memory=memory)
     assert data[0] == -1  # unsigned: 0xFFFFFFFF > 1
+
+
+# --------------------------------------------------------------- TMA gather and scatter
+
+
+def _row_descriptor(base: int = 4096) -> Descriptor:
+    """A 3x3 f32 tensor in a 4x4 storage, read one row of two columns at a time."""
+    return Descriptor(base, (3, 3), (4, 1), (1, 2), F32, "zero")
+
+
+def test_descriptor_gather_reads_one_row_per_index_and_fills_past_the_shape() -> None:
+    memory = Memory()
+    memory.register(4096, np.arange(16, dtype=np.float32))
+    types = [tensordesc((1, 2), "f32"), tensor((3,), "i32"), I32]
+    args = [_row_descriptor(), np.array([2, 0, 5], np.int32), np.int32(1)]
+    got = one(op("tt.descriptor_gather", types, tensor((3, 2), "f32")), args, memory=memory)
+    # element (r, c) is 4r + c; row 5 is past the 3 rows and reads as the zero fill
+    assert np.array_equal(got, np.array([[9.0, 10.0], [1.0, 2.0], [0.0, 0.0]], np.float32))
+
+
+def test_descriptor_gather_masks_the_columns_past_the_shape() -> None:
+    memory = Memory()
+    memory.register(4096, np.arange(16, dtype=np.float32))
+    types = [tensordesc((1, 2), "f32"), tensor((1,), "i32"), I32]
+    args = [_row_descriptor(), np.array([1], np.int32), np.int32(2)]
+    got = one(op("tt.descriptor_gather", types, tensor((1, 2), "f32")), args, memory=memory)
+    assert np.array_equal(got, np.array([[6.0, 0.0]], np.float32))  # column 3 is outside
+
+
+def test_descriptor_scatter_writes_the_rows_inside_the_shape_only() -> None:
+    memory = Memory()
+    data = np.zeros(16, np.float32)
+    memory.register(4096, data)
+    types = [tensordesc((1, 2), "f32"), tensor((2,), "i32"), I32, tensor((2, 2), "f32")]
+    args = [_row_descriptor(), np.array([1, 2], np.int32), np.int32(2), np.ones((2, 2), np.float32)]
+    evaluate(op("tt.descriptor_scatter", types, []), args, memory=memory)
+    assert data[6] == 1.0 and data[10] == 1.0 and data.sum() == 2.0
+
+
+def test_async_tma_gather_lands_the_rows_in_shared_memory() -> None:
+    memory = Memory()
+    memory.register(4096, np.arange(16, dtype=np.float32))
+    smem = _alloc(memdesc((2, 2), "f32"))
+    bar = _alloc(BAR)
+    types = [tensordesc((1, 2), "f32"), tensor((2,), "i32"), I32, BAR, memdesc((2, 2), "f32"), I1]
+    args = [_row_descriptor(), np.array([2, 1], np.int32), np.int32(0), bar, smem, np.array(True)]
+    evaluate(op("ttng.async_tma_gather", types, []), args, memory=memory)
+    assert np.array_equal(smem.data, np.array([[8.0, 9.0], [4.0, 5.0]], np.float32))
+
+
+def test_async_tma_scatter_stores_the_rows_from_shared_memory() -> None:
+    memory = Memory()
+    data = np.zeros(16, np.float32)
+    memory.register(4096, data)
+    smem = _alloc(memdesc((2, 2), "f32"))
+    smem.data[...] = np.array([[1.0, 2.0], [3.0, 4.0]], np.float32)
+    types = [tensordesc((1, 2), "f32"), tensor((2,), "i32"), I32, memdesc((2, 2), "f32")]
+    args = [_row_descriptor(), np.array([0, 2], np.int32), np.int32(1), smem]
+    evaluate(op("ttng.async_tma_scatter", types, []), args, memory=memory)
+    assert data[1] == 1.0 and data[2] == 2.0 and data[9] == 3.0 and data[10] == 4.0
+
+
+def test_nvws_descriptor_gather_lands_the_rows_in_shared_memory() -> None:
+    memory = Memory()
+    memory.register(4096, np.arange(16, dtype=np.float32))
+    smem = _alloc(memdesc((2, 2), "f32"))
+    types = [tensordesc((1, 2), "f32"), tensor((2,), "i32"), I32, memdesc((2, 2), "f32")]
+    args = [_row_descriptor(), np.array([0, 2], np.int32), np.int32(2), smem]
+    evaluate(op("nvws.descriptor_gather", types, [], attrs={"txCount": 16}), args, memory=memory)
+    assert np.array_equal(smem.data, np.array([[2.0, 0.0], [10.0, 0.0]], np.float32))

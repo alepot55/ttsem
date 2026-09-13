@@ -1317,6 +1317,38 @@ def _desc_fill(desc: Descriptor, dtype: np.dtype) -> np.ndarray:
     return np.array(np.nan if desc.pad == "nan" else 0).astype(dtype)
 
 
+def _gather_addressing(
+    desc: Descriptor, x_offsets: Value, y_offset: Value
+) -> tuple[np.ndarray, np.ndarray]:
+    """Addresses of the rows a TMA gather reads: row `i` is the descriptor's box (one row by
+    `block_shape[-1]` columns) at `[x_offsets[i], y_offset]`, clipped to the tensor like any
+    box, so a row index past the shape reads as the fill and a column past it is masked."""
+    if len(desc.shape) != 2:
+        raise Unsupported("tt.descriptor_gather", f"rank {len(desc.shape)} descriptor")
+    step = max(1, to_numpy(desc.elem).itemsize)
+    rows = np.asarray(x_offsets).astype(np.int64).reshape(-1, 1)
+    cols = (_scalar(y_offset) + np.arange(desc.block_shape[-1], dtype=np.int64)).reshape(1, -1)
+    ptrs = desc.base + step * (rows * np.int64(desc.strides[0]) + cols * np.int64(desc.strides[1]))
+    mask = (rows >= 0) & (rows < desc.shape[0]) & (cols >= 0) & (cols < desc.shape[1])
+    return ptrs, np.broadcast_to(mask, ptrs.shape)
+
+
+@register("tt.descriptor_gather")
+def _desc_gather(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    desc = _desc(op, args)
+    ptrs, mask = _gather_addressing(desc, args[1], args[2])
+    dtype = to_numpy(_rty(op))
+    return [interp.memory.load(ptrs, mask, _desc_fill(desc, dtype), dtype)]
+
+
+@register("tt.descriptor_scatter")
+def _desc_scatter(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    desc = _desc(op, args)
+    ptrs, mask = _gather_addressing(desc, args[1], args[2])
+    interp.memory.store(ptrs, np.asarray(args[3]).reshape(ptrs.shape), mask)
+    return []
+
+
 @register("tt.descriptor_load")
 def _desc_load(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     desc = _desc(op, args)
@@ -1814,7 +1846,14 @@ def _nvws_desc_load(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
 
 @register("nvws.descriptor_gather")
 def _nvws_desc_gather(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
-    raise Unsupported(op.name, "TMA gathers are not modelled at level 1")
+    """`tt.descriptor_gather` whose rows land in the shared-memory operand; synchronous."""
+    desc, md = _desc(op, args), _md(op, args, 3)
+    ptrs, mask = _gather_addressing(desc, args[1], args[2])
+    dtype = md.data.dtype
+    md.data[...] = interp.memory.load(ptrs, mask, _desc_fill(desc, dtype), dtype).reshape(
+        md.data.shape
+    )
+    return []
 
 
 # ------------------------------------------------------------- ttng: barriers and TMA copies
@@ -1916,6 +1955,32 @@ def _tma_to_local(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     if barrier:  # the copy is done: the bytes the barrier was told to expect have landed
         _barrier(interp, op, barrier).complete_tx(int(md.data.nbytes))
         interp.progress()
+    return []
+
+
+@register("ttng.async_tma_gather")
+def _tma_gather_to_local(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """A synchronous `tt.descriptor_gather` whose rows land in a shared-memory buffer; the
+    barrier learns that the bytes it was told to expect have arrived."""
+    if len(args) > 5 and not bool(np.asarray(args[5])):
+        return []
+    desc, md = _desc(op, args), _md(op, args, 4)
+    ptrs, mask = _gather_addressing(desc, args[1], args[2])
+    dtype = md.data.dtype
+    md.data[...] = interp.memory.load(ptrs, mask, _desc_fill(desc, dtype), dtype).reshape(
+        md.data.shape
+    )
+    _barrier(interp, op, args, 3).complete_tx(int(md.data.nbytes))
+    interp.progress()
+    return []
+
+
+@register("ttng.async_tma_scatter")
+def _tma_scatter_to_global(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """A synchronous `tt.descriptor_scatter` whose rows come from a shared-memory buffer."""
+    desc, md = _desc(op, args), _md(op, args, 3)
+    ptrs, mask = _gather_addressing(desc, args[1], args[2])
+    interp.memory.store(ptrs, np.asarray(md.data).reshape(ptrs.shape), mask)
     return []
 
 
