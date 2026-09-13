@@ -63,6 +63,56 @@ def test_store_then_load_by_other_warps_races_without_a_barrier() -> None:
     assert fenced.barriers == 1
 
 
+# Two CTAs, the tensor split between them: each CTA holds 128 of the 256 elements in a shared
+# memory of its own. `CGALayout = [[1]]` is the printed form of that split on both sides.
+CGA_BLOCKED = (
+    "#ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0], "
+    "CGALayout = [[1]]}>"
+)
+CGA_WIDE = (
+    "#ttg.blocked<{sizePerThread = [2], threadsPerWarp = [32], warpsPerCTA = [4], order = [0], "
+    "CGALayout = [[1]]}>"
+)
+CGA_SHARED = (
+    "#ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0], CGALayout = [[1]]}>"
+)
+CGA_MEMDESC = f"!ttg.memdesc<256xi32, {CGA_SHARED}, #ttg.shared_memory, mutable>"
+CGA_TENSOR = f"tensor<256xi32, {CGA_BLOCKED}>"
+CGA_ATTRS = '"ttg.num-ctas" = 2 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32'
+
+
+def cga_module(body: str) -> str:
+    return f"""
+"builtin.module"() ({{
+  "tt.func"() <{{sym_name = "k", function_type = (!tt.ptr<i32>) -> ()}}> ({{
+  ^bb0(%p: !tt.ptr<i32>):
+    %r = "tt.make_range"() <{{end = 256 : i32, start = 0 : i32}}> : () -> {CGA_TENSOR}
+    %buf = "ttg.local_alloc"() {{allocation.offset = 0 : i32}} : () -> {CGA_MEMDESC}
+{body}
+    "tt.return"() : () -> ()
+  }}) : () -> ()
+}}) {{{CGA_ATTRS}}} : () -> ()
+"""
+
+
+def test_a_cga_split_allocation_is_modelled_per_cta() -> None:
+    store = (
+        f'    "ttg.local_store"(%r, %buf) : (tensor<256xi32, {CGA_BLOCKED}>, {CGA_MEMDESC}) -> ()'
+    )
+    same = f'    %v = "ttg.local_load"(%buf) : ({CGA_MEMDESC}) -> tensor<256xi32, {CGA_BLOCKED}>'
+    wide = f'    %w = "ttg.local_load"(%buf) : ({CGA_MEMDESC}) -> tensor<256xi32, {CGA_WIDE}>'
+    # the split layout is understood: no gap, and a warp reading its own bytes does not race
+    (report,) = races.detect(cga_module("\n".join([store, same])))
+    assert report.status == "ok", report.status
+    assert not report.gaps, report.gaps
+    assert not report.races
+    # a load in another layout still exchanges bytes between the warps of one CTA
+    (report,) = races.detect(cga_module("\n".join([store, wide])))
+    assert report.races and all(a.exact for r in report.races for a in (r.first, r.second))
+    (fenced,) = races.detect(cga_module("\n".join([store, BARRIER, wide])))
+    assert not fenced.races and fenced.barriers == 1
+
+
 def test_a_warp_reading_its_own_elements_does_not_race() -> None:
     # the same layout on both sides: every warp loads exactly the bytes it stored
     same = f'    %v = "ttg.local_load"(%buf) : ({MEMDESC}) -> {TENSOR}'

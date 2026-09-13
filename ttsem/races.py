@@ -265,7 +265,15 @@ class RaceInterp(LayoutInterp):
             shape = list(attrs["alloc_shape"])
             suffix = drop_pipelining_dims(shape, enc)
             layout = to_linear_layout(enc, suffix, self.num_warps, self.threads_per_warp)
-            layout = layout.sublayout(["offset"], layout.out_dim_names())
+            # A CGA-split allocation (`CGALayout` with a non-zero basis) covers the tensor
+            # with the offset *and* the CTA index: keep both, so that the inverse is total
+            # and every CTA's bytes land in an address space of their own (`view_bytes`).
+            ins = ["offset"]
+            if layout.has_in_dim(K_BLOCK) and not layout.sublayout_is_zero(
+                [K_BLOCK], layout.out_dim_names()
+            ):
+                ins.append(K_BLOCK)
+            layout = layout.sublayout(ins, layout.out_dim_names())
             inv = layout.invert() if layout.is_invertible() else layout.pseudoinvert()
             found = (inv, len(shape) - len(suffix))
         except (EncodingParseError, LayoutError, KeyError, ValueError) as exc:
@@ -299,13 +307,17 @@ class RaceInterp(LayoutInterp):
         full = [np.full(size, origin[i], np.int64) for i in range(drop)]
         full += [np.asarray(c, np.int64) + origin[drop + i] for i, c in enumerate(coords)]
         suffix_shape = a["alloc_shape"][lead:]
-        offset = apply_many(inv, {f"dim{i}": full[lead + i] for i in range(rank - lead)})["offset"]
+        outs = apply_many(inv, {f"dim{i}": full[lead + i] for i in range(rank - lead)})
+        offset = outs["offset"]
         stage = np.zeros_like(offset)
         for i in range(lead):  # row-major over the pipelining dims
             stage = stage * a["alloc_shape"][i] + full[i]
         offset = offset + stage * int(np.prod(suffix_shape or (1,)))
-        elems = np.unique(offset.reshape(-1))
-        return (base + elems[:, None] * elem_bytes + np.arange(elem_bytes)[None, :]).reshape(-1)
+        addrs = base + offset * elem_bytes
+        if K_BLOCK in outs:  # another CTA's shared memory is another address space
+            addrs = addrs + np.asarray(outs[K_BLOCK], np.int64) * CTA_SPACE
+        elems = np.unique(addrs.reshape(-1))
+        return (elems[:, None] + np.arange(elem_bytes)[None, :]).reshape(-1)
 
     def warp_coords(self, ty: Type | None, warp: int) -> list[np.ndarray] | None:
         """The coordinates of the elements warp `warp` holds of a distributed tensor."""
@@ -533,7 +545,10 @@ def _h_regeometry(ri: RaceInterp, op: Op, args: list[Value], results: list[Value
             inv, lead = found
             rank = len(a["alloc_shape"])
             coords = {f"dim{i}": np.array([a["origin"][lead + i]]) for i in range(rank - lead)}
-            off = int(apply_many(inv, coords)["offset"][0])
+            outs = apply_many(inv, coords)
+            off = int(outs["offset"][0])
+            if K_BLOCK in outs:
+                first += int(outs[K_BLOCK][0]) * CTA_SPACE
             stage = 0
             for i in range(lead):
                 stage = stage * a["alloc_shape"][i] + a["origin"][i]
