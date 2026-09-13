@@ -1694,10 +1694,14 @@ def _local_gather(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
 
 @register("ttg.local_scatter")
 def _local_scatter(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
-    """`ttg.local_scatter %dst[%indices], %src`."""
+    """`dst[.., indices[I], ..] = values[I]` along `axis`. The pretty form reads
+    `local_scatter %dst[%indices], %values`, but the operands are declared `dst, values,
+    indices` and that is their order in the generic form (an older reading swapped the two
+    tensors: `test_scatter_padded` indexed the buffer with its values)."""
     md = _md(op, args)
-    idx = np.asarray(args[1]).astype(np.int64)
-    np.put_along_axis(md.data, idx, np.asarray(args[2]), axis=_int_attr(op, "axis"))
+    values = np.asarray(args[1])
+    idx = np.asarray(args[2]).astype(np.int64)
+    np.put_along_axis(md.data, idx, values.astype(md.data.dtype), axis=_int_attr(op, "axis"))
     return []
 
 

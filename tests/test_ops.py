@@ -1965,3 +1965,30 @@ def test_tmem_copy_keeps_the_elements_and_declines_the_scales_layout() -> None:
             op("ttng.tmem_copy", [memdesc((2, 8), "i8"), memdesc((4, 8), "i8")], []),
             [src, _tmem((4, 8), "i8")],
         )
+
+
+def test_local_scatter_takes_values_then_indices_and_local_gather_reads_them_back() -> None:
+    shared = memdesc((4, 3), "f32")
+    md = _alloc(shared)
+    values = (np.arange(12, dtype=np.float32) + 100.0).reshape(4, 3)
+    # the reverse pattern of gluon's test_scatter_padded: row i of column j lands on row
+    # (M - 1 - j - i) % M
+    idx = (3 - np.arange(3)[None, :] - np.arange(4)[:, None]) % 4
+    types = [shared, tensor((4, 3), "f32"), tensor((4, 3), "i32")]
+    evaluate(
+        op("ttg.local_scatter", types, [], attrs={"axis": 0}),
+        [md, values, idx.astype(np.int32)],
+    )
+    want = np.zeros((4, 3), np.float32)
+    np.put_along_axis(want, idx, values, axis=0)
+    assert np.array_equal(md.data, want)
+    got = one(
+        op(
+            "ttg.local_gather",
+            [shared, tensor((4, 3), "i32")],
+            tensor((4, 3), "f32"),
+            attrs={"axis": 0},
+        ),
+        [md, idx.astype(np.int32)],
+    )
+    assert np.array_equal(got, np.take_along_axis(want, idx, axis=0))
