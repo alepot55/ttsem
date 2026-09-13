@@ -960,9 +960,19 @@ def _compile_asm(
     only surfaces ttgir/llir/ptx, and :func:`ir_for_launch` also needs ttir.
     """
     options, signature, constexprs, attrs = _specialize(fn, args, kwargs, target)
-    src = ASTSource(fn=fn, signature=signature, constexprs=constexprs, attrs=attrs)
+    src = _source_class(fn)(fn=fn, signature=signature, constexprs=constexprs, attrs=attrs)
     compiled = triton.compile(src, target=target, options=options.__dict__)
     return dict(compiled.asm)
+
+
+def _source_class(fn: JITFunction) -> Any:
+    """The `ASTSource` a kernel compiles through: a Gluon kernel's frontend emits TTGIR
+    directly (`GluonASTSource`, `Language.GLUON`) and the plain one would fail to parse it."""
+    if getattr(fn, "is_gluon", lambda: False)():
+        from triton.experimental.gluon._runtime import GluonASTSource
+
+        return GluonASTSource
+    return getattr(fn, "ASTSource", None) or ASTSource
 
 
 def dump_for_launch(record: LaunchRecord, target: GPUTarget) -> str:
