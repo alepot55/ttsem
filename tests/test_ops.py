@@ -2051,7 +2051,7 @@ def test_a_gather_over_a_cluster_split_buffer_is_unsupported() -> None:
             ),
             [md, np.arange(128, dtype=np.int32)],
         )
-    # a CGA layout with only zero bases is one CTA's buffer
+    # a replicated buffer (all-zero bases) is a cluster's too: the indices may carry CTA bits
     plain = Type(
         "memdesc",
         (128,),
@@ -2059,13 +2059,17 @@ def test_a_gather_over_a_cluster_split_buffer_is_unsupported() -> None:
         encoding="#ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0], "
         "CGALayout = [[0]]}>",
     )
-    got = one(
-        op(
-            "ttg.local_gather",
-            [plain, tensor((128,), "i32")],
-            tensor((128,), "i32"),
-            attrs={"axis": 0},
-        ),
-        [md, np.arange(128, dtype=np.int32)],
+    gather = op(
+        "ttg.local_gather", [plain, tensor((128,), "i32")], tensor((128,), "i32"), attrs={"axis": 0}
     )
+    with pytest.raises(Unsupported):
+        evaluate(gather, [md, np.arange(128, dtype=np.int32)])
+    # without a CGA layout (one CTA) the gather runs
+    local = op(
+        "ttg.local_gather",
+        [memdesc((128,), "i32"), tensor((128,), "i32")],
+        tensor((128,), "i32"),
+        attrs={"axis": 0},
+    )
+    got = one(local, [md, np.arange(128, dtype=np.int32)])
     assert got.shape == (128,)

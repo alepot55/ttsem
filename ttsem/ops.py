@@ -1696,16 +1696,17 @@ def _memdesc_reinterpret(interp: Interp, op: Op, args: list[Value]) -> list[Valu
     return [MemDesc(flat[:want].reshape(ty.shape or ()), elem, dict(md.attrs))]
 
 
-_CGA_SPLIT = re.compile(r"CGALayout = \[\[[^\]]*[1-9]")
-
-
 def _cluster_wide(op: Op, i: int = 0) -> None:
-    """A shared buffer split over the CTAs of a cluster (a `CGALayout` with a non-zero basis)
-    is read and written across CTAs through DSMEM by a gather or scatter; level 1 runs one
-    CTA with a shared memory of its own and cannot say what the other CTAs' buffers hold."""
+    """In a cluster a gather or scatter addresses shared memory through DSMEM: the buffer may
+    be split over the CTAs (a `CGALayout` with a non-zero basis) or replicated with the
+    indices carrying the CTA bits (gluon's `test_shared_gather_cga` broadcast cases, all-zero
+    bases). Either way one CTA's semantics cannot say what lands; a shared encoding prints a
+    `CGALayout` only when the module has more than one CTA, so that is the test."""
     enc = op.operand_types[i].encoding or "" if i < len(op.operand_types) else ""
-    if _CGA_SPLIT.search(enc):
-        raise Unsupported(op.name, "a gather or scatter across the CTAs of a cluster (DSMEM)")
+    if "CGALayout" in enc:
+        raise Unsupported(
+            op.name, "a gather or scatter in a cluster may address another CTA (DSMEM)"
+        )
 
 
 @register("ttg.local_gather")
