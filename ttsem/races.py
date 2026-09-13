@@ -31,13 +31,22 @@ from ttsem import mlir
 from ttsem import ops as ops_mod
 from ttsem.interp2 import LayoutInterp, launch_config
 from ttsem.ir_types import Module, Op, Type
-from ttsem.layouts import EncodingParseError, drop_pipelining_dims, parse_encoding, to_linear_layout
+from ttsem.layouts import (
+    K_BLOCK,
+    EncodingParseError,
+    drop_pipelining_dims,
+    parse_encoding,
+    to_linear_layout,
+)
 from ttsem.linear_layout import LayoutError, LinearLayout
 from ttsem.memory import Memory
 from ttsem.values import Descriptor, MemDesc, Unsupported, Value, to_numpy
 
 ASYNC = "async"  # the copy engine and the tensor core: an agent that is no warp
 BARRIERS = ("ttg.barrier", "gpu.barrier")
+# Each CTA of a cluster has a shared memory of its own: an allocation split over the CGA puts
+# CTA `b`'s bytes this far from CTA 0's, beyond any offset a single CTA can address.
+CTA_SPACE = 1 << 40
 
 
 @dataclasses.dataclass
