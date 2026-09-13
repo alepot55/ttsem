@@ -41,7 +41,7 @@ def membar(text_path: Path, triton_opt: str) -> str | None:
 def ablate(text: str) -> dict:
     """Strip each barrier line on its own and count the ones whose absence races."""
     lines = text.split("\n")
-    where = [i for i, ln in enumerate(lines) if any(f'"{b}"' in ln for b in races.BARRIERS)]
+    where = [i for i, ln in enumerate(lines) if any(f'"{b}"' in ln for b in races.STRIPPED)]
     necessary = 0
     for i in where:
         candidate = "\n".join(lines[:i] + lines[i + 1 :])

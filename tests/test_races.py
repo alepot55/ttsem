@@ -113,6 +113,20 @@ def test_a_cga_split_allocation_is_modelled_per_cta() -> None:
     assert not fenced.races and fenced.barriers == 1
 
 
+CLUSTER = '    "ttng.cluster_barrier"() : () -> ()'
+RELAXED = '    "ttng.cluster_barrier"() {relaxed = true} : () -> ()'
+
+
+def test_a_cluster_barrier_orders_the_warps_unless_it_is_relaxed() -> None:
+    (fenced,) = races.detect(module("\n".join([STORE, CLUSTER, LOAD])))
+    assert fenced.status == "ok" and not fenced.races and fenced.barriers == 1
+    (relaxed,) = races.detect(module("\n".join([STORE, RELAXED, LOAD])))
+    assert relaxed.races and relaxed.barriers == 0
+    # the ablation strips the cluster barrier like any other
+    (stripped,) = races.detect(races.strip_barriers(module("\n".join([STORE, CLUSTER, LOAD]))))
+    assert stripped.races
+
+
 def test_a_warp_reading_its_own_elements_does_not_race() -> None:
     # the same layout on both sides: every warp loads exactly the bytes it stored
     same = f'    %v = "ttg.local_load"(%buf) : ({MEMDESC}) -> {TENSOR}'

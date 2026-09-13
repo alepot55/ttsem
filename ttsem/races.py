@@ -44,6 +44,11 @@ from ttsem.values import Descriptor, MemDesc, Unsupported, Value, to_numpy
 
 ASYNC = "async"  # the copy engine and the tensor core: an agent that is no warp
 BARRIERS = ("ttg.barrier", "gpu.barrier")
+# `ttng.cluster_barrier` synchronizes every warp of the cluster, a superset of the CTA barrier,
+# unless it is `relaxed`: then it orders nothing in memory (the class of triton#11404) and the
+# model does not count it. The ablation strips both kinds.
+CLUSTER_BARRIER = "ttng.cluster_barrier"
+STRIPPED = (*BARRIERS, CLUSTER_BARRIER)
 # Each CTA of a cluster has a shared memory of its own: an allocation split over the CGA puts
 # CTA `b`'s bytes this far from CTA 0's, beyond any offset a single CTA can address.
 CTA_SPACE = 1 << 40
@@ -164,9 +169,14 @@ class RaceInterp(LayoutInterp):
             raise Unsupported(
                 "steps", f"more than {self.step_budget} ops: a loop this input never leaves"
             )
-        if op.name in BARRIERS:
+        if op.name in BARRIERS or (
+            op.name == CLUSTER_BARRIER and not _bool_attr(op.attrs, "relaxed")
+        ):
             self.epoch[self.group] += 1
             self.barriers += 1
+            self.tick()
+            return
+        if op.name == CLUSTER_BARRIER:  # relaxed: no memory ordering, not a barrier here
             self.tick()
             return
         if op.name == "ttg.warp_specialize":
@@ -892,6 +902,14 @@ def _summarise(fn_name: str, ri: RaceInterp, status: str) -> Report3:
     )
 
 
+def _bool_attr(attrs: dict[str, Any], key: str) -> bool:
+    """A BoolAttr however the printer spelled it (`true`, `false`, `relaxed = true`)."""
+    value = attrs.get(key)
+    if value is None:
+        return False
+    return str(value).strip().lower() not in ("false", "0", "")
+
+
 def _attr_int(attrs: dict[str, Any], key: str) -> int | None:
     raw = attrs.get(key)
     if raw is None:
@@ -981,7 +999,7 @@ def split_modules(text: str) -> list[str]:
 
 
 def strip_barriers(text: str) -> str:
-    return "\n".join(ln for ln in text.split("\n") if not any(f'"{b}"' in ln for b in BARRIERS))
+    return "\n".join(ln for ln in text.split("\n") if not any(f'"{b}"' in ln for b in STRIPPED))
 
 
 def main() -> int:
