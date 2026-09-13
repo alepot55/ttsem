@@ -8,6 +8,8 @@ import json
 import types
 import warnings
 
+import pytest
+
 from ttsem import pytest_ttsem
 
 
@@ -68,7 +70,7 @@ def test_an_instrumented_launch_is_unsupported_not_compared(monkeypatch) -> None
 
 
 def test_the_instrumentation_mode_reads_the_knob(monkeypatch) -> None:
-    from triton import knobs
+    knobs = pytest.importorskip("triton.knobs")  # the no-wheel CI has no triton
 
     monkeypatch.setattr(knobs.compilation, "instrumentation_mode", "consan")
     assert pytest_ttsem._instrumentation_mode() == "consan"
