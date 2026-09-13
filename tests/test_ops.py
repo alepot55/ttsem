@@ -744,6 +744,45 @@ def test_descriptor_load_clips_to_the_shape() -> None:
     assert np.array_equal(got, np.array([[10.0, 0.0], [0.0, 0.0]], np.float32))
 
 
+def test_descriptor_load_rounds_f32_to_tf32_when_the_host_descriptor_asks() -> None:
+    memory = Memory()
+    half = 2.0**-11  # half a tf32 ulp at 1.0 (bit 12 of the pattern)
+    src = np.array(
+        [
+            1.0 + half,  # a tie whose tf32 lsb is even: stays 1.0
+            1.0 + 2.0**-10 + half,  # a tie whose tf32 lsb is odd: up to 1 + 2^-9
+            1.0 + half + 2.0**-20,  # above the tie: up to 1 + 2^-10
+            1.0 + half - 2.0**-20,  # below the tie: down to 1.0
+            np.nan,
+            np.inf,
+            np.float32(2.0 - 2.0**-23),  # every mantissa bit set: carries out to 2.0
+            -3.0,  # already tf32
+            0.0,
+        ],
+        np.float32,
+    )
+    memory.register(4096, src)
+    desc = Descriptor(4096, (1, 9), (16, 1), (1, 16), F32, "zero", tf32=True)
+    types = [tensordesc((1, 16), "f32"), I32, I32]
+    got = one(
+        op("tt.descriptor_load", types, tensor((1, 16), "f32")),
+        [desc, np.int32(0), np.int32(0)],
+        memory=memory,
+    )
+    want = np.array(
+        [1.0, 1.0 + 2.0**-9, 1.0 + 2.0**-10, 1.0, np.nan, np.inf, 2.0, -3.0, 0.0] + [0.0] * 7,
+        np.float32,
+    )
+    assert np.array_equal(got.view(np.uint32), want.reshape(1, 16).view(np.uint32))
+    # without the flag the bits pass through untouched
+    plain = one(
+        op("tt.descriptor_load", types, tensor((1, 16), "f32")),
+        [Descriptor(4096, (1, 9), (16, 1), (1, 16), F32, "zero"), np.int32(0), np.int32(0)],
+        memory=memory,
+    )
+    assert np.array_equal(plain[0, :9].view(np.uint32), src.view(np.uint32))
+
+
 def test_descriptor_store_clips_to_the_shape() -> None:
     memory = Memory()
     data = np.zeros(16, np.float32)

@@ -1317,6 +1317,30 @@ def _desc_fill(desc: Descriptor, dtype: np.dtype) -> np.ndarray:
     return np.array(np.nan if desc.pad == "nan" else 0).astype(dtype)
 
 
+def _desc_block(
+    interp: Interp, desc: Descriptor, ptrs: np.ndarray, mask: np.ndarray, dtype: np.dtype
+) -> np.ndarray:
+    """The block a descriptor load brings in: the lanes inside the tensor from memory, the
+    rest the fill, and every f32 rounded to tf32 when the host descriptor asked for it
+    (`round_f32_to_tf32`: `CU_TENSOR_MAP_DATA_TYPE_TFLOAT32` rounds on the way in; the
+    emulated lowering of `main` spells the same rounding out on the loaded tensor)."""
+    block = interp.memory.load(ptrs, mask, _desc_fill(desc, dtype), dtype)
+    if desc.tf32 and np.dtype(dtype) == np.float32:
+        block = _round_f32_to_tf32(block)
+    return block
+
+
+def _round_f32_to_tf32(x: np.ndarray) -> np.ndarray:
+    """Round to nearest even at bit 13 of the f32 pattern (the tf32 LSB); Inf and NaN keep
+    their bits, and a mantissa that carries out lands on the next exponent, as in
+    `RewriteTensorDescriptorToPointer.cpp`."""
+    bits = np.ascontiguousarray(x, dtype=np.float32).view(np.uint32)
+    special = (bits & np.uint32(0x7F80_0000)) == np.uint32(0x7F80_0000)
+    bias = ((bits >> np.uint32(13)) & np.uint32(1)) + np.uint32(0xFFF)
+    rounded = (bits + bias) & np.uint32(0xFFFF_E000)
+    return np.where(special, bits, rounded).astype(np.uint32).view(np.float32)
+
+
 def _gather_addressing(
     desc: Descriptor, x_offsets: Value, y_offset: Value
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -1338,7 +1362,7 @@ def _desc_gather(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     desc = _desc(op, args)
     ptrs, mask = _gather_addressing(desc, args[1], args[2])
     dtype = to_numpy(_rty(op))
-    return [interp.memory.load(ptrs, mask, _desc_fill(desc, dtype), dtype)]
+    return [_desc_block(interp, desc, ptrs, mask, dtype)]
 
 
 @register("tt.descriptor_scatter")
@@ -1354,7 +1378,7 @@ def _desc_load(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     desc = _desc(op, args)
     ptrs, mask = _desc_pointers(desc, args[1:])
     dtype = to_numpy(_rty(op))
-    return [interp.memory.load(ptrs, mask, _desc_fill(desc, dtype), dtype)]
+    return [_desc_block(interp, desc, ptrs, mask, dtype)]
 
 
 @register("tt.descriptor_store")
@@ -1883,7 +1907,7 @@ def _nvws_desc_load(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     desc, md = _desc(op, args), _md(op, args, len(args) - 1)
     ptrs, mask = _desc_pointers(desc, args[1:-1])
     dtype = md.data.dtype
-    md.data[...] = interp.memory.load(ptrs, mask, _desc_fill(desc, dtype), dtype)
+    md.data[...] = _desc_block(interp, desc, ptrs, mask, dtype)
     return []
 
 
@@ -1893,9 +1917,7 @@ def _nvws_desc_gather(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     desc, md = _desc(op, args), _md(op, args, 3)
     ptrs, mask = _gather_addressing(desc, args[1], args[2])
     dtype = md.data.dtype
-    md.data[...] = interp.memory.load(ptrs, mask, _desc_fill(desc, dtype), dtype).reshape(
-        md.data.shape
-    )
+    md.data[...] = _desc_block(interp, desc, ptrs, mask, dtype).reshape(md.data.shape)
     return []
 
 
@@ -1994,7 +2016,7 @@ def _tma_to_local(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     desc, md = _desc(op, desc_arg), _md(op, dest)
     ptrs, mask = _desc_pointers(desc, coords)
     dtype = md.data.dtype
-    md.data[...] = interp.memory.load(ptrs, mask, _desc_fill(desc, dtype), dtype)
+    md.data[...] = _desc_block(interp, desc, ptrs, mask, dtype)
     if barrier:  # the copy is done: the bytes the barrier was told to expect have landed
         _barrier(interp, op, barrier).complete_tx(int(md.data.nbytes))
         interp.progress()
@@ -2010,9 +2032,7 @@ def _tma_gather_to_local(interp: Interp, op: Op, args: list[Value]) -> list[Valu
     desc, md = _desc(op, args), _md(op, args, 4)
     ptrs, mask = _gather_addressing(desc, args[1], args[2])
     dtype = md.data.dtype
-    md.data[...] = interp.memory.load(ptrs, mask, _desc_fill(desc, dtype), dtype).reshape(
-        md.data.shape
-    )
+    md.data[...] = _desc_block(interp, desc, ptrs, mask, dtype).reshape(md.data.shape)
     _barrier(interp, op, args, 3).complete_tx(int(md.data.nbytes))
     interp.progress()
     return []

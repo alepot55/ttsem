@@ -223,6 +223,12 @@ only then multiplied, with the accumulation of `tt.dot`.
   block shape. A load clips to the shape and fills the outside with zero (or NaN when the
   descriptor says so); a store clips and drops the outside. This is what the docs promise and
   what `p4` confirms on a 91-wide tensor read in 16-element blocks.
+- A host descriptor built with `round_f32_to_tf32=True` rounds every f32 a load brings in
+  to tf32: nearest even at ten mantissa bits, Inf and NaN untouched, a carry out of the
+  mantissa landing on the next exponent. That is `CU_TENSOR_MAP_DATA_TYPE_TFLOAT32` on the
+  TMA unit and, word for word, the arithmetic `RewriteTensorDescriptorToPointer` inlines on
+  targets without TMA; stores copy the bits. The flag reaches the semantics from the host
+  object (`harness.descriptor_values`), since on TTGIR it lives only in the tensormap.
 - `tt.reinterpret_tensor_descriptor` passes a `Descriptor` through and otherwise raises
   `Unsupported`: a device descriptor is an opaque 128-byte object and its shape is not
   recoverable from the pointer at level 1.

@@ -246,6 +246,23 @@ def test_descriptor_values_flatten_shape_and_strides() -> None:
     assert [int(v) for v in vals[1:]] == [8, 16, 16, 1]
 
 
+def test_descriptor_values_carry_the_tf32_rounding_flag() -> None:
+    torch = pytest.importorskip("torch")
+    from ttsem.harness import descriptor_values
+
+    class Desc:
+        base = torch.zeros((8, 16), dtype=torch.float32)
+        shape = [8, 16]
+        strides = [16, 1]
+        block_shape = [8, 8]
+        round_f32_to_tf32 = True
+
+    assert descriptor_values(Desc(), 4096)[0].tf32 is True
+    # the emulated layout carries it as the last i1 of the head, after `padding == "nan"`
+    flat = descriptor_values(Desc(), 4096, emulated=True)
+    assert [bool(flat[5]), bool(flat[6])] == [False, True]
+
+
 def test_storage_copy_sees_through_a_reinterpret_wrapper() -> None:
     torch = pytest.importorskip("torch")
     from ttsem.harness import storage_copy

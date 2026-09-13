@@ -598,6 +598,7 @@ def descriptor_values(desc: Any, base_ptr: int, emulated: bool = False) -> list[
         elem=_elem_type(desc.base.dtype),
         pad=padding,
         unsigned=str(desc.base.dtype).removeprefix("torch.").removeprefix("tl.").startswith("uint"),
+        tf32=bool(getattr(desc, "round_f32_to_tf32", False)),
     )
     ints: list[Any] = [np.array(s, dtype=np.int32) for s in shape]
     ints += [np.array(s, dtype=np.int64) for s in strides]

@@ -48,6 +48,9 @@ class Descriptor:
     # The IR's integers are signless; a host descriptor over a `uint32` tensor and a
     # tensormap with an unsigned data type say so here, and `min`/`max` reductions listen.
     unsigned: bool = False
+    # `TensorDescriptor(round_f32_to_tf32=True)`: the TMA unit rounds every f32 it loads to
+    # tf32 (round to nearest even at 10 mantissa bits, Inf and NaN untouched); stores copy bits.
+    tf32: bool = False
 
 
 @dataclass
