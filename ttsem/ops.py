@@ -1993,6 +1993,128 @@ nop("ttng.fence_async_shared", "ttng.async_tma_store_wait")
 nop("ttng.cluster_barrier")
 
 
+# ------------------------------------------------------- ttng: tensor memory and tcgen05
+
+
+def _tokens(op: Op, skip: int = 0) -> list[Value]:
+    """Placeholders for the `!ttg.async.token` results after the first `skip` real ones."""
+    return [np.zeros((), dtype=np.int8) for _ in op.result_types[skip:]]
+
+
+@register("ttng.tmem_alloc")
+def _tmem_alloc(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """Tensor memory as a plain buffer, like `ttg.local_alloc`: the blockM/blockN/colStride of
+    the encoding are how the hardware lays the columns out, not what the elements mean."""
+    ty = _rty(op)
+    elem = ty.elem if ty.elem is not None else ty
+    data = np.zeros(ty.shape or (), dtype=to_numpy(ty))
+    if args:
+        data[...] = np.asarray(args[0])
+    return [MemDesc(data, elem), *_tokens(op, 1)]
+
+
+@register("ttng.tmem_store")
+def _tmem_store(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """`(dst, [dep], src, pred)`: the operands follow the declaration, destination first."""
+    md = _md(op, args, 0)
+    src, pred = args[-2], args[-1]
+    if bool(np.asarray(pred)):
+        md.data[...] = np.asarray(src)
+    return _tokens(op)
+
+
+@register("ttng.tmem_load")
+def _tmem_load(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    sizes = op.attrs.get("resultSegmentSizes")
+    if isinstance(sizes, (list, tuple)) and len(sizes) == 3 and int(sizes[2]):
+        raise Unsupported(op.name, "a reduction result (redOp) is not modelled")
+    md = _md(op, args, 0)
+    return [np.array(md.data, dtype=to_numpy(_rty(op))), *_tokens(op, 1)]
+
+
+@register("ttng.tmem_subslice")
+def _tmem_subslice(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """A view of `size` columns (or rows, `dim`) of a tensor-memory buffer, aliasing it."""
+    md = _md(op, args, 0)
+    dim = _int_attr(op, "dim", 1)
+    offset = _int_attr(op, "offset", 0)
+    shape = tuple(_rty(op).shape or ())
+    if len(shape) != md.data.ndim or dim >= md.data.ndim:
+        raise Unsupported(op.name, f"rank {len(shape)} slice of a rank {md.data.ndim} buffer")
+    index = [slice(None)] * md.data.ndim
+    index[dim] = slice(offset, offset + shape[dim])
+    return [MemDesc(md.data[tuple(index)], md.elem, dict(md.attrs))]
+
+
+@register("ttng.tmem_copy")
+def _tmem_copy(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """Shared to tensor memory, synchronous at level 1. With the default layout the logical
+    elements do not change; the blocked-scales layout, where 32x128b chunks are duplicated
+    over four warps, does not preserve the element count and is left unsupported."""
+    src, dst = _md(op, args, 0), _md(op, args, 1)
+    if src.data.size != dst.data.size:
+        raise Unsupported(op.name, "the blocked-scales layout (tensor_memory_scales_encoding)")
+    dst.data[...] = np.asarray(src.data).reshape(dst.data.shape).astype(dst.data.dtype)
+    return _tokens(op)
+
+
+nop("ttng.tmem_wait")
+
+
+def _mma_operand(md: MemDesc, acc_dtype: type, unsigned: bool) -> np.ndarray:
+    if is_float(md.elem):
+        x = to_float(np.asarray(md.data), md.elem).astype(acc_dtype)
+        return _to_tf32(x) if md.elem.scalar.name == "f32" else x
+    bits = np.asarray(md.data)
+    if unsigned:  # the same bytes read as unsigned integers
+        bits = bits.view(np.dtype(f"u{bits.dtype.itemsize}"))
+    return bits.astype(np.int64)
+
+
+@register("ttng.tc_gen5_mma")
+def _tc_gen5_mma(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """`d = (d if useD else 0) + a @ b`, synchronously; every barrier given (whose predicate
+    holds) sees one arrival, which is what the hardware's commit does when the MMA lands.
+    f32 operands are tf32 on the tensor core; an `ieee` dot reaches here already split into
+    the three tf32 products of its emulation."""
+    a_, b_, d_, _dep, use_d, pred, barriers, barrier_preds = _segments(op, args, 8)
+    if _attr(op, "two_ctas") is not None or _attr(op, "multicast") is not None:
+        raise Unsupported(op.name, "a two-CTA or multicast MMA spans the cluster")
+    if pred and not bool(np.asarray(pred[0])):
+        return _tokens(op)
+    a, b, d = _md(op, a_), _md(op, b_), _md(op, d_)
+    unsigned = _attr(op, "is_unsigned") is not None
+    if is_float(d.elem):
+        acc_dtype = np.float64 if d.elem.scalar.name == "f64" else np.float32
+        prod = np.matmul(_mma_operand(a, acc_dtype, False), _mma_operand(b, acc_dtype, False))
+        acc = to_float(np.asarray(d.data), d.elem).astype(acc_dtype)
+        out = prod + (acc if bool(np.asarray(use_d[0])) else 0)
+        d.data[...] = from_float(out, d.elem)
+    else:
+        prod = np.matmul(_mma_operand(a, np.int64, unsigned), _mma_operand(b, np.int64, unsigned))
+        acc = np.asarray(d.data).astype(np.int64)
+        with np.errstate(over="ignore"):
+            d.data[...] = (prod + (acc if bool(np.asarray(use_d[0])) else 0)).astype(d.data.dtype)
+    for i, bar in enumerate(barriers):
+        if i < len(barrier_preds) and not bool(np.asarray(barrier_preds[i])):
+            continue
+        _barrier(interp, op, [bar]).arrive(1)
+    if barriers:
+        interp.progress()
+    return _tokens(op)
+
+
+@register("ttng.tc_gen5_commit")
+def _tc_gen5_commit(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """Every prior MMA has already landed at level 1: the commit is one arrival."""
+    barrier, pred, _descs = _segments(op, args, 3)
+    if pred and not bool(np.asarray(pred[0])):
+        return []
+    _barrier(interp, op, barrier).arrive(1)
+    interp.progress()
+    return []
+
+
 @register("ttng.warp_group_dot")
 def _warp_group_dot(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     """A `tt.dot` whose operands may live in shared memory; the asynchrony is level 3's."""

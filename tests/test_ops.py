@@ -1790,3 +1790,178 @@ def test_local_atomic_scatter_rmw_skips_masked_positions() -> None:
         [smem, values, indices, mask],
     )
     assert np.array_equal(smem.data, np.array([[0, 7], [7, 0]], np.int32))
+
+
+# ------------------------------------------------------------ ttng: tensor memory and tcgen05
+
+TMEM = memdesc((4, 8), "f32")
+SMEM_A = memdesc((4, 8), "f16")
+SMEM_B = memdesc((8, 8), "f16")
+
+
+def _tmem(shape=(4, 8), elem="f32") -> MemDesc:
+    md = evaluate(op("ttng.tmem_alloc", [], memdesc(shape, elem)))[0]
+    assert isinstance(md, MemDesc)
+    return md
+
+
+def test_tmem_alloc_store_load_round_trip_and_the_predicate() -> None:
+    md = _tmem()
+    assert md.data.shape == (4, 8) and not md.data.any()
+    src = np.arange(32, dtype=np.float32).reshape(4, 8)
+    evaluate(
+        op("ttng.tmem_store", [TMEM, tensor((4, 8), "f32"), I1], []), [md, src, np.array(True)]
+    )
+    got = one(op("ttng.tmem_load", [TMEM], tensor((4, 8), "f32")), [md])
+    assert np.array_equal(got, src)
+    # a false predicate stores nothing
+    evaluate(
+        op("ttng.tmem_store", [TMEM, tensor((4, 8), "f32"), I1], []),
+        [md, np.zeros((4, 8), np.float32), np.array(False)],
+    )
+    assert np.array_equal(md.data, src)
+    # with a token result the load still returns the data first
+    tok_load = op(
+        "ttng.tmem_load",
+        [TMEM],
+        [tensor((4, 8), "f32"), ty("!ttg.async.token")],
+        attrs={"resultSegmentSizes": [1, 1, 0]},
+    )
+    data, _token = evaluate(tok_load, [md])
+    assert np.array_equal(data, src)
+
+
+def test_tmem_subslice_aliases_the_columns() -> None:
+    md = _tmem()
+    view = evaluate(
+        op("ttng.tmem_subslice", [TMEM], memdesc((4, 2), "f32"), attrs={"offset": 6}), [md]
+    )[0]
+    assert isinstance(view, MemDesc) and view.data.shape == (4, 2)
+    view.data[...] = 3.0
+    assert md.data[:, 6:].sum() == 24.0 and md.data[:, :6].sum() == 0.0
+
+
+def _mma_op(attrs=None, barriers=0):
+    types = [SMEM_A, SMEM_B, TMEM, I1, I1] + [BAR] * barriers + [I1] * barriers
+    return op(
+        "ttng.tc_gen5_mma",
+        types,
+        [],
+        attrs={
+            "operandSegmentSizes": [1, 1, 1, 0, 1, 1, barriers, barriers],
+            **(attrs or {}),
+        },
+    )
+
+
+def test_tc_gen5_mma_accumulates_into_tensor_memory_and_arrives() -> None:
+    a = _alloc(SMEM_A)
+    b = _alloc(SMEM_B)
+    d = _tmem()
+    a.data[...] = np.arange(32, dtype=np.float16).reshape(4, 8) / 8
+    b.data[...] = np.eye(8, dtype=np.float16) * 2
+    bar = _alloc(BAR)
+    evaluate(op("ttng.init_barrier", [BAR], [], attrs={"count": 1}), [bar])
+    machine = interp()
+    machine.scopes = [{}]
+    # useD false: the accumulator's old contents are ignored
+    d.data[...] = 100.0
+    ops_ = _mma_op(barriers=1)
+    machine.scopes = [
+        dict(
+            zip(
+                ops_.operands,
+                [a, b, d, np.array(False), np.array(True), bar, np.array(True)],
+                strict=True,
+            )
+        )
+    ]
+    machine.eval_op(ops_)
+    want = np.arange(32, dtype=np.float32).reshape(4, 8) / 8 * 2
+    assert np.array_equal(d.data, want)
+    assert machine.mbarriers[list(machine.mbarriers)[0]].passes(0), "the MMA arrived on the barrier"
+    # useD true: it adds
+    machine.scopes = [
+        dict(
+            zip(
+                ops_.operands,
+                [a, b, d, np.array(True), np.array(True), bar, np.array(True)],
+                strict=True,
+            )
+        )
+    ]
+    machine.eval_op(ops_)
+    assert np.array_equal(d.data, 2 * want)
+    # a false predicate does nothing
+    machine.scopes = [
+        dict(
+            zip(
+                ops_.operands,
+                [a, b, d, np.array(True), np.array(False), bar, np.array(True)],
+                strict=True,
+            )
+        )
+    ]
+    machine.eval_op(ops_)
+    assert np.array_equal(d.data, 2 * want)
+
+
+def test_tc_gen5_mma_f32_operands_are_tf32_and_int8_may_be_unsigned() -> None:
+    fa, fb, fd = memdesc((2, 2), "f32"), memdesc((2, 2), "f32"), memdesc((2, 2), "f32")
+    a, b, d = _alloc(fa), _alloc(fb), _alloc(memdesc((2, 2), "f32"))
+    a.data[...] = 1.0 + 2.0**-12  # below the tf32 lsb: dropped before the multiply
+    b.data[...] = np.eye(2, dtype=np.float32)
+    mma = op(
+        "ttng.tc_gen5_mma",
+        [fa, fb, fd, I1, I1],
+        [],
+        attrs={"operandSegmentSizes": [1, 1, 1, 0, 1, 1, 0, 0]},
+    )
+    evaluate(mma, [a, b, d, np.array(False), np.array(True)])
+    assert np.array_equal(d.data, np.ones((2, 2), np.float32))
+    ia, ib, idd = memdesc((1, 2), "i8"), memdesc((2, 1), "i8"), memdesc((1, 1), "i32")
+    a, b, d = _alloc(ia), _alloc(ib), _alloc(idd)
+    a.data[...] = np.array([[-1, -1]], np.int8)
+    b.data[...] = np.array([[1], [1]], np.int8)
+    signed = op(
+        "ttng.tc_gen5_mma",
+        [ia, ib, idd, I1, I1],
+        [],
+        attrs={"operandSegmentSizes": [1, 1, 1, 0, 1, 1, 0, 0]},
+    )
+    evaluate(signed, [a, b, d, np.array(False), np.array(True)])
+    assert d.data[0, 0] == -2
+    unsigned = op(
+        "ttng.tc_gen5_mma",
+        [ia, ib, idd, I1, I1],
+        [],
+        attrs={"operandSegmentSizes": [1, 1, 1, 0, 1, 1, 0, 0], "is_unsigned": True},
+    )
+    evaluate(unsigned, [a, b, d, np.array(False), np.array(True)])
+    assert d.data[0, 0] == 2 * 255
+
+
+def test_tc_gen5_commit_is_one_arrival() -> None:
+    bar = _alloc(BAR)
+    machine = interp()
+    machine.scopes = [{}]
+    init = op("ttng.init_barrier", [BAR], [], attrs={"count": 1})
+    machine.scopes = [{init.operands[0]: bar}]
+    machine.eval_op(init)
+    commit = op("ttng.tc_gen5_commit", [BAR], [], attrs={"operandSegmentSizes": [1, 0, 0]})
+    machine.scopes = [{commit.operands[0]: bar}]
+    machine.eval_op(commit)
+    assert machine.mbarriers[list(machine.mbarriers)[0]].passes(0)
+
+
+def test_tmem_copy_keeps_the_elements_and_declines_the_scales_layout() -> None:
+    src = _alloc(memdesc((2, 8), "i8"))
+    src.data[...] = np.arange(16, dtype=np.int8).reshape(2, 8)
+    dst = _tmem((4, 4), "i8")
+    evaluate(op("ttng.tmem_copy", [memdesc((2, 8), "i8"), memdesc((4, 4), "i8")], []), [src, dst])
+    assert np.array_equal(dst.data.reshape(-1), np.arange(16, dtype=np.int8))
+    with pytest.raises(Unsupported):
+        evaluate(
+            op("ttng.tmem_copy", [memdesc((2, 8), "i8"), memdesc((4, 8), "i8")], []),
+            [src, _tmem((4, 8), "i8")],
+        )

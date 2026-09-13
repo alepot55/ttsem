@@ -491,3 +491,25 @@ Welford combine leaves the 32 lanes of a warp with partials that differ in the l
 then stores them all to one word of shared memory; at TTGIR the reduction is a fold and the
 epilogue is not visible, so here the rule guards `tt.store` and `local_store` of the program
 itself, before and after every pass.
+
+## Tensor memory and tcgen05 (Blackwell)
+
+- `ttng.tmem_alloc` is a buffer like `ttg.local_alloc`: the `tensor_memory_encoding` (blockM,
+  blockN, colStride) says how the hardware spreads the columns over lanes, not what the
+  elements mean, so the semantics keeps the logical array and nothing else. `tmem_store`
+  writes it when its predicate holds, `tmem_load` reads it (a `redOp` reduction result is
+  unsupported), `tmem_subslice` is a view of `size` columns that aliases the buffer, and
+  `tmem_copy` moves elements from shared memory when the counts agree; the blocked-scales
+  layout, which duplicates every 32x128b chunk over four warps, changes the element count and
+  is declined. Tokens are placeholders: level 1 runs in program order.
+- `ttng.tc_gen5_mma` is `d = (useD ? d : 0) + a @ b`, done at once. Float operands accumulate
+  in f32 (f64 for an f64 accumulator), f32 operands lose their low 13 mantissa bits first
+  because the tensor core only multiplies tf32 (an `ieee` dot reaches the op already split into
+  the three tf32 products of its emulation, so each MMA is exact on what it is given); integer
+  operands accumulate in i32 and read as unsigned under `is_unsigned`. Every barrier operand
+  whose predicate holds receives one arrival, which is what the hardware's commit does when
+  the MMA lands; `tc_gen5_commit` is one arrival too, since every earlier MMA has already
+  landed. `two_ctas` and `multicast` span the cluster and are unsupported.
+- Checked against the CPU reference on three warp-specialized `desc_dot` programs compiled by
+  `main` for sm_100 (arefs lowered to mbarriers, `tmem_alloc`/`store`/`load`, `tc_gen5_mma`,
+  `tc_gen5_commit`): TTIR and final TTGIR both `match`.
