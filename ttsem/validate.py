@@ -136,6 +136,27 @@ def _split_modules(lines: list[str]) -> list[str]:
     return chunks
 
 
+# A stage whose printed text the compiler itself cannot re-read is not the semantics' failure:
+# the reason is named and the stage is `unsupported`, not `error`.
+_UNREADABLE = (
+    (
+        "cannot name an operation with no results",
+        "pretty printer: nvws.warp_group drops its result types (triton#11752)",
+    ),
+    (
+        "region with at least 1 blocks",
+        "transient IR of a nested pass pipeline (an empty warp_specialize.partitions)",
+    ),
+)
+
+
+def _unreadable_stage(message: str) -> str | None:
+    for signature, reason in _UNREADABLE:
+        if signature in message:
+            return reason
+    return None
+
+
 def split_dump(text: str) -> list[tuple[str, str]]:
     """``(pass_name, module_text)`` for every *whole-module* dump, in order.
 
@@ -267,7 +288,13 @@ def validate_stages(
             generic = harness.mlir.to_generic(module_text, triton_opt)
             module = harness.mlir.parse(generic)
         except Exception as e:
-            results.append(PassResult(pass_name, "error", -1, [], f"parse failed: {e!r}"))
+            reason = _unreadable_stage(str(e))
+            if reason is not None:
+                results.append(
+                    PassResult(pass_name, "unsupported", -1, [reason], f"parse failed: {e}")
+                )
+            else:
+                results.append(PassResult(pass_name, "error", -1, [], f"parse failed: {e!r}"))
             continue
         if _all_ops_unsupported(module):
             results.append(PassResult(pass_name, "unsupported", -1, ["<all ops>"], "past lowering"))

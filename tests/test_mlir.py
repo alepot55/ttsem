@@ -400,3 +400,15 @@ def test_block_arguments_may_carry_locations() -> None:
     args = module.funcs["k"].regions[0].blocks[0].args
     assert [name for name, _ in args] == ["%arg0", "%arg1"]
     assert args[1][1].kind == "ptr"
+
+
+def test_to_generic_names_the_diagnostic_when_triton_opt_cannot_read_the_text(tmp_path) -> None:
+    fake = tmp_path / "triton-opt"
+    fake.write_text(
+        '#!/bin/sh\necho "$3:90:5: error: cannot name an operation with no results" >&2\nexit 1\n'
+    )
+    fake.chmod(0o755)
+    with pytest.raises(mlir.ParseError) as info:
+        mlir.to_generic("module {\n}\n", str(fake))
+    assert "cannot name an operation with no results" in str(info.value)
+    assert "<stage>" in str(info.value)  # the temporary file's name is not the reader's business

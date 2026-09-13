@@ -968,11 +968,16 @@ def _run_triton_opt(text: str, triton_opt: str, extra: tuple[str, ...] = ()) -> 
             [triton_opt, *extra, "--mlir-print-op-generic", "--mlir-print-local-scope", path],
             capture_output=True,
             text=True,
-            check=True,
         )
-        return result.stdout
     finally:
         Path(path).unlink(missing_ok=True)
+    if result.returncode != 0:
+        # the first diagnostic names the reason (a printer that does not round-trip, a
+        # verifier constraint the printed op violates); the caller classifies on it
+        lines = [ln for ln in result.stderr.splitlines() if ln.strip()]
+        first = lines[0].replace(path, "<stage>") if lines else f"exit {result.returncode}"
+        raise ParseError(f"triton-opt cannot re-read the module: {first}")
+    return result.stdout
 
 
 from ttsem.defuse import Def, ancestors, definer, defs, parents, users  # noqa: E402,F401
