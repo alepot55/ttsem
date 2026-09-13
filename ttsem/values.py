@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+
 from ttsem.ir_types import Type
 
 
@@ -267,10 +268,11 @@ def e8m0_to_float(scale: np.ndarray) -> np.ndarray:
     """An `e8m0` scale byte as a float32 power of two: the byte *is* an f32 exponent field.
 
     Byte `b` becomes the float32 whose bit pattern is `b << 23`, so 127 is 1.0 and 0 is +0.0
-    rather than the `2**-127` of the microscaling specification. 255 comes out as an infinity
-    here, and the caller turns it into a NaN, which is where the device
-    (`DecomposeScaledBlocked::maskNan` selects a NaN) and the shipped interpreter (which stops
-    at the shift) disagree.
+    rather than the `2**-127` of the microscaling specification: that is the f16 path of
+    `DecomposeScaledBlocked::scaleTo16`; the bf16 path reads 0 as `2**-127` since triton#11624,
+    and `ops._scale_factors` applies that rule. 255 comes out as an infinity here, and the caller
+    turns it into a NaN, which is where the device (`DecomposeScaledBlocked::maskNan` selects a
+    NaN) and the shipped interpreter (which stops at the shift) disagree.
     """
     bits = viewable(np.asarray(scale)).view(np.uint8).astype(np.uint32) << np.uint32(23)
     return bits.view(np.float32)

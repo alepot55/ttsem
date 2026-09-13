@@ -20,6 +20,7 @@ from fractions import Fraction
 from typing import TYPE_CHECKING
 
 import numpy as np
+
 from ttsem.ir_types import DenseAttr, FloatBits, Op, Region, Type
 from ttsem.values import (
     Descriptor,
@@ -863,12 +864,16 @@ def _k_pack(op: Op, op_idx: int) -> bool:
     return bool(_attr(op, "lhs_k_pack" if op_idx == 0 else "rhs_k_pack", True))
 
 
-def _scale_factors(scale: Value, ty: Type) -> tuple[np.ndarray, np.ndarray]:
+def _scale_factors(scale: Value, ty: Type, compute: Type) -> tuple[np.ndarray, np.ndarray]:
     """A scale operand as float32 factors, and the mask of the entries that mean NaN.
 
     An integer scale is `e8m0` and 0xFF is its NaN; a float scale (the `f8E4M3FN` scales of
     nvfp4) decodes as itself and carries its own NaNs, which is the pair of cases
-    `DecomposeScaledBlocked::scaleTo16` and `::maskNan` distinguish.
+    `DecomposeScaledBlocked::scaleTo16` and `::maskNan` distinguish. Byte 0 depends on the
+    compute type, as `scaleTo16` does since triton#11624: in the `bf16` path the byte becomes
+    the bf16 exponent field clamped to the code 0x0040, so 0 reads as the `2**-127` of the
+    specification (a bf16 subnormal); in the `f16` path the byte becomes an f32 exponent field,
+    so 0 is +0.0 and the truncation to f16 keeps it there.
     """
     if is_float(ty):
         values = np.asarray(to_float(scale, ty), dtype=np.float32)
@@ -876,7 +881,10 @@ def _scale_factors(scale: Value, ty: Type) -> tuple[np.ndarray, np.ndarray]:
     raw = _unsigned(np.asarray(scale))
     if raw.dtype != np.uint8:
         raise Unsupported("tt.dot_scaled", f"scale stored as {ty.scalar.name}, not a byte")
-    return e8m0_to_float(raw), raw == np.uint8(0xFF)
+    factors = e8m0_to_float(raw)
+    if compute.scalar.name == "bf16":
+        factors = np.where(raw == np.uint8(0), np.float32(2.0**-127), factors)
+    return factors, raw == np.uint8(0xFF)
 
 
 def _scaled_operand(
@@ -913,7 +921,7 @@ def _scaled_operand(
         if scale is None:
             return np.asarray(decoded, dtype=np.float32)
 
-        factors, is_nan = _scale_factors(*scale)
+        factors, is_nan = _scale_factors(*scale, compute)
         if op_idx == 1:
             # "For some weird reason, we take the scale with shape as if it were coming from
             # the lhs even when it's the rhs": it is [..., N, K / group], so it transposes.

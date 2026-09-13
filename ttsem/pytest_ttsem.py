@@ -124,21 +124,25 @@ def _validate(record: Any) -> None:
         "stage": _state["stage"],
     }
     _state["launch_idx"] += 1
-    try:
-        text = harness.ir_for_launch(
-            record, _state["stage"], _target(), triton_opt=_state["triton_opt"]
-        )
-        dump_module(_state.get("dump"), text, _state["stage"])
-        cmp = harness.run_launch(record, text)
-        line.update(
-            verdict=cmp.verdict,
-            n_diff=cmp.n_diff,
-            unsupported=cmp.unsupported,
-            message=cmp.message[:300],
-            diffs=[d for d in cmp.diffs][:2],
-        )
-    except Exception as e:  # never let the checker break the suite
-        line.update(verdict="error", message=harness._describe(e)[:400])
+    # The recompile for the stage's IR repeats the frontend's warnings; a test that counts the
+    # warnings of its own launch (`test_softmax_keep_dims_deprecated`) must not see ours.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            text = harness.ir_for_launch(
+                record, _state["stage"], _target(), triton_opt=_state["triton_opt"]
+            )
+            dump_module(_state.get("dump"), text, _state["stage"])
+            cmp = harness.run_launch(record, text)
+            line.update(
+                verdict=cmp.verdict,
+                n_diff=cmp.n_diff,
+                unsupported=cmp.unsupported,
+                message=cmp.message[:300],
+                diffs=[d for d in cmp.diffs][:2],
+            )
+        except Exception as e:  # never let the checker break the suite
+            line.update(verdict="error", message=harness._describe(e)[:400])
     if _state.get("below") is not None:
         try:
             line.update(below_llvm_line(record, _state["below"]))

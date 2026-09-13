@@ -484,7 +484,16 @@ def _to_numpy(value: Any) -> np.ndarray:
         import torch
 
         bits = value.contiguous().view(getattr(torch, narrow))
-        return np.array(bits, copy=True).view(np.uint16 if narrow == "int16" else np.uint8)
+        return _host_array(bits).view(np.uint16 if narrow == "int16" else np.uint8)
+    return _host_array(value)
+
+
+def _host_array(value: Any) -> np.ndarray:
+    """A fresh numpy copy. A torch tensor goes through ``numpy()`` and not ``np.array(copy=True)``:
+    numpy 2 passes the copy keyword to ``__array__``, torch's does not take it, and the resulting
+    DeprecationWarning would land in the test whose launch is being recorded."""
+    if hasattr(value, "numpy"):
+        return np.array(value.numpy(), copy=True)
     return np.array(value, copy=True)
 
 
@@ -1030,17 +1039,31 @@ def ir_for_launch(
     return mlir.to_generic(texts[-1], None)
 
 
+def _frontend_target() -> GPUTarget:
+    """The device's target when a GPU is present, :data:`DEFAULT_CC` otherwise."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            major, minor = torch.cuda.get_device_capability()
+            return GPUTarget("cuda", major * 10 + minor, 32)
+    except Exception:  # no torch, or a stubbed one: the default is as good as any
+        pass
+    return GPUTarget("cuda", DEFAULT_CC, 32)
+
+
 def _runtime_param_names(record: LaunchRecord) -> list[str]:
     """Kernel parameter names, in ``tt.func``'s block-argument order.
 
     Not just the ones without a ``tl.constexpr`` annotation: :func:`_specialize` on this
     launch's concrete arguments is the only authority on which parameters the *compiled*
     signature actually kept (see its docstring -- a plain integer argument can specialize away
-    too). Any valid target works here since this is a frontend decision, independent of the
-    compute capability the launch happened to compile for.
+    too). The frontend decision does not depend on the compute capability, but the frontend
+    itself may refuse a target the launch never used (``clc=True`` wants sm_100+), so the
+    device's own capability is preferred when there is one.
     """
     _require_triton()
-    target = GPUTarget("cuda", DEFAULT_CC, 32)
+    target = _frontend_target()
     _options, signature, _constexprs, _attrs = _specialize(
         record.fn, record.args, record.kwargs, target
     )

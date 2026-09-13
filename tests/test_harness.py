@@ -858,3 +858,20 @@ def test_only_pad_writes_differ_excuses_the_padded_granule_and_nothing_else() ->
     want[5] = 0.0
     want[3] = 5.0  # a value the block did not have there is a mismatch too
     assert not harness._only_pad_writes_differ(Mem(), record, "out", want, got)
+
+
+def test_host_copy_of_a_torch_tensor_emits_no_warning() -> None:
+    """numpy 2 warns when `np.array(tensor, copy=True)` meets torch's `__array__`; the launch
+    being recorded may sit in a test that counts its warnings (the softmax deprecation test)."""
+    import warnings
+
+    torch = pytest.importorskip("torch")
+    x = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = harness._to_numpy(x)
+        bits = harness._to_numpy(x.to(torch.bfloat16))
+    assert caught == []
+    assert out.tolist() == [[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]] and bits.dtype == np.uint16
+    out[0, 0] = 99.0
+    assert float(x[0, 0]) == 0.0  # a copy, not a view

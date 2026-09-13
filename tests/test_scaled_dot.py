@@ -14,10 +14,11 @@ regime on purpose.
 
 from __future__ import annotations
 
-from ttsem import mlir
 import numpy as np
 import pytest
 from conftest import one, op, tensor, ty
+
+from ttsem import mlir
 from ttsem.values import Unsupported, from_float
 
 E4M3 = "f8E4M3FN"
@@ -55,14 +56,18 @@ def ref_fp8(byte: int, name: str) -> float:
     return sign * (1.0 + mantissa / (1 << mbits)) * 2.0 ** (exponent - bias)
 
 
-def ref_e8m0(byte: int) -> float:
+def ref_e8m0(byte: int, compute: str = "bf16") -> float:
     """One `e8m0` scale byte: the exponent field of an f32, so 127 is 1.0 and 255 is NaN.
 
-    Byte 0 is the zero that the shift produces, not the `2**-127` of the specification.
+    Byte 0 follows `DecomposeScaledBlocked::scaleTo16` since triton#11624: `2**-127` (a bf16
+    subnormal) when the dot computes in bf16, the zero that the shift produces when it
+    computes in f16.
     """
     if byte == 0xFF:
         return float("nan")
-    return 2.0 ** (byte - 127) if byte else 0.0
+    if byte == 0:
+        return 2.0**-127 if compute == "bf16" else 0.0
+    return 2.0 ** (byte - 127)
 
 
 def ref_decode(raw: np.ndarray, fmt: int) -> np.ndarray:
@@ -92,7 +97,12 @@ def ref_unpack(raw: np.ndarray, axis: int) -> np.ndarray:
 
 
 def ref_operand(
-    raw: np.ndarray, fmt: int, scale: np.ndarray | None, op_idx: int, k_pack: bool
+    raw: np.ndarray,
+    fmt: int,
+    scale: np.ndarray | None,
+    op_idx: int,
+    k_pack: bool,
+    compute: str = "bf16",
 ) -> np.ndarray:
     """One decoded and scaled operand, `[M, K]` for the lhs and `[K, N]` for the rhs."""
     k_dim = 1 if op_idx == 0 else 0
@@ -110,7 +120,8 @@ def ref_operand(
             # the scale is indexed [M, K / group] for the lhs and [N, K / group] for the rhs
             along_k, other = (j, i) if op_idx == 0 else (i, j)
             group = values.shape[k_dim] // scales.shape[1]
-            out[i, j] = values[i, j] * ref_e8m0(int(np.uint8(scales[other, along_k // group])))
+            byte = int(np.uint8(scales[other, along_k // group]))
+            out[i, j] = values[i, j] * ref_e8m0(byte, compute)
     return out
 
 
@@ -125,8 +136,9 @@ def reference_scaled_dot(
     lhs_k_pack: bool = True,
     rhs_k_pack: bool = True,
 ) -> np.ndarray:
-    lhs = ref_operand(a, fmt_a, a_scale, 0, lhs_k_pack)
-    rhs = ref_operand(b, fmt_b, b_scale, 1, rhs_k_pack)
+    compute = "f16" if FP16_FMT in (fmt_a, fmt_b) else "bf16"
+    lhs = ref_operand(a, fmt_a, a_scale, 0, lhs_k_pack, compute)
+    rhs = ref_operand(b, fmt_b, b_scale, 1, rhs_k_pack, compute)
     out = np.array(c, dtype=np.float64)
     for i in range(lhs.shape[0]):
         for j in range(rhs.shape[1]):
@@ -287,13 +299,15 @@ def test_scaled_dot_fast_math_leaves_the_nan_scale_as_an_infinity() -> None:
     assert np.isposinf(got[0, 0])
 
 
-def test_scaled_dot_a_zero_scale_byte_is_zero_and_not_two_to_the_minus_127() -> None:
+def test_scaled_dot_a_zero_scale_byte_is_two_to_the_minus_127_in_the_bf16_path() -> None:
+    """Two e4m3 operands compute in bf16, where byte 0 is the minimum scale since triton#11624
+    (3.8.0 read it as zero: that difference is the E8M0 item of triton#11735)."""
     a = np.tile(bytes_of(56), (1, 4))
     b = np.tile(bytes_of(56), (4, 1))
     got = run_scaled_dot(
         a, b, np.zeros((1, 1), np.float32), E4M3_FMT, E4M3_FMT, a_scale=bytes_of(0, shape=(1, 1))
     )
-    assert got[0, 0] == np.float32(0.0)
+    assert got[0, 0] == np.float32(4 * 2.0**-127)
 
 
 def test_scaled_dot_bf16_times_fp4_without_c() -> None:
@@ -462,4 +476,29 @@ def test_generic_form_carries_the_attributes_the_op_reads() -> None:
     scale, c = bytes_of(128, 126, shape=(2, 1)), np.zeros((2, 2), np.float32)
     got = one(target, [a, b, c, scale])
     want = reference_scaled_dot(a, b, c, E2M1, E2M1, a_scale=scale, rhs_k_pack=False)
+    assert np.array_equal(got, want.astype(np.float32))
+
+
+def test_scaled_dot_e8m0_byte_zero_is_the_minimum_scale_in_the_bf16_path() -> None:
+    """`test_scaled_dot_minimum_scale`: a bf16 lhs of 2**112, an e4m3 rhs of 256 under scale
+    byte 0, which is 2**-127 since triton#11624, so the 32 products of 2**-7 sum to 0.25."""
+    a = np.full((1, 32), 0x7780, dtype=np.uint16)  # bf16 2**112
+    b = np.full((32, 1), 0x78, dtype=np.uint8).astype(np.int8)  # e4m3 256.0
+    scale = bytes_of(0, shape=(1, 1))
+    c = np.zeros((1, 1), np.float32)
+    got = run_scaled_dot(a, b, c, BF16_FMT, E4M3_FMT, b_scale=scale)
+    assert got[0, 0] == np.float32(0.25)
+    want = reference_scaled_dot(a, b, c, BF16_FMT, E4M3_FMT, b_scale=scale)
+    assert np.array_equal(got, want.astype(np.float32))
+
+
+def test_scaled_dot_e8m0_byte_zero_is_zero_in_the_f16_path() -> None:
+    """The same scale byte under an f16 lhs goes through an f32 exponent field, so it is 0."""
+    a = np.ones((1, 32), dtype=np.float16)
+    b = np.full((32, 1), 0x78, dtype=np.uint8).astype(np.int8)
+    scale = bytes_of(0, shape=(1, 1))
+    c = np.zeros((1, 1), np.float32)
+    got = run_scaled_dot(a, b, c, FP16_FMT, E4M3_FMT, b_scale=scale)
+    assert got[0, 0] == np.float32(0.0)
+    want = reference_scaled_dot(a, b, c, FP16_FMT, E4M3_FMT, b_scale=scale)
     assert np.array_equal(got, want.astype(np.float32))
