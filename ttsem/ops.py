@@ -23,6 +23,9 @@ import numpy as np
 
 from ttsem.ir_types import DenseAttr, FloatBits, Op, Region, Type
 from ttsem.values import (
+    Aref,
+    ArefToken,
+    Barrier,
     Descriptor,
     MemDesc,
     Poison,
@@ -1458,6 +1461,7 @@ def _scan(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     "tt.scan.return",
     "tt.map_elementwise.return",
     "ttg.warp_yield",
+    "nvws.warp_group.yield",
 )
 def _yield(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     raise Yield(list(args))
@@ -1480,7 +1484,7 @@ def _poison(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     return [np.zeros(tuple(t.shape or ()), dtype=to_numpy(t)) for t in op.result_types]
 
 
-@register("tt.return", "ttg.warp_return")
+@register("tt.return", "ttg.warp_return", "nvws.warp_group.return")
 def _return(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     raise Yield(list(args))
 
@@ -1675,53 +1679,211 @@ nop(
     "gpu.barrier",
 )
 
-_WAIT_OPS = ("wait_barrier", "mbarrier_wait", "mbarrier.wait", "async_tma_store_wait")
-
-
-def _has_wait(region: Region) -> bool:
-    for block in region.blocks:
-        for op in block.ops:
-            if any(w in op.name for w in _WAIT_OPS):
-                return True
-            if any(_has_wait(r) for r in op.regions):
-                return True
-    return False
-
 
 @register("ttg.warp_specialize")
 def _warp_specialize(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
-    results = interp.run_region(op.regions[0], [])
+    """The default region here, every partition in a thread of its own, one running at a time
+    (`Interp.run_scheduled`): a partition gives the turn up when a barrier phase or an aref
+    slot it waits for is not there yet. The partitions are the regions of the
+    `ttg.warp_specialize.partitions` op in the second region, over its operands."""
+    tasks: list[tuple[str, Region, list[Value]]] = []
     for region in op.regions[1:]:
-        interp.run_region(region, [])
-    return results
+        for block in region.blocks:
+            for inner in block.ops:
+                if inner.name != "ttg.warp_specialize.partitions":
+                    raise Unsupported(op.name, f"unexpected {inner.name} next to the partitions")
+                captured = [interp.value(n) for n in inner.operands]
+                tasks += [
+                    (f"partition {i}", part, list(captured)) for i, part in enumerate(inner.regions)
+                ]
+    return interp.run_scheduled(op.regions[0], [], tasks)
 
 
 @register("ttg.warp_specialize.partitions")
 def _partitions(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
-    for region in op.regions:
-        if _has_wait(region):
-            raise Unsupported(
-                op.name,
-                "a partition waits on a barrier: running the partitions in order would deadlock",
-            )
-        interp.run_region(region, list(args))
+    raise Unsupported(op.name, "partitions outside a ttg.warp_specialize")
+
+
+@register("nvws.warp_group")
+def _warp_group(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """`nvws.warp_group`: the first region yields the results, the others are worker
+    partitions without arguments; scheduled like `ttg.warp_specialize`."""
+    tasks = [(f"warp group {i}", region, []) for i, region in enumerate(op.regions[1:], 1)]
+    return interp.run_scheduled(op.regions[0], [], tasks)
+
+
+# ------------------------------------------------------------- nvws: asynchronous references
+#
+# `nvws-insert-aref` turns the multi-buffered loads of a warp-specialized loop into arefs while
+# the loop is still one body with `ttg.partition` attributes; only `tritongpu-partition-loops`
+# splits it. Up to there the producer's put and the consumer's get of one iteration follow each
+# other in program order, and a slot cursor per side is the whole synchronization.
+
+
+def _aref(op: Op, args: list[Value], i: int = 0) -> Aref:
+    if i >= len(args) or not isinstance(args[i], Aref):
+        raise Unsupported(op.name, f"operand {i} is not an aref")
+    return args[i]
+
+
+def _aref_views(aref: Aref, slot: int) -> list[Value]:
+    return [b.with_data(b.data[slot]) for b in aref.buffers]
+
+
+@register("nvws.aref.create")
+def _aref_create(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    buffers = [_md(op, args, i) for i in range(len(args))]
+    if not buffers or any(b.data.ndim < 1 for b in buffers):
+        raise Unsupported(op.name, "an aref needs buffers with a depth axis")
+    depths = {int(b.data.shape[0]) for b in buffers}
+    if len(depths) != 1:
+        raise Unsupported(op.name, f"buffers of different depths {sorted(depths)}")
+    return [Aref(buffers, depths.pop())]
+
+
+def _aref_enter(interp: Interp, op: Op, args: list[Value], side: str) -> list[Value]:
+    """The producer waits for its slot to be released, the consumer for it to be published;
+    in one loop body that never blocks, across partitions it hands the turn over."""
+    aref_arg, stage, _phase = _segments(op, args, 3)
+    aref = _aref(op, aref_arg)
+    if stage:
+        slot = _scalar(stage[0]) % aref.depth
+    else:
+        slot = (aref.put_cursor if side == "put" else aref.get_cursor) % aref.depth
+    if side == "put":
+        interp.block_until(lambda: not aref.full[slot], f"{op.name} slot {slot}")
+    else:
+        interp.block_until(lambda: aref.full[slot], f"{op.name} slot {slot}")
+    return [*_aref_views(aref, slot), ArefToken(aref, slot, side)]
+
+
+def _aref_exit(interp: Interp, op: Op, args: list[Value], side: str) -> list[Value]:
+    aref = _aref(op, args)
+    if len(args) < 2 or not isinstance(args[1], ArefToken):
+        raise Unsupported(op.name, "the second operand is not the token of an enter")
+    token = args[1]
+    if side == "put":
+        aref.put_cursor += 1
+        aref.full[token.slot] = True
+    else:
+        aref.get_cursor += 1
+        aref.full[token.slot] = False
+    interp.progress()
     return []
+
+
+@register("nvws.aref.put.enter")
+def _aref_put_enter(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    return _aref_enter(interp, op, args, "put")
+
+
+@register("nvws.aref.get.enter")
+def _aref_get_enter(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    return _aref_enter(interp, op, args, "get")
+
+
+@register("nvws.aref.put.exit")
+def _aref_put_exit(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    return _aref_exit(interp, op, args, "put")
+
+
+@register("nvws.aref.get.exit")
+def _aref_get_exit(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    return _aref_exit(interp, op, args, "get")
+
+
+@register("nvws.aref.buffer")
+def _aref_buffer(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """The views of a slot already entered: the token's slot, or the explicit stage."""
+    aref = _aref(op, args)
+    if len(args) < 2 or not isinstance(args[1], ArefToken):
+        raise Unsupported(op.name, "the second operand is not the token of an enter")
+    slot = _scalar(args[2]) % aref.depth if len(args) > 2 else args[1].slot
+    return _aref_views(aref, slot)
+
+
+@register("nvws.descriptor_load")
+def _nvws_desc_load(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """`tt.descriptor_load` whose tile lands in the shared-memory operand; synchronous."""
+    desc, md = _desc(op, args), _md(op, args, len(args) - 1)
+    ptrs, mask = _desc_pointers(desc, args[1:-1])
+    dtype = md.data.dtype
+    md.data[...] = interp.memory.load(ptrs, mask, _desc_fill(desc, dtype), dtype)
+    return []
+
+
+@register("nvws.descriptor_gather")
+def _nvws_desc_gather(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    raise Unsupported(op.name, "TMA gathers are not modelled at level 1")
 
 
 # ------------------------------------------------------------- ttng: barriers and TMA copies
 
-# An mbarrier only orders the asynchronous copies against their consumers. Level 1 runs the
-# copies synchronously in program order, so every barrier op is already satisfied when it is
-# reached and none of them touches the buffer it names.
-nop(
-    "ttng.init_barrier",
-    "ttng.inval_barrier",
-    "ttng.arrive_barrier",
-    "ttng.barrier_expect",
-    "ttng.wait_barrier",
-    "ttng.fence_async_shared",
-    "ttng.async_tma_store_wait",
-)
+# An mbarrier orders the asynchronous copies and the partitions against each other. Level 1
+# runs a copy synchronously, so a phase that a copy completes is complete when the wait is
+# reached; a phase that another partition completes is what `Interp.run_scheduled` waits for.
+# The barrier state lives beside the memdesc, keyed by the address of its shared memory.
+
+
+def _barrier_key(md: MemDesc) -> int:
+    return int(md.data.__array_interface__["data"][0])
+
+
+def _barrier(interp: Interp, op: Op, args: list[Value], i: int = 0) -> Barrier:
+    md = _md(op, args, i)
+    key = _barrier_key(md)
+    if key not in interp.mbarriers:  # a barrier used before its init: one arrival per phase
+        interp.mbarriers[key] = Barrier(count=1, pending=1)
+    return interp.mbarriers[key]
+
+
+def _pred_off(args: list[Value], i: int) -> bool:
+    return i < len(args) and not bool(np.asarray(args[i]))
+
+
+@register("ttng.init_barrier")
+def _init_barrier(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    count = int(_attr(op, "count", 1))
+    interp.mbarriers[_barrier_key(_md(op, args))] = Barrier(count=count, pending=count)
+    return []
+
+
+@register("ttng.inval_barrier")
+def _inval_barrier(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    interp.mbarriers.pop(_barrier_key(_md(op, args)), None)
+    return []
+
+
+@register("ttng.arrive_barrier")
+def _arrive_barrier(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    if _pred_off(args, 1):
+        return []
+    _barrier(interp, op, args).arrive(int(_attr(op, "count", 1)))
+    interp.progress()
+    return []
+
+
+@register("ttng.barrier_expect")
+def _barrier_expect(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    if _pred_off(args, 1):
+        return []
+    _barrier(interp, op, args).expect(int(_attr(op, "size", 0)))
+    interp.progress()
+    return []
+
+
+@register("ttng.wait_barrier")
+def _wait_barrier(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    alloc, phase, pred, _deps = _segments(op, args, 4)
+    if pred and not bool(np.asarray(pred[0])):
+        return []
+    barrier = _barrier(interp, op, alloc)
+    parity = _scalar(phase[0]) & 1
+    interp.block_until(lambda: barrier.passes(parity), f"{op.name} parity {parity}")
+    return []
+
+
+nop("ttng.fence_async_shared", "ttng.async_tma_store_wait")
 
 
 nop("ttng.cluster_barrier")
@@ -1742,7 +1904,7 @@ def _warp_group_dot_wait(interp: Interp, op: Op, args: list[Value]) -> list[Valu
 @register("ttng.async_tma_copy_global_to_local")
 def _tma_to_local(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     """A synchronous `tt.descriptor_load` whose result lands in a shared-memory buffer."""
-    desc_arg, coords, offsets, _barrier, dest, pred = _segments(op, args, 6)
+    desc_arg, coords, offsets, barrier, dest, pred = _segments(op, args, 6)
     if offsets:
         raise Unsupported(op.name, "im2col offsets are not modelled at level 1")
     if pred and not bool(np.asarray(pred[0])):
@@ -1751,6 +1913,9 @@ def _tma_to_local(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     ptrs, mask = _desc_pointers(desc, coords)
     dtype = md.data.dtype
     md.data[...] = interp.memory.load(ptrs, mask, _desc_fill(desc, dtype), dtype)
+    if barrier:  # the copy is done: the bytes the barrier was told to expect have landed
+        _barrier(interp, op, barrier).complete_tx(int(md.data.nbytes))
+        interp.progress()
     return []
 
 

@@ -744,6 +744,7 @@ class _InterpretedLaunch:
     post: dict[str, np.ndarray]
     ptrs: dict[str, int]
     elems: dict[str, str] = dataclasses.field(default_factory=dict)
+    bases: dict[str, int] = dataclasses.field(default_factory=dict)
 
 
 _INTERP_RUNNER = "ttsem._interp_runner"
@@ -788,6 +789,7 @@ def _capture_interpreted(program_path: Path) -> list[_InterpretedLaunch]:
             post=item["post"],
             ptrs=item["ptrs"],
             elems=item.get("elems", {}),
+            bases=item.get("bases", {}),
         )
         for item in raw
     ]
@@ -839,6 +841,7 @@ def _capture_cpu(program_path: Path, cc: int) -> list[LaunchRecord]:
                 pre=launch.pre,
                 post=launch.post,
                 ptrs=launch.ptrs,
+                bases=launch.bases,
                 elems=launch.elems,
             )
         )

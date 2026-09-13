@@ -25,8 +25,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ttsem import mlir
 import numpy as np
+
+from ttsem import mlir
 from ttsem import ops as ops_mod
 from ttsem.interp2 import LayoutInterp, launch_config
 from ttsem.ir_types import Module, Op, Type
@@ -142,6 +143,11 @@ class RaceInterp(LayoutInterp):
         ] = {}
 
     # ------------------------------------------------------------------ dispatch
+
+    def block_until(self, ready, what: str) -> None:  # type: ignore[override]
+        """Level 3 orders the partitions with its own epochs and vector clocks and runs them
+        one after the other; the level-1 wait must not block or object here."""
+        return None
 
     def eval_op(self, op: Op) -> None:
         self.steps += 1

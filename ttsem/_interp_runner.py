@@ -18,14 +18,14 @@ import os
 
 os.environ["TRITON_INTERPRET"] = "1"
 
-import pickle  # noqa: E402
-import sys  # noqa: E402
-from pathlib import Path  # noqa: E402
-from typing import Any  # noqa: E402
+import pickle
+import sys
+from pathlib import Path
+from typing import Any
 
-from triton.runtime.interpreter import InterpretedFunction  # noqa: E402
+from triton.runtime.interpreter import InterpretedFunction
 
-from ttsem import harness  # noqa: E402
+from ttsem import harness
 
 
 def _capture(program_path: Path) -> list[dict[str, Any]]:
@@ -36,11 +36,18 @@ def _capture(program_path: Path) -> list[dict[str, Any]]:
         if warmup:
             return orig_run(self, *args, grid=grid, warmup=warmup, **kwargs)
         bound = harness._bind_names(self.arg_names, args, kwargs)
-        tensors = {name: v for name, v in bound.items() if harness._is_tensor_like(v)}
-        pre = {name: harness._to_numpy(v) for name, v in tensors.items()}
+        # the same leaves `harness.record_launch` keeps: tensors, tuple members, and the base
+        # tensor behind a host descriptor, each as its whole storage (a descriptor over a slice
+        # addresses memory outside the slice)
+        leaves = [(leaf, v) for name, v in bound.items() for leaf, v in harness._flat_args(name, v)]
+        tensors = {leaf: v for leaf, v in leaves if harness._is_tensor_like(v)}
+        tensors.update({leaf: v.base for leaf, v in leaves if harness._is_descriptor(v)})
+        copies = {name: harness.storage_copy(v) for name, v in tensors.items()}
+        pre = {name: arr for name, (_, arr) in copies.items()}
+        bases = {name: base for name, (base, _) in copies.items()}
         ptrs = {name: int(v.data_ptr()) for name, v in tensors.items()}
         result = orig_run(self, *args, grid=grid, warmup=warmup, **kwargs)
-        post = {name: harness._to_numpy(v) for name, v in tensors.items()}
+        post = {name: harness.storage_copy(v)[1] for name, v in tensors.items()}
         launches.append(
             {
                 "fn_name": self.fn.__name__,
@@ -50,8 +57,9 @@ def _capture(program_path: Path) -> list[dict[str, Any]]:
                 "bound": {k: v for k, v in bound.items() if not harness._is_tensor_like(v)},
                 "pre": pre,
                 "post": post,
-                "elems": {name: str(getattr(v, "dtype", "")) for name, v in tensors.items()},
+                "elems": {name: str(harness._unwrap(v).dtype) for name, v in tensors.items()},
                 "ptrs": ptrs,
+                "bases": bases,
             }
         )
         return result

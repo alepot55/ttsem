@@ -20,6 +20,7 @@ from conftest import (
     tensordesc,
     ty,
 )
+
 from ttsem.ir_types import DenseAttr, FloatBits, Type
 from ttsem.memory import Memory, MemoryFault
 from ttsem.values import Descriptor, MemDesc, Poison, Unsupported, from_float, to_float
@@ -904,7 +905,8 @@ BARRIER_OPS = [
     ("ttng.inval_barrier", [], {}),
     ("ttng.arrive_barrier", [], {"count": 1}),
     ("ttng.barrier_expect", [(I1, np.array(True))], {"size": 512}),
-    ("ttng.wait_barrier", [(I32, np.int32(0))], {"operandSegmentSizes": [1, 1, 0, 0]}),
+    # parity 1 on a fresh barrier: the phase before the first one counts as complete
+    ("ttng.wait_barrier", [(I32, np.int32(1))], {"operandSegmentSizes": [1, 1, 0, 0]}),
 ]
 
 
@@ -915,13 +917,21 @@ def _alloc(ty_) -> MemDesc:
 
 
 @pytest.mark.parametrize(("name", "extra", "attrs"), BARRIER_OPS)
-def test_ttng_barrier_ops_are_no_ops_and_leave_the_buffer_alone(name, extra, attrs) -> None:
+def test_ttng_barrier_ops_leave_the_buffer_alone(name, extra, attrs) -> None:
     md = _alloc(BAR)
     md.data[...] = 7
     types = [BAR, *(t for t, _ in extra)]
     args = [md, *(v for _, v in extra)]
     assert evaluate(op(name, types, [], attrs=attrs), args) == []
     assert md.data[0] == 7
+
+
+def test_a_wait_on_a_phase_nothing_completes_is_reported_outside_a_warp_specialize() -> None:
+    """Parity 0 of a fresh barrier needs an arrival; in straight-line code none can come."""
+    md = _alloc(BAR)
+    wait = op("ttng.wait_barrier", [BAR, I32], [], attrs={"operandSegmentSizes": [1, 1, 0, 0]})
+    with pytest.raises(Unsupported, match="nothing before it completes"):
+        evaluate(wait, [md, np.int32(0)])
 
 
 @pytest.mark.parametrize(
@@ -1477,6 +1487,7 @@ def test_store_with_an_all_false_mask_touches_nothing() -> None:
 
 def test_two_lanes_storing_different_values_to_one_address_is_poison() -> None:
     import pytest
+
     from ttsem.memory import Memory
     from ttsem.values import Poison
 

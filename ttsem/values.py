@@ -66,7 +66,72 @@ class MemDesc:
         return MemDesc(data, self.elem, self.attrs)
 
 
-Value = np.ndarray | Descriptor | MemDesc
+@dataclass(eq=False)
+class Aref:
+    """An `!nvws.aref`: a ring of shared-memory buffers handed from a producer to a consumer.
+
+    The buffers share their first axis, the depth of the ring. Before `nvws-lower-aref` the
+    producer's and the consumer's ops sit in one loop body in program order, so level 1 keeps a
+    cursor per side: `put.enter` takes the producer's slot and `get.enter` the consumer's, each
+    `exit` advances its side, and an explicit stage operand (after `nvws-assign-stage-phase`)
+    names the slot directly.
+    """
+
+    buffers: list[MemDesc]
+    depth: int
+    put_cursor: int = 0
+    get_cursor: int = 0
+    full: list[bool] = field(default_factory=list)  # per slot: published and not yet released
+
+    def __post_init__(self) -> None:
+        if not self.full:
+            self.full = [False] * self.depth
+
+
+@dataclass(eq=False)
+class Barrier:
+    """An mbarrier: `count` arrivals (plus the transaction bytes it was told to expect)
+    complete a phase. `wait(parity)` passes once the phase of that parity is complete, which
+    on a fresh barrier is true of parity 1 (the phase before the first one) and false of 0."""
+
+    count: int
+    pending: int
+    tx: int = 0
+    completed: int = 0
+
+    def arrive(self, n: int = 1) -> None:
+        self.pending -= n
+        self._maybe_complete()
+
+    def expect(self, nbytes: int) -> None:
+        """`mbarrier.arrive.expect_tx`: one arrival, and `nbytes` more to wait for."""
+        self.tx += nbytes
+        self.pending -= 1
+        self._maybe_complete()
+
+    def complete_tx(self, nbytes: int) -> None:
+        self.tx -= nbytes
+        self._maybe_complete()
+
+    def passes(self, parity: int) -> bool:
+        return (self.completed & 1) != (parity & 1)
+
+    def _maybe_complete(self) -> None:
+        if self.pending <= 0 and self.tx <= 0:
+            self.completed += 1
+            self.pending, self.tx = self.count, 0
+
+
+@dataclass(eq=False)
+class ArefToken:
+    """The `!ttg.async.token` an aref `enter` returns: which side entered which slot."""
+
+    aref: Aref
+    slot: int
+    side: str  # "put" or "get"
+
+
+Value = np.ndarray | Descriptor | MemDesc | Aref | ArefToken
 
 
 # name -> (exponent bits, mantissa bits, exponent bias, family)
