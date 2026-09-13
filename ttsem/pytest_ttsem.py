@@ -124,6 +124,24 @@ def _validate(record: Any) -> None:
         "stage": _state["stage"],
     }
     _state["launch_idx"] += 1
+    mode = _instrumentation_mode()
+    if mode:
+        # `fpsan` rewrites the float ops of the kernel into integer-payload equivalents and
+        # `consan` adds its own checks: an instrumented build is not the kernel's semantics,
+        # and its outputs are not what the IR says (`test_fpsan_libdevice_*` compare two
+        # instrumented outputs with each other, never with a plain run).
+        line.update(
+            verdict="unsupported",
+            n_diff=-1,
+            unsupported=[f"instrumentation mode {mode}"],
+            message="an instrumented build is not the kernel's semantics",
+            diffs=[],
+            seconds=round(time.time() - t0, 3),
+        )
+        _state["counts"]["unsupported"] += 1
+        _state["log"].write(json.dumps(line, default=str) + "\n")
+        _state["log"].flush()
+        return
     # The recompile for the stage's IR repeats the frontend's warnings; a test that counts the
     # warnings of its own launch (`test_softmax_keep_dims_deprecated`) must not see ours.
     with warnings.catch_warnings():
@@ -152,6 +170,16 @@ def _validate(record: Any) -> None:
     _state["counts"][line["verdict"]] += 1
     _state["log"].write(json.dumps(line, default=str) + "\n")
     _state["log"].flush()
+
+
+def _instrumentation_mode() -> str:
+    """The `TRITON_INSTRUMENTATION_MODE` in force for the launch (`fpsan`, `consan`), or ``""``."""
+    try:
+        from triton import knobs
+
+        return str(knobs.compilation.instrumentation_mode or "")
+    except Exception:  # an older wheel without the knob
+        return ""
 
 
 def _load_below(spec: str | None) -> Any:
