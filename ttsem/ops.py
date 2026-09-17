@@ -2134,6 +2134,43 @@ def _tc_gen5_mma(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     return _tokens(op)
 
 
+@register("ttng.tc_gen5_mma_scaled")
+def _tc_gen5_mma_scaled(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """`d = (useD ? d : 0) + matmul(scale(a, a_scale), scale(b, b_scale))`, done at once.
+
+    The operands live in shared memory and the scales in tensor memory as the logical
+    `[M, K / group]` and `[N, K / group]` arrays `tt.dot_scaled` also takes (the blocked-scales
+    TMEM layout is how the hardware stores them, `tmem_alloc` from a register tensor keeps the
+    logical array). Decoding, scaling and the NaN groups follow `tt.dot_scaled`; the products
+    accumulate in f32. `two_ctas` and `multicast` span the cluster and are unsupported."""
+    a_, b_, d_, _dep, as_, bs_, use_d, pred, barriers, barrier_preds = _segments(op, args, 10)
+    if _attr(op, "two_ctas") is not None or _attr(op, "multicast") is not None:
+        raise Unsupported(op.name, "a two-CTA or multicast MMA spans the cluster")
+    if pred and not bool(np.asarray(pred[0])):
+        return _tokens(op)
+    a, b, d = _md(op, a_), _md(op, b_), _md(op, d_)
+    a_scale, b_scale = _md(op, as_), _md(op, bs_)
+    types = op.operand_types
+    ta, tb = types[0], types[1]
+    tas, tbs = types[3 + len(_dep)], types[4 + len(_dep)]
+    fmt_a, fmt_b = _scaled_format(op, "a_type"), _scaled_format(op, "b_type")
+    compute = _SCALED_TYPES["f16" if "f16" in (fmt_a, fmt_b) else "bf16"]
+    lhs = _scaled_operand(op, (a.data, ta), (a_scale.data, tas), fmt_a, 0, compute)
+    rhs = _scaled_operand(op, (b.data, tb), (b_scale.data, tbs), fmt_b, 1, compute)
+    acc_dtype = np.float64 if d.elem.scalar.name == "f64" else np.float32
+    with np.errstate(invalid="ignore"):
+        prod = np.matmul(lhs.astype(acc_dtype), rhs.astype(acc_dtype))
+    acc = to_float(np.asarray(d.data), d.elem).astype(acc_dtype)
+    d.data[...] = from_float(prod + (acc if bool(np.asarray(use_d[0])) else 0), d.elem)
+    for i, bar in enumerate(barriers):
+        if i < len(barrier_preds) and not bool(np.asarray(barrier_preds[i])):
+            continue
+        _barrier(interp, op, [bar]).arrive(1)
+    if barriers:
+        interp.progress()
+    return _tokens(op)
+
+
 @register("ttng.tc_gen5_commit")
 def _tc_gen5_commit(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     """Every prior MMA has already landed at level 1: the commit is one arrival."""

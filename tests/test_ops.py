@@ -2073,3 +2073,38 @@ def test_a_gather_over_a_cluster_split_buffer_is_unsupported() -> None:
     )
     got = one(local, [md, np.arange(128, dtype=np.int32)])
     assert got.shape == (128,)
+
+
+def test_tc_gen5_mma_scaled_decodes_scales_and_accumulates() -> None:
+    f8 = Type("float", width=8, name="f8E4M3FN")
+    sa_ty, sb_ty, d_ty = memdesc((4, 2), "i8"), memdesc((4, 2), "i8"), memdesc((4, 4), "f32")
+    a_ty, b_ty = memdesc((4, 64), f8), memdesc((64, 4), f8)
+    rs = np.random.RandomState(3)
+    a_val = from_float(rs.choice([-2.0, -1.0, 0.5, 1.0, 1.5, 2.0], (4, 64)).astype(np.float32), f8)
+    b_val = from_float(rs.choice([-1.0, 0.5, 1.0, 2.0], (64, 4)).astype(np.float32), f8)
+    a, b, d = _alloc(a_ty), _alloc(b_ty), _tmem((4, 4), "f32")
+    a.data[...] = a_val
+    b.data[...] = b_val
+    # e8m0 scales: 127 is 1.0, 128 is 2.0, 126 is 0.5; the rhs scale is [N, K / 32]
+    sa = _tmem((4, 2), "i8")
+    sb = _tmem((4, 2), "i8")
+    sa.data[...] = np.array([[127, 128], [126, 127], [127, 127], [128, 128]], np.uint8).view(
+        np.int8
+    )
+    sb.data[...] = np.array([[127, 127], [128, 126], [127, 128], [127, 127]], np.uint8).view(
+        np.int8
+    )
+    types = [a_ty, b_ty, d_ty, sa_ty, sb_ty, I1, I1]
+    mma = op(
+        "ttng.tc_gen5_mma_scaled",
+        types,
+        [],
+        attrs={"operandSegmentSizes": [1, 1, 1, 0, 1, 1, 1, 1, 0, 0], "a_type": 0, "b_type": 0},
+    )
+    evaluate(mma, [a, b, d, sa, sb, np.array(False), np.array(True)])
+    fa = np.repeat(2.0 ** (sa.data.view(np.uint8).astype(np.float32) - 127), 32, axis=1)
+    fb = np.repeat(2.0 ** (sb.data.view(np.uint8).astype(np.float32) - 127), 32, axis=1).T
+    want = (to_float(a_val, f8) * fa) @ (to_float(b_val, f8) * fb)
+    assert np.allclose(d.data, want, rtol=0, atol=1e-4)
+    evaluate(mma, [a, b, d, sa, sb, np.array(True), np.array(True)])
+    assert np.allclose(d.data, 2 * want, rtol=0, atol=1e-4)

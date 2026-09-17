@@ -510,6 +510,11 @@ itself, before and after every pass.
   whose predicate holds receives one arrival, which is what the hardware's commit does when
   the MMA lands; `tc_gen5_commit` is one arrival too, since every earlier MMA has already
   landed. `two_ctas` and `multicast` span the cluster and are unsupported.
+- `ttng.tc_gen5_mma_scaled` is `d = (useD ? d : 0) + matmul(scale(a, a_scale), scale(b, b_scale))`
+  with the scales read from tensor memory as the logical `[M, K / group]` and `[N, K / group]`
+  arrays that `tt.dot_scaled` takes (a `tmem_alloc` from a register tensor keeps them; the
+  blocked-scales `tmem_copy` path is declined). Decoding, the scale groups and the NaN rule are
+  those of `tt.dot_scaled`; the products accumulate in f32.
 - Checked against the CPU reference on three warp-specialized `desc_dot` programs compiled by
   `main` for sm_100 (arefs lowered to mbarriers, `tmem_alloc`/`store`/`load`, `tc_gen5_mma`,
   `tc_gen5_commit`): TTIR and final TTGIR both `match`.
