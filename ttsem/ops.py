@@ -978,6 +978,20 @@ PTX_FRAGMENTS: dict[str, tuple[Any, str | None]] = {
 }
 
 
+# fragments whose result is a packed float format in an integer tensor: the buffer such a
+# result is stored to holds pairs of that format, and the comparison decodes it as such
+PACKING_FRAGMENTS: dict[str, str] = {
+    _norm_asm(
+        ".reg .b8 r; cvt.rn.satfinite.e2m1x2.f32 r, $1, $2; mov.b32 $0, {r, r, r, r};"
+    ): "e2m1x2",
+}
+
+
+def inline_asm_packs(asm: object) -> str | None:
+    """The packed format a known fragment produces in an integer result, or None."""
+    return PACKING_FRAGMENTS.get(_norm_asm(asm))
+
+
 def inline_asm_class(asm: object) -> str | None:
     """The `INEXACT_OPS` class of a known fragment, None for an exact or unknown one."""
     entry = PTX_FRAGMENTS.get(_norm_asm(asm))

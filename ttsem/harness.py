@@ -279,6 +279,9 @@ WIDE_TOLERANCE: dict[str, tuple[float, float]] = {
     # and no comparison of outputs can tell that flip from a defect below one ulp of the type.
     "f8E4M3FN": (2.0**-3, 2.0**-3),
     "f8E5M2": (2.0**-2, 2.0**-2),
+    # e2m1 pairs packed in a byte by `cvt.rn.satfinite.e2m1x2.f32`: one code is up to half the
+    # value (4 to 6), and a packed buffer is decoded to floats only in a launch that packs
+    "e2m1x2": (2.0**-1, 2.0**-1),
     # a reassociated sum of thousands of terms (a split scan's carry, a 4096-wide row) leaves an
     # absolute error of a few hundred ulp of the terms it cancelled, which may dwarf the result
     "f32": (1e-4, 1e-4),
@@ -291,6 +294,7 @@ WIDE_TOLERANCE: dict[str, tuple[float, float]] = {
 # way to memory (`test_bin_op` with `/` stores an f32 quotient into an f64 buffer, where one
 # f32 ulp is 2**29 f64 ulp).
 ULP_AS_RTOL: dict[str, float] = {
+    "e2m1x2": 2.0**-1,
     "f8E4M3FN": 2.0**-3,
     "f8E5M2": 2.0**-2,
     "bf16": 2.0**-7,
@@ -325,6 +329,12 @@ def _float_type(elem: str) -> Any:
 def _decode_floats(x: np.ndarray, policy: FloatPolicy | None) -> np.ndarray | None:
     """A buffer's elements as numpy floats, or None when the buffer does not hold floats."""
     elem = policy.elem if policy is not None else ""
+    if elem == "e2m1x2" and values is not None:
+        # two e2m1 codes per byte, the low nibble first (`unpack_fp4`); a decoded buffer has
+        # twice the elements, on both sides alike
+        codes = np.ascontiguousarray(x).view(np.uint8)
+        pairs = np.stack([codes & np.uint8(0xF), codes >> np.uint8(4)], axis=-1).reshape(-1)
+        return values.E2M1_VALUES[pairs].astype(np.float64)
     if values is not None and elem in values.FLOAT_FORMATS and elem not in ("f16", "f32", "f64"):
         return np.asarray(values.to_float(x, _float_type(elem)), dtype=np.float64)
     if np.issubdtype(x.dtype, np.floating):
@@ -374,6 +384,8 @@ class InexactScan:
 
     classes: frozenset[str] = frozenset()
     elems: frozenset[str] = frozenset()
+    # packed float formats an inline PTX fragment writes into integer tensors (`"e2m1x2"`)
+    packs: frozenset[str] = frozenset()
 
 
 def _walk_ops(ops: list[Any]) -> Any:
@@ -401,8 +413,13 @@ def scan_inexact(module: Any) -> InexactScan:
     """
     classes: set[str] = set()
     elems: set[str] = set()
+    packs: set[str] = set()
     table = _definers(module)
     for op in _walk_ops(module.ops):
+        if op.name == "tt.elementwise_inline_asm":
+            packed = _inline_asm_packs(op)
+            if packed:
+                packs.add(packed)
         if op.name == "tt.cat" and _truthy_attr(op, "can_reorder"):
             # `can_reorder = true` says the result may hold the elements in any order: the
             # semantics concatenates, a lowering may interleave, and both are the program
@@ -423,7 +440,7 @@ def scan_inexact(module: Any) -> InexactScan:
         if found or values is None:
             classes.add(cls)
             elems |= found
-    return InexactScan(frozenset(classes), frozenset(elems))
+    return InexactScan(frozenset(classes), frozenset(elems), frozenset(packs))
 
 
 def _inline_asm_class(op: Any) -> str | None:
@@ -432,6 +449,14 @@ def _inline_asm_class(op: Any) -> str | None:
     except Exception:  # the semantics is optional for the recorder
         return None
     return _ops.inline_asm_class((getattr(op, "attrs", None) or {}).get("asm_string", ""))
+
+
+def _inline_asm_packs(op: Any) -> str | None:
+    try:
+        from ttsem import ops as _ops
+    except Exception:
+        return None
+    return _ops.inline_asm_packs((getattr(op, "attrs", None) or {}).get("asm_string", ""))
 
 
 def _truthy_attr(op: Any, key: str) -> bool:
@@ -460,7 +485,13 @@ def float_policy(elem: str, scan: InexactScan) -> FloatPolicy:
     because no ulp count bounds a reassociated sum.
     """
     classes = scan.classes - {"reorder"}  # an order, not a rounding: handled by `multiset`
-    if values is None or elem not in values.FLOAT_FORMATS or not classes:
+    if elem in ("i8", "u8") and "e2m1x2" in scan.packs:
+        # a byte buffer of a launch that packs e2m1 pairs holds e2m1 pairs: decoded, a negative
+        # zero equals a positive one and a code moved by the accumulation order is one ulp
+        elem = "e2m1x2"
+    if values is None or not classes:
+        return FloatPolicy(elem)
+    if elem != "e2m1x2" and elem not in values.FLOAT_FORMATS:
         return FloatPolicy(elem)
     if classes <= {"div", "contract"}:  # a few ulp: `div.full.f32`, or one fused rounding
         # in the widest of the types the launch computes in and the buffer's own: one rounding

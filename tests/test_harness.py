@@ -928,3 +928,46 @@ def test_the_entry_function_is_the_root_of_the_call_graph() -> None:
     assert harness._entry_candidates(module, "_reduce_forward") == ["_reduce_forward_swiglu"]
     # a module of two unrelated functions still has no unique entry, unless the name decides
     assert harness._entry_candidates(module, "") == ["_reduce_forward_swiglu"]
+
+
+def test_a_byte_buffer_of_a_launch_that_packs_e2m1_is_compared_as_e2m1_pairs() -> None:
+    scan = harness.InexactScan(frozenset({"wide"}), frozenset({"f32"}), frozenset({"e2m1x2"}))
+    policy = harness.float_policy("i8", scan)
+    assert policy.elem == "e2m1x2" and policy.rtol == 0.5
+    # 0x80 is (+0, -0) and 0x00 is (+0, +0): equal as floats
+    dev = np.array([0x80, 0x6D, 0x12], dtype=np.uint8).view(np.int8)
+    ref = np.array([0x00, 0x6D, 0x12], dtype=np.uint8).view(np.int8)
+    result = harness.compare(dev, ref, policy=policy)
+    assert result["equal"] is False and result["approx"] is True and result["max_abs_err"] == 0.0
+    # one code apart (4 and 6, high nibble 6 -> 7) is one ulp; two codes apart (2 and 6) is not
+    flip = harness.compare(
+        np.array([0x76], np.uint8).view(np.int8),
+        np.array([0x66], np.uint8).view(np.int8),
+        policy=policy,
+    )
+    assert flip["approx"] is True
+    jump = harness.compare(
+        np.array([0x74], np.uint8).view(np.int8),
+        np.array([0x44], np.uint8).view(np.int8),
+        policy=policy,
+    )
+    assert jump["approx"] is False
+    # without the packing fragment the same bytes are what they say, integers, bitwise
+    plain = harness.float_policy("i8", harness.InexactScan(frozenset({"wide"}), frozenset({"f32"})))
+    assert plain.elem == "i8" and harness.compare(dev, ref, policy=plain).get("approx") is None
+
+
+def test_scan_inexact_notices_the_e2m1_packing_fragment() -> None:
+    module = _module(
+        '"tt.func"() ({\n'
+        "^bb0(%a: tensor<4xf32>, %b: tensor<4xf32>):\n"
+        '  %0 = "tt.elementwise_inline_asm"(%a, %b) <{asm_string = "{ .reg .b8 r; '
+        'cvt.rn.satfinite.e2m1x2.f32 r, $1, $2; mov.b32 $0, {r, r, r, r}; }", '
+        'constraints = "=r,f,f", packed_element = 1 : i32, pure = true}> '
+        ": (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi8>\n"
+        '  "tt.return"() : () -> ()\n'
+        '}) {sym_name = "k", function_type = (tensor<4xf32>, tensor<4xf32>) -> ()} : () -> ()'
+    )
+    scan = harness.scan_inexact(module)
+    assert scan.packs == {"e2m1x2"}
+    assert "e2m1x2" not in scan.elems

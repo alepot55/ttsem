@@ -344,7 +344,12 @@ only then multiplied, with the accumulation of `tt.dot`.
   ties to the even code, anything past 6 and every NaN saturated to +6, the sign kept, first
   operand in the high nibble) and `cvt.rn.f16x2.e2m1x2` (exact, low nibble in the low half),
   and `cvt.rn.bf16x2.ue8m0x2` (`e << 7`; byte 0 is 2**-127, byte 255 NaN). The packing
-  attribute only says how the lowering groups lanes; the semantics is elementwise.
+  attribute only says how the lowering groups lanes; the semantics is elementwise. A byte
+  buffer of a launch that contains the e2m1 packing fragment is compared as e2m1 pairs under the
+  launch's float policy (`InexactScan.packs`), the one exception to "integer buffers are
+  bitwise": decoded, a negative zero equals a positive one (the `_matmul` nvfp4 epilogue
+  produces both, by the sign of an underflowed product) and a code moved by the accumulation
+  order is one ulp of the type, `2**-1`.
   The level-3 race detector is the one client that does
   not need the value: it binds the fragment's results to zero, counts them in `Report3.opaque`,
   and still finds the races around them (87 of the 469 `triton_kernels` modules carry one).
