@@ -273,8 +273,12 @@ INEXACT_OPS: dict[str, str] = {
 WIDE_TOLERANCE: dict[str, tuple[float, float]] = {
     "f16": (1e-2, 1e-2),
     "bf16": (1e-2, 1e-2),
-    "f8E4M3FN": (1e-2, 1e-2),
-    "f8E5M2": (1e-2, 1e-2),
+    # One ulp of an fp8 type is 2**-3 or 2**-2 of the value, far more than the 1% above: the
+    # accumulation-order noise of a wide op moves an f32 result that sits at an fp8 rounding
+    # boundary to the neighbouring code (two elements in a million of a K=416 mxfp8 matmul),
+    # and no comparison of outputs can tell that flip from a defect below one ulp of the type.
+    "f8E4M3FN": (2.0**-3, 2.0**-3),
+    "f8E5M2": (2.0**-2, 2.0**-2),
     # a reassociated sum of thousands of terms (a split scan's carry, a 4096-wide row) leaves an
     # absolute error of a few hundred ulp of the terms it cancelled, which may dwarf the result
     "f32": (1e-4, 1e-4),
@@ -1143,6 +1147,30 @@ class Execution:
         return None if got is None else np.asarray(got)
 
 
+def _entry_candidates(module: Any, fn_name: str) -> list[str]:
+    """The functions of `module` that may be the launched kernel, when none carries the
+    recorded name.
+
+    A kernel that calls a `noinline` helper is a module of several `tt.func`: the entry is the
+    one no `tt.call` targets (the root of the call graph), and the recorded name, which the
+    frontend may have suffixed with the names of the functions it specialised on, is only a
+    tie-break among the roots.
+    """
+    names = list(module.funcs)
+    if len(names) <= 1:
+        return names
+    callees = set()
+    for op in _walk_ops(module.ops):
+        if op.name == "tt.call":
+            callees.add(str((getattr(op, "attrs", None) or {}).get("callee", "")).lstrip("@"))
+    roots = [n for n in names if n not in callees] or names
+    if len(roots) > 1 and fn_name:
+        named = [n for n in roots if n.startswith(fn_name)]
+        if named:
+            return named
+    return roots
+
+
 def execute(record: LaunchRecord, ir_text: str, trace_reads: bool = False) -> Execution:
     """Run ``ir_text`` (generic-form IR) on ``record``'s pre-launch state. The memory the run
     leaves behind is in the result, or ``failure`` says why it did not run to the end."""
@@ -1155,7 +1183,7 @@ def execute(record: LaunchRecord, ir_text: str, trace_reads: bool = False) -> Ex
 
     fn_name = record.fn_name
     if fn_name not in module.funcs:
-        candidates = list(module.funcs)
+        candidates = _entry_candidates(module, fn_name)
         if len(candidates) != 1:
             return Execution(
                 Comparison("error", -1, [], [], f"no unique tt.func (have {candidates})")

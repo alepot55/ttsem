@@ -892,3 +892,39 @@ def test_host_copy_of_a_torch_tensor_emits_no_warning() -> None:
     assert out.tolist() == [[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]] and bits.dtype == np.uint16
     out[0, 0] = 99.0
     assert float(x[0, 0]) == 0.0  # a copy, not a view
+
+
+def test_float_policy_wide_gives_an_fp8_buffer_one_ulp_of_its_own_type() -> None:
+    # e4m3 codes 118 and 119 are 224 and 240: one ulp apart, 6.7% apart, and the closest an
+    # accumulation-order flip at a rounding boundary can land (a K=416 mxfp8 matmul)
+    policy = harness.float_policy("f8E4M3FN", _scan({"wide"}, {"f32"}))
+    assert policy.rtol == 2.0**-3
+    dev = np.array([118, 3, 0], dtype=np.int8)
+    ref = np.array([119, 3, 0], dtype=np.int8)
+    result = harness.compare(dev, ref, policy=policy)
+    assert result["equal"] is False and result["approx"] is True
+    assert result["max_abs_err"] == 16.0
+    # two ulp are not a rounding flip
+    result = harness.compare(
+        np.array([117], dtype=np.int8), np.array([119], dtype=np.int8), policy=policy
+    )
+    assert result["approx"] is False
+
+
+def test_the_entry_function_is_the_root_of_the_call_graph() -> None:
+    module = _module(
+        '"tt.func"() ({\n'
+        "^bb0(%arg0: i32):\n"
+        '  %0 = "tt.call"(%arg0) {callee = @"triton_kernels.reduce._inner__i32"} : (i32) -> i32\n'
+        '  "tt.return"() : () -> ()\n'
+        '}) {sym_name = "_reduce_forward_swiglu", function_type = (i32) -> ()} : () -> ()\n'
+        '"tt.func"() ({\n'
+        "^bb0(%arg0: i32):\n"
+        '  "tt.return"(%arg0) : (i32) -> ()\n'
+        '}) {sym_name = "triton_kernels.reduce._inner__i32", function_type = (i32) -> i32, '
+        'sym_visibility = "private"} : () -> ()'
+    )
+    assert set(module.funcs) == {"_reduce_forward_swiglu", "triton_kernels.reduce._inner__i32"}
+    assert harness._entry_candidates(module, "_reduce_forward") == ["_reduce_forward_swiglu"]
+    # a module of two unrelated functions still has no unique entry, unless the name decides
+    assert harness._entry_candidates(module, "") == ["_reduce_forward_swiglu"]

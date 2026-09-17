@@ -347,7 +347,9 @@ only then multiplied, with the accumulation of `tt.dot`.
 - A `Poison` raised while running a launch (division by zero, `MIN / -1`, a zero loop step) is
   the verdict `poison`: the program is undefined by the semantics and the device value is not
   a reference for anything.
-- `tt.call` runs the callee's body in place (the module before inlining still has them); `ub.poison`
+- `tt.call` runs the callee's body in place (the module before inlining still has them, and a
+  `noinline` helper keeps its own `tt.func` all the way down: the kernel is then the function no
+  `tt.call` targets, the root of the call graph, whatever suffix the frontend gave its name); `ub.poison`
   is a zero of its type, so a result that depends on it differs from the device and says so.
 - `ttsem/validate.py` stops at the first module containing `llvm.func`: everything below the LLVM
   conversion is outside level 1 and is reported once as "past lowering".
@@ -382,9 +384,13 @@ below decides whether a buffer that is *not* bit-identical is `approx` or `misma
   taking it in the buffer's type would be the wrong yardstick when the result is widened on
   the way to memory: `test_bin_op` with `/` divides two integers in f32 and stores into an f64
   buffer, where one f32 ulp is 2**29 f64 ulp.
-- Anything `"wide"` moves the launch to a relative band per element type -- f16, bf16 and the
-  fp8 kinds `rtol = atol = 1e-2`, f32 and f64 `rtol = 1e-4`, `atol = 1e-5` -- because no ulp
-  count bounds a reassociated sum.
+- Anything `"wide"` moves the launch to a relative band per element type -- f16 and bf16
+  `rtol = atol = 1e-2`, f32 and f64 `rtol = atol = 1e-4`, the fp8 kinds one ulp of their own
+  type (`2**-3` for e4m3, `2**-2` for e5m2) -- because no ulp count bounds a reassociated sum,
+  and because a wide op's accumulation-order noise moves an f32 result that sits at an fp8
+  rounding boundary to the neighbouring code: two elements in a million of a K=416 mxfp8 matmul
+  (`triton_kernels/tests/test_matmul.py`), which no comparison of outputs can tell from a
+  defect below one ulp of the type.
 - The absolute tolerance is multiplied by the largest finite magnitude in the buffer. A
   reassociated sum is wrong by an amount proportional to the size of its *partial sums*, not
   to the size of the element that survives a cancellation, so a cancelled element has an
