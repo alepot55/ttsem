@@ -3596,3 +3596,52 @@ def test_ptx_ue8m0x2_to_bf16x2_matches_the_device_for_every_byte() -> None:
 def test_ptx_an_unknown_fragment_stays_out_of_scope_and_is_named() -> None:
     with pytest.raises(Unsupported, match="mov.u32"):
         one(_asm("mov.u32 $0, %smid;", [], tensor((4,), "i32"), "=r"), [])
+
+
+def test_libdevice_integer_entry_points_ffs_popc_clz() -> None:
+    x = np.array([0, 1, 2, 12, -2147483648, -1, 0x00F0], np.int32)
+    got = {
+        sym: one(
+            op("tt.extern_elementwise", [tensor((7,), "i32")], tensor((7,), "i32"), attrs=attrs),
+            [x],
+        ).tolist()
+        for sym in ("__nv_ffs", "__nv_popc", "__nv_clz")
+        for attrs in [{"symbol": sym, "libname": "", "libpath": "", "pure": True}]
+    }
+    assert got["__nv_ffs"] == [0, 1, 2, 3, 32, 1, 5]
+    assert got["__nv_popc"] == [0, 1, 1, 2, 1, 32, 4]
+    assert got["__nv_clz"] == [32, 31, 30, 28, 0, 0, 24]
+    x64 = np.array([0, 1 << 40, -1], np.int64)
+    ffsll = one(
+        op(
+            "tt.extern_elementwise",
+            [tensor((3,), "i64")],
+            tensor((3,), "i32"),
+            attrs={"symbol": "__nv_ffsll", "libname": "", "libpath": "", "pure": True},
+        ),
+        [x64],
+    )
+    assert ffsll.tolist() == [0, 41, 1]
+
+
+def test_an_inline_fragment_keeps_the_shape_of_its_operands() -> None:
+    # a scalar operand of the semantics is one value per program: no reshape to ()
+    a = np.array([1.0, -2.0, 3.0], np.float32)
+    b = np.array([-4.0, 1.0, -1.0], np.float32)
+    got = one(
+        _asm("max.NaN.xorsign.abs.f32 $0, $1, $2;", [ty("f32"), ty("f32")], ty("f32"), "=r,r,r"),
+        [a, b],
+    )
+    assert got.tolist() == [-4.0, -2.0, -3.0]
+
+
+def test_an_inline_fragment_on_true_scalars_stays_scalar() -> None:
+    got = one(
+        _asm("max.NaN.xorsign.abs.f32 $0, $1, $2;", [ty("f32"), ty("f32")], ty("f32"), "=r,r,r"),
+        [np.float32(-2.0), np.float32(1.0)],
+    )
+    assert np.asarray(got).ndim == 0 and float(got) == -2.0
+    got = one(
+        _asm("ex2.approx.ftz.f32 $0, $1;", [ty("f32")], ty("f32"), "=r, r"), [np.float32(3.0)]
+    )
+    assert np.asarray(got).ndim == 0 and float(got) == 8.0

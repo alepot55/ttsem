@@ -862,7 +862,10 @@ def _norm_asm(asm: object) -> str:
 
 
 def _f32(x: object) -> np.ndarray:
-    return np.ascontiguousarray(np.asarray(x), dtype=np.float32)
+    """The operand as float32, keeping a 0-d scalar 0-d (`ascontiguousarray` would make it 1-d,
+    and a scalar atomic downstream cannot take a one-element vector)."""
+    a = np.asarray(x, dtype=np.float32)
+    return a if a.ndim == 0 else np.ascontiguousarray(a)
 
 
 def _xorsign_abs(pick: Any) -> Any:
@@ -874,7 +877,7 @@ def _xorsign_abs(pick: Any) -> Any:
         with np.errstate(invalid="ignore"):
             mag = pick(np.abs(fa), np.abs(fb))
         sign = (fa.view(np.uint32) ^ fb.view(np.uint32)) & np.uint32(0x8000_0000)
-        out = (np.ascontiguousarray(mag).view(np.uint32) & np.uint32(0x7FFF_FFFF)) | sign
+        out = (np.asarray(mag, np.float32).view(np.uint32) & np.uint32(0x7FFF_FFFF)) | sign
         out = np.where(np.isnan(fa) | np.isnan(fb), _F32_NAN_BITS, out)
         return [out.astype(np.uint32).view(np.float32)]
 
@@ -890,7 +893,7 @@ def _ex2_approx_ftz(x: object) -> list[np.ndarray]:
     with np.errstate(over="ignore", under="ignore"):
         y = np.exp2(flushed.astype(np.float64)).astype(np.float32)
     y = np.where((y.view(np.uint32) & np.uint32(0x7F80_0000)) == 0, np.float32(0.0), y)
-    out = np.where(np.isnan(fx), _F32_NAN_BITS, np.ascontiguousarray(y).view(np.uint32))
+    out = np.where(np.isnan(fx), _F32_NAN_BITS, np.asarray(y, np.float32).view(np.uint32))
     return [out.astype(np.uint32).view(np.float32)]
 
 
@@ -1007,11 +1010,11 @@ def _inline_asm(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     if entry is None:
         raise Unsupported(op.name, f"the semantics does not model PTX: {key[:100]}")
     results = entry[0](*[np.asarray(a) for a in args])
-    out: list[Value] = []
-    for r, t in zip(results, op.result_types, strict=True):
-        arr = np.asarray(r).astype(to_numpy(t))
-        out.append(arr.reshape(tuple(t.shape)) if t.shape else arr.reshape(()))
-    return out
+    # the shape is the operands' (a scalar operand is one value per program here, so no reshape
+    # to the declared scalar type: `_p_matmul` folds a flexpoint scale with the scalar form)
+    return [
+        np.asarray(r).astype(to_numpy(t)) for r, t in zip(results, op.result_types, strict=True)
+    ]
 
 
 # --------------------------------------------------------------------- tt: microscaled dot
@@ -1204,9 +1207,61 @@ _EXTERN: dict[str, tuple[int, Callable[..., np.ndarray]]] = {
 }
 
 
+def _ffs(bits: int) -> Callable[[np.ndarray], np.ndarray]:
+    """`__nv_ffs`/`__nv_ffsll`: the 1-based position of the least significant set bit, 0 for 0."""
+
+    def fn(x: np.ndarray) -> np.ndarray:
+        u = x.astype(np.uint64) & np.uint64((1 << bits) - 1)
+        low = u & (~u + np.uint64(1))  # isolates the lowest set bit
+        pos = np.zeros(u.shape, np.int64)
+        for b in range(bits):
+            pos = np.where(low == np.uint64(1 << b), b + 1, pos)
+        return pos.astype(np.int32)
+
+    return fn
+
+
+def _popc(bits: int) -> Callable[[np.ndarray], np.ndarray]:
+    def fn(x: np.ndarray) -> np.ndarray:
+        u = x.astype(np.uint64) & np.uint64((1 << bits) - 1)
+        count = np.zeros(u.shape, np.int64)
+        for b in range(bits):
+            count += ((u >> np.uint64(b)) & np.uint64(1)).astype(np.int64)
+        return count.astype(np.int32)
+
+    return fn
+
+
+def _clz(bits: int) -> Callable[[np.ndarray], np.ndarray]:
+    def fn(x: np.ndarray) -> np.ndarray:
+        u = x.astype(np.uint64) & np.uint64((1 << bits) - 1)
+        lead = np.full(u.shape, bits, np.int64)
+        for b in range(bits):  # the highest set bit wins, so the loop runs upwards
+            lead = np.where((u >> np.uint64(b)) & np.uint64(1) == 1, bits - 1 - b, lead)
+        return lead.astype(np.int32)
+
+    return fn
+
+
+# libdevice's integer entry points, on the operands' bits: 32-bit, and `ll` for 64-bit
+_EXTERN_INT: dict[str, Callable[[np.ndarray], np.ndarray]] = {
+    "__nv_ffs": _ffs(32),
+    "__nv_ffsll": _ffs(64),
+    "__nv_popc": _popc(32),
+    "__nv_popcll": _popc(64),
+    "__nv_clz": _clz(32),
+    "__nv_clzll": _clz(64),
+}
+
+
 @register("tt.extern_elementwise")
 def _extern_elementwise(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     symbol = str(_attr(op, "symbol", ""))
+    int_fn = _EXTERN_INT.get(symbol)
+    if int_fn is not None:
+        if len(args) != 1:
+            raise Unsupported(op.name, f"{symbol} takes 1 operand, got {len(args)}")
+        return [int_fn(np.asarray(args[0])).astype(to_numpy(_rty(op)))]
     entry = _EXTERN.get(symbol)
     if entry is None:
         raise Unsupported(op.name, f"libdevice symbol {symbol!r}")
