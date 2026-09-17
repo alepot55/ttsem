@@ -48,13 +48,21 @@ def _one(program: Path, results: Path, device: str, triton_opt: str | None, cc: 
     return json.loads(out.read_text())
 
 
+def _signature(message: str) -> str:
+    """The last non-empty line of a runner's stderr: the exception, without the traceback."""
+    lines = [ln.strip() for ln in str(message).splitlines() if ln.strip()]
+    return lines[-1][:200] if lines else "unknown error"
+
+
 def summarize(reports: list[dict]) -> dict:
     per_pass: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     first_bad = collections.Counter()
     errors = 0
+    error_programs: dict[str, str] = {}
     for rep in reports:
         if "launches" not in rep:
             errors += 1
+            error_programs[str(rep.get("program", "?"))] = _signature(rep.get("error", ""))
             continue
         for launch in rep["launches"]:
             for stage in launch.get("passes", []):
@@ -66,6 +74,7 @@ def summarize(reports: list[dict]) -> dict:
         "errors": errors,
         "first_bad_pass": dict(first_bad.most_common()),
         "per_pass": {k: dict(v) for k, v in per_pass.items()},
+        "error_programs": error_programs,
     }
 
 
@@ -98,6 +107,8 @@ def main() -> None:
     (a.results / "summary.json").write_text(json.dumps(summary, indent=1))
     print(f"{summary['programs']} programs, {summary['errors']} errors")
     print("first bad pass:", summary["first_bad_pass"])
+    for sig, n in collections.Counter(summary["error_programs"].values()).most_common(5):
+        print(f"  {n} programs not captured: {sig}")
     worst = sorted(summary["per_pass"].items(), key=lambda kv: -kv[1].get("mismatch", 0))[:5]
     for name, counts in worst:
         print(f"  {counts} {name[:90]}")
