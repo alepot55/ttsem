@@ -17,12 +17,13 @@ import math
 import re
 from collections.abc import Callable, Sequence
 from fractions import Fraction
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from ttsem.ir_types import DenseAttr, FloatBits, Op, Region, Type
 from ttsem.values import (
+    E2M1_VALUES,
     Aref,
     ArefToken,
     Barrier,
@@ -843,7 +844,160 @@ def _dot(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     return [from_float(out, rty)]
 
 
-reject("tt.elementwise_inline_asm", "the semantics does not model PTX")
+# ------------------------------------------------------------------- tt: inline PTX fragments
+
+# `tt.elementwise_inline_asm` is PTX, which this semantics does not model in general. What the
+# ecosystem actually writes is a handful of single-purpose fragments (`triton_kernels`: mxfp4
+# packing, E8M0 scales, tf32 rounding, a fast exp2, a signed max; `test_core`: the tf32
+# rounding), and each has a small exact meaning, measured bit for bit on an RTX PRO 6000 on
+# 17 Sep 2026 (`ptxprobe.py`, tables in the tests). They are recognised by their normalised
+# text; anything else stays out of scope, and the run names the fragment.
+
+_F32_NAN_BITS = np.uint32(0x7FFF_FFFF)  # the canonical NaN these instructions produce
+
+
+def _norm_asm(asm: object) -> str:
+    """The fragment with braces gone and whitespace collapsed: the key of `PTX_FRAGMENTS`."""
+    return " ".join(str(asm).replace("{", " ").replace("}", " ").split())
+
+
+def _f32(x: object) -> np.ndarray:
+    return np.ascontiguousarray(np.asarray(x), dtype=np.float32)
+
+
+def _xorsign_abs(pick: Any) -> Any:
+    """`max/min.NaN.xorsign.abs.f32`: the larger (smaller) magnitude with the XOR of the two
+    signs; any NaN in gives the canonical NaN out."""
+
+    def fn(a: object, b: object) -> list[np.ndarray]:
+        fa, fb = _f32(a), _f32(b)
+        with np.errstate(invalid="ignore"):
+            mag = pick(np.abs(fa), np.abs(fb))
+        sign = (fa.view(np.uint32) ^ fb.view(np.uint32)) & np.uint32(0x8000_0000)
+        out = (np.ascontiguousarray(mag).view(np.uint32) & np.uint32(0x7FFF_FFFF)) | sign
+        out = np.where(np.isnan(fa) | np.isnan(fb), _F32_NAN_BITS, out)
+        return [out.astype(np.uint32).view(np.float32)]
+
+    return fn
+
+
+def _ex2_approx_ftz(x: object) -> list[np.ndarray]:
+    """`ex2.approx.ftz.f32`: 2**x within about an ulp (the policy's `div` class covers it),
+    subnormal inputs read as zero and subnormal results flushed to zero, NaN canonical."""
+    fx = _f32(x)
+    bits = fx.view(np.uint32)
+    flushed = np.where((bits & np.uint32(0x7F80_0000)) == 0, np.float32(0.0), fx)
+    with np.errstate(over="ignore", under="ignore"):
+        y = np.exp2(flushed.astype(np.float64)).astype(np.float32)
+    y = np.where((y.view(np.uint32) & np.uint32(0x7F80_0000)) == 0, np.float32(0.0), y)
+    out = np.where(np.isnan(fx), _F32_NAN_BITS, np.ascontiguousarray(y).view(np.uint32))
+    return [out.astype(np.uint32).view(np.float32)]
+
+
+def _cvt_tf32(away: bool) -> Any:
+    """`cvt.rn.tf32.f32` / `cvt.rna.tf32.f32`: an f32 pattern with the low 13 bits cleared,
+    rounded to nearest even or to nearest away from zero. Both keep infinities. The `rn` form
+    turns any NaN into 0x7FFFE000; the `rna` form keeps the NaN's sign and payload, masked."""
+
+    def fn(x: object) -> list[np.ndarray]:
+        bits = _f32(x).view(np.uint32).astype(np.uint64)
+        special = (bits & np.uint64(0x7F80_0000)) == np.uint64(0x7F80_0000)
+        nan = special & ((bits & np.uint64(0x007F_FFFF)) != 0)
+        bias = (
+            np.uint64(0x1000)
+            if away
+            else ((bits >> np.uint64(13)) & np.uint64(1)) + np.uint64(0xFFF)
+        )
+        rounded = (bits + bias) & np.uint64(0xFFFF_E000)
+        out = np.where(special, bits & np.uint64(0xFFFF_E000), rounded)
+        if not away:
+            out = np.where(nan, np.uint64(0x7FFF_E000), out)
+        return [out.astype(np.uint32).view(np.float32)]
+
+    return fn
+
+
+def _e2m1_nibble(x: np.ndarray) -> np.ndarray:
+    """`cvt.rn.satfinite.e2m1x2.f32` on one operand: the nearest e2m1 magnitude, ties to the
+    even code, anything past 6 (infinity included) saturated to 6, the sign kept (a negative
+    zero is 0x8), and a NaN turned into +6 (0x7) whatever its sign."""
+    fx = _f32(x)
+    grid = E2M1_VALUES[:8].astype(np.float64)
+    mag = np.abs(fx).astype(np.float64)
+    hi = np.clip(np.searchsorted(grid, mag, side="left"), 0, 7)
+    lo = np.clip(hi - 1, 0, 7)
+    with np.errstate(invalid="ignore"):
+        d_lo, d_hi = mag - grid[lo], grid[hi] - mag
+    pick_hi = (d_hi < d_lo) | ((d_hi == d_lo) & (hi % 2 == 0))
+    code = np.where(pick_hi, hi, lo)
+    code = np.where(mag > 6.0, 7, code).astype(np.uint8)
+    code = code | np.where(np.signbit(fx), np.uint8(8), np.uint8(0))
+    return np.where(np.isnan(fx), np.uint8(7), code).astype(np.uint8)
+
+
+def _e2m1x2_pack(hi: object, lo: object) -> list[np.ndarray]:
+    """The `_downcast_to_mxfp` fragment: two f32 to one byte, the first operand in the high
+    nibble, replicated four times in the b32 the kernel reads back as a u8."""
+    return [(_e2m1_nibble(hi) << np.uint8(4)) | _e2m1_nibble(lo)]
+
+
+def _e2m1x2_unpack(x: object) -> list[np.ndarray]:
+    """The `_upcast_from_mxfp` fragment: one byte to a b32 holding two f16, the low nibble in
+    the low half. Exact: every e2m1 value is an f16."""
+    codes = np.asarray(x).astype(np.uint8)
+    halves = E2M1_VALUES.astype(np.float16).view(np.uint16).astype(np.uint32)
+    return [halves[codes & np.uint8(0xF)] | (halves[codes >> np.uint8(4)] << np.uint32(16))]
+
+
+def _ue8m0_to_bf16(x: object) -> list[np.ndarray]:
+    """`cvt.rn.bf16x2.ue8m0x2`: an E8M0 byte `e` is 2**(e-127), so its bf16 is `e << 7`;
+    byte 0 is the subnormal 2**-127 (0x0040) and byte 255 is NaN (0x7FFF)."""
+    codes = np.asarray(x).astype(np.uint8).astype(np.uint16)  # the i8 view of a byte, unsigned
+    out = codes << np.uint16(7)
+    out = np.where(codes == 0, np.uint16(0x0040), out)
+    return [np.where(codes == 255, np.uint16(0x7FFF), out).astype(np.uint16)]
+
+
+# normalised fragment -> (semantics, class of `harness.INEXACT_OPS` or None when exact)
+PTX_FRAGMENTS: dict[str, tuple[Any, str | None]] = {
+    _norm_asm(k): v
+    for k, v in {
+        "max.NaN.xorsign.abs.f32 $0, $1, $2;": (_xorsign_abs(np.maximum), None),
+        "min.NaN.xorsign.abs.f32 $0, $1, $2;": (_xorsign_abs(np.minimum), None),
+        "ex2.approx.ftz.f32 $0, $1;": (_ex2_approx_ftz, "div"),
+        "cvt.rn.tf32.f32 $0, $1;": (_cvt_tf32(away=False), None),
+        "cvt.rna.tf32.f32 $0, $1;": (_cvt_tf32(away=True), None),
+        ".reg .b8 r; cvt.rn.satfinite.e2m1x2.f32 r, $1, $2; mov.b32 $0, {r, r, r, r};": (
+            _e2m1x2_pack,
+            None,
+        ),
+        ".reg .b8 in_8; .reg .f16x2 out; cvt.u8.u32 in_8, $1; cvt.rn.f16x2.e2m1x2 out, in_8; "
+        "mov.b32 $0, out;": (_e2m1x2_unpack, None),
+        "cvt.rn.bf16x2.ue8m0x2 $0, $1;": (_ue8m0_to_bf16, None),
+    }.items()
+}
+
+
+def inline_asm_class(asm: object) -> str | None:
+    """The `INEXACT_OPS` class of a known fragment, None for an exact or unknown one."""
+    entry = PTX_FRAGMENTS.get(_norm_asm(asm))
+    return entry[1] if entry else None
+
+
+@register("tt.elementwise_inline_asm")
+def _inline_asm(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    """A known fragment by its text, elementwise over the operands (the packing only says
+    how the lowering groups lanes); anything else is out of scope."""
+    key = _norm_asm(_attr(op, "asm_string", ""))
+    entry = PTX_FRAGMENTS.get(key)
+    if entry is None:
+        raise Unsupported(op.name, f"the semantics does not model PTX: {key[:100]}")
+    results = entry[0](*[np.asarray(a) for a in args])
+    out: list[Value] = []
+    for r, t in zip(results, op.result_types, strict=True):
+        arr = np.asarray(r).astype(to_numpy(t))
+        out.append(arr.reshape(tuple(t.shape)) if t.shape else arr.reshape(()))
+    return out
 
 
 # --------------------------------------------------------------------- tt: microscaled dot

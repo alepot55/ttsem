@@ -409,6 +409,8 @@ def scan_inexact(module: Any) -> InexactScan:
             classes.add("reorder")
             continue
         cls = INEXACT_OPS.get(op.name)
+        if cls is None and op.name == "tt.elementwise_inline_asm":
+            cls = _inline_asm_class(op)  # a known PTX fragment may be approximate (`ex2.approx`)
         if cls is None and op.name in ("arith.addf", "arith.subf") and table is not None:
             feeders = [table.get(id(op), {}).get(name) for name in op.operands]
             if any(
@@ -422,6 +424,14 @@ def scan_inexact(module: Any) -> InexactScan:
             classes.add(cls)
             elems |= found
     return InexactScan(frozenset(classes), frozenset(elems))
+
+
+def _inline_asm_class(op: Any) -> str | None:
+    try:
+        from ttsem import ops as _ops
+    except Exception:  # the semantics is optional for the recorder
+        return None
+    return _ops.inline_asm_class((getattr(op, "attrs", None) or {}).get("asm_string", ""))
 
 
 def _truthy_attr(op: Any, key: str) -> bool:

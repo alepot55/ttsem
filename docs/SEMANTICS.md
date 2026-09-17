@@ -332,8 +332,20 @@ only then multiplied, with the accumulation of `tt.dot`.
 
 - An unregistered op name raises `Unsupported(name)` with the op text and is collected in
   `Interp.unsupported`, so a run reports what it could not model instead of silently skipping.
-- `tt.elementwise_inline_asm` is registered as a deliberate rejection, so it reads as "out of
-  scope" rather than "not written yet". The level-3 race detector is the one client that does
+- `tt.elementwise_inline_asm` is PTX, out of scope in general: an unknown fragment raises
+  `Unsupported` with its text. Eight fragments are known by their normalised text, the ones
+  `triton_kernels` and `test_core` emit, each measured bit for bit on the device (RTX PRO 6000,
+  17 Sep 2026; the tables are in `tests/test_ops.py`): `max/min.NaN.xorsign.abs.f32` (the
+  larger or smaller magnitude with the XOR of the signs, canonical NaN out), `cvt.rn.tf32.f32`
+  (round to nearest even at bit 13, every NaN becomes `0x7FFFE000`) and `cvt.rna.tf32.f32`
+  (ties away, the NaN keeps sign and masked payload), `ex2.approx.ftz.f32` (2**x within about
+  an ulp, so the launch takes the `div` band; subnormal inputs read as zero and subnormal
+  results flush to zero), the mxfp4 pair `cvt.rn.satfinite.e2m1x2.f32` (nearest e2m1 code with
+  ties to the even code, anything past 6 and every NaN saturated to +6, the sign kept, first
+  operand in the high nibble) and `cvt.rn.f16x2.e2m1x2` (exact, low nibble in the low half),
+  and `cvt.rn.bf16x2.ue8m0x2` (`e << 7`; byte 0 is 2**-127, byte 255 NaN). The packing
+  attribute only says how the lowering groups lanes; the semantics is elementwise.
+  The level-3 race detector is the one client that does
   not need the value: it binds the fragment's results to zero, counts them in `Report3.opaque`,
   and still finds the races around them (87 of the 469 `triton_kernels` modules carry one).
 - `tt.fp_to_fp` implements round-to-nearest-even; an explicit round-toward-zero raises
