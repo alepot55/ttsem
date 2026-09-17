@@ -254,3 +254,17 @@ def test_waiting_on_the_wrong_barrier_orders_nothing() -> None:
     )
     assert report.status == "ok", report.status
     assert report.races
+
+
+def test_an_inline_ptx_fragment_is_opaque_and_does_not_hide_the_race() -> None:
+    asm = (
+        f'    %a = "tt.elementwise_inline_asm"(%r) <{{asm_string = "mov.b32 $0, $1;", '
+        f'constraints = "=r,r", packed_element = 1 : i32, pure = true}}> : ({TENSOR}) -> {TENSOR}'
+    )
+    store = f'    "ttg.local_store"(%a, %buf) : ({TENSOR}, {MEMDESC}) -> ()'
+    (report,) = races.detect(module("\n".join([asm, store, LOAD])))
+    assert report.status == "ok"
+    assert report.opaque == 1
+    assert report.races
+    (fenced,) = races.detect(module("\n".join([asm, store, BARRIER, LOAD])))
+    assert fenced.status == "ok" and not fenced.races

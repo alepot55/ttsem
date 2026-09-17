@@ -48,6 +48,9 @@ BARRIERS = ("ttg.barrier", "gpu.barrier")
 # unless it is `relaxed`: then it orders nothing in memory (the class of triton#11404) and the
 # model does not count it. The ablation strips both kinds.
 CLUSTER_BARRIER = "ttng.cluster_barrier"
+# Ops whose values the level-1 semantics does not define and the detector does not need: they
+# yield zeros here, counted per run in `Report3.opaque`.
+OPAQUE_OPS = frozenset({"tt.elementwise_inline_asm"})
 STRIPPED = (*BARRIERS, CLUSTER_BARRIER)
 # Each CTA of a cluster has a shared memory of its own: an allocation split over the CGA puts
 # CTA `b`'s bytes this far from CTA 0's, beyond any offset a single CTA can address.
@@ -87,6 +90,7 @@ class Report3:
     pairs: dict[tuple[str, str], int]  # (op text a, op text b) -> number of racing warp pairs
     status: str  # "ok" | "unsupported: ..." | "error: ..."
     gaps: dict[str, str]  # op name -> why its byte set was the whole view
+    opaque: int = 0  # inline PTX fragments whose results were taken as zero (see `OPAQUE_OPS`)
 
 
 # ----------------------------------------------------------------------------- layouts
@@ -132,6 +136,7 @@ class RaceInterp(LayoutInterp):
         self.epoch: dict[int, int] = {0: 0}
         self.barriers = 0
         self.implicit_barriers = 0  # scratch-using ops, whose lowering carries a bar.sync
+        self.opaque = 0  # results of `OPAQUE_OPS` bound to zero
         self.accesses: list[Access] = []
         self.by_epoch: dict[tuple[int, int], list[Access]] = {}  # (group, epoch) -> accesses
         self.seen: set[tuple[int, int, str, str, str, int]] = set()  # a loop repeats its accesses
@@ -181,6 +186,16 @@ class RaceInterp(LayoutInterp):
             return
         if op.name == "ttg.warp_specialize":
             self._warp_specialize(op)
+            return
+        if op.name in OPAQUE_OPS:
+            # The detector needs the footprint of the shared-memory accesses, not the value a
+            # PTX fragment computes (a conversion, a rounding, a packed multiply): its results
+            # are bound to zero and counted, so a race under them is still found and a byte
+            # set that depended on them is at worst the zero offset. `triton_kernels` has one
+            # in 87 of its 469 modules.
+            self.opaque += 1
+            zeros = [np.zeros(tuple(t.shape or ()), dtype=to_numpy(t)) for t in op.result_types]
+            self.bind_results(op, zeros)
             return
         if (
             "allocation.offset" in op.attrs
@@ -898,7 +913,14 @@ def _summarise(fn_name: str, ri: RaceInterp, status: str) -> Report3:
     for race in ri.races:
         pairs[(race.first.op[:120], race.second.op[:120])] += 1
     return Report3(
-        fn_name, len(ri.accesses), ri.barriers, ri.races, dict(pairs), status, dict(ri.gaps)
+        fn_name,
+        len(ri.accesses),
+        ri.barriers,
+        ri.races,
+        dict(pairs),
+        status,
+        dict(ri.gaps),
+        ri.opaque,
     )
 
 

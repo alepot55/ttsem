@@ -92,6 +92,7 @@ def main() -> int:
                 "accesses": sum(r.accesses for r in reports),
                 "barriers": sum(r.barriers for r in reports),
                 "gaps": sorted({g for r in reports for g in r.gaps})[:6],
+                "opaque": sum(r.opaque for r in reports),
             }
         if args.ablate and row.get("with", {}).get("status") == "ok":
             row["ablation"] = ablate(text)
@@ -101,6 +102,8 @@ def main() -> int:
         if "ablation" in row:
             counts += f" needed={row['ablation']['necessary']}/{row['ablation']['barriers']}"
         more = f"acc={wo.get('accesses', '-'):<5} bar={w.get('barriers', '-'):<3}"
+        if w.get("opaque"):
+            more += f" opaque={w['opaque']}"
         status = w.get("status", row["status"])[:60]
         print(f"{flag:<9} {row['file']:<34} {counts} {more} {status}", flush=True)
         rows.append(row)

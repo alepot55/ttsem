@@ -333,7 +333,9 @@ only then multiplied, with the accumulation of `tt.dot`.
 - An unregistered op name raises `Unsupported(name)` with the op text and is collected in
   `Interp.unsupported`, so a run reports what it could not model instead of silently skipping.
 - `tt.elementwise_inline_asm` is registered as a deliberate rejection, so it reads as "out of
-  scope" rather than "not written yet".
+  scope" rather than "not written yet". The level-3 race detector is the one client that does
+  not need the value: it binds the fragment's results to zero, counts them in `Report3.opaque`,
+  and still finds the races around them (87 of the 469 `triton_kernels` modules carry one).
 - `tt.fp_to_fp` implements round-to-nearest-even; an explicit round-toward-zero raises
   `Unsupported` rather than quietly rounding the other way.
 - `tt.print` appends to `Interp.output` instead of writing to stdout, so a harness run over a
