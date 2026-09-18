@@ -87,9 +87,13 @@ except ImportError:
     mlir = None  # type: ignore[assignment]
 
 try:
-    from ttsem.memory import Memory  # type: ignore[import-not-found]
+    from ttsem.memory import Memory, MemoryFault  # type: ignore[import-not-found]
 except ImportError:
     Memory = None  # type: ignore[assignment, misc]
+
+    class MemoryFault(Exception):  # type: ignore[no-redef]
+        """Placeholder used only while ``memory.py`` does not exist yet."""
+
 
 try:
     from ttsem.interp import Interp, Unsupported  # type: ignore[import-not-found]
@@ -757,8 +761,9 @@ def target_for(device: str, cc: int) -> GPUTarget:
     raise ValueError(f"unsupported device {device!r}")
 
 
-def _run_program(program_path: Path, device: str) -> None:
-    """Import ``program_path`` fresh and call its ``main()`` as if run as a script."""
+def _run_program(program_path: Path, device: str, extra_argv: tuple[str, ...] = ()) -> None:
+    """Import ``program_path`` fresh and call its ``main()`` as if run as a script, with
+    ``extra_argv`` after the device and output arguments (the last occurrence wins)."""
     module_name = f"_ttsem_prog_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, program_path)
     if spec is None or spec.loader is None:
@@ -772,7 +777,7 @@ def _run_program(program_path: Path, device: str) -> None:
             raise RuntimeError(f"{program_path} has no main()")
         with tempfile.TemporaryDirectory(prefix="ttsem-out-") as tmp:
             out_path = str(Path(tmp) / "out.npy")
-            sys.argv = [str(program_path), "--device", device, "--out", out_path]
+            sys.argv = [str(program_path), "--device", device, "--out", out_path, *extra_argv]
             module.main()
     finally:
         sys.argv = old_argv
@@ -1212,9 +1217,13 @@ def _entry_candidates(module: Any, fn_name: str) -> list[str]:
     return roots
 
 
-def execute(record: LaunchRecord, ir_text: str, trace_reads: bool = False) -> Execution:
+def execute(
+    record: LaunchRecord, ir_text: str, trace_reads: bool = False, raise_faults: bool = False
+) -> Execution:
     """Run ``ir_text`` (generic-form IR) on ``record``'s pre-launch state. The memory the run
-    leaves behind is in the result, or ``failure`` says why it did not run to the end."""
+    leaves behind is in the result, or ``failure`` says why it did not run to the end.
+    With ``raise_faults`` a memory fault or a poison leaves as the exception it is, notes and
+    all, for a caller that reports it to the author of the kernel (`sanitize.py`)."""
     if not SEMANTICS_AVAILABLE:
         return Execution(Comparison("error", -1, [], [], "mlir/memory/interp not available yet"))
     try:
@@ -1266,11 +1275,15 @@ def execute(record: LaunchRecord, ir_text: str, trace_reads: bool = False) -> Ex
     try:
         interp.run_grid(fn_name, arg_values)
     except values.Poison as e:
+        if raise_faults:
+            raise
         return Execution(Comparison("poison", -1, [], [], f"undefined by the semantics: {e}"))
     except Unsupported as e:
         unsupported = sorted(set(getattr(interp, "unsupported", None) or [str(e)]))
         return Execution(Comparison("unsupported", -1, [], unsupported, str(e)))
     except Exception as e:
+        if raise_faults and isinstance(e, MemoryFault):
+            raise
         return Execution(Comparison("error", -1, [], [], _describe(e)))
 
     unsupported = sorted(set(getattr(interp, "unsupported", None) or []))

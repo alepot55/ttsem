@@ -35,9 +35,16 @@ UNSIGNED_RMW = ("umax", "umin")
 
 
 class MemoryFault(Exception):
-    def __init__(self, addr: int) -> None:
+    """An access outside every registered buffer. `addrs` are all the unmapped addresses of the
+    access and `kind` says whether it was a read or a write, for a caller that wants to tell
+    the author of the kernel which buffer was overrun and by how much (`sanitize.py`)."""
+
+    def __init__(self, addr: int, addrs: np.ndarray | None = None, itemsize: int = 1) -> None:
         super().__init__(f"unmapped address 0x{addr:x}")
         self.addr = addr
+        self.addrs = np.array([addr], dtype=np.int64) if addrs is None else addrs
+        self.itemsize = itemsize
+        self.kind = ""
 
 
 def _reject_conflicting_lanes(addrs: np.ndarray, raw: np.ndarray) -> None:
@@ -114,11 +121,15 @@ class Memory:
         off = addrs - np.array(self._bases, dtype=np.int64)[idx]
         bad |= (off < 0) | (off + itemsize > sizes)
         if bad.any():
-            raise MemoryFault(int(addrs[bad][0]))
+            raise MemoryFault(int(addrs[bad][0]), np.asarray(addrs[bad], dtype=np.int64), itemsize)
         return idx, off
 
     def _read(self, addrs: np.ndarray, dtype: np.dtype) -> np.ndarray:
-        idx, off = self._resolve(addrs, dtype.itemsize)
+        try:
+            idx, off = self._resolve(addrs, dtype.itemsize)
+        except MemoryFault as fault:
+            fault.kind = "read"
+            raise
         raw = np.zeros((addrs.size, dtype.itemsize), dtype=np.uint8)
         span = np.arange(dtype.itemsize, dtype=np.int64)
         for b in np.unique(idx):
@@ -129,7 +140,11 @@ class Memory:
     def _write(self, addrs: np.ndarray, vals: np.ndarray) -> None:
         if addrs.size == 0:  # a store whose mask is false everywhere touches nothing
             return
-        idx, off = self._resolve(addrs, vals.dtype.itemsize)
+        try:
+            idx, off = self._resolve(addrs, vals.dtype.itemsize)
+        except MemoryFault as fault:
+            fault.kind = "write"
+            raise
         raw = np.ascontiguousarray(vals).view(np.uint8).reshape(addrs.size, -1)
         _reject_conflicting_lanes(addrs, raw)
         span = np.arange(vals.dtype.itemsize, dtype=np.int64)
