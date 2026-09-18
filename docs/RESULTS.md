@@ -791,10 +791,30 @@ low or high nibble), which the targeted rerun above, with the comparison in plac
 The race step of the stopped pre-fragment rerun (`corpus-kernels2`) died with its tmux session; the races of the
 final corpus are those of `corpus-kernels3`.
 
-Not read yet. Three results of this session were still running when the link to the machine dropped and are **not
-in the numbers above**: the rerun of the 207 failing node ids with the scalar-safe fragments (`corpus-rerun2`, expected
-to clear the 174 `_p_matmul` errors; the first rerun, with the reshape removed but 0-d scalars still promoted, had 184
-errors), the race detector over the 4,572 dumps of `corpus-kernels3`, and the device check of the `has_tma_gather` gate.
+Read on 18 Sep, when the link to the machine came back. The rerun of the 207 failing node ids with the scalar-safe
+fragments of `53f2aeb` (`corpus-rerun2`): **1,098 launches, 1,098 match** (the first rerun had 184 errors). The race
+detector over the 4,572 dumps of `corpus-kernels3`: 4,265 ran, 781 race without barriers and **6 with them, all a gap
+of the detector**: three `_p_matmul` kernels, twice each, where a `ttg.local_alloc` and a cross-warp `ttg.local_load` of
+the same buffer have only a `ttng.arrive_barrier` between them. The arrive has block-level semantics: its lowering emits
+a `ttg.barrier` of the group in front of the PTX arrive whatever the predicate (`BarrierOpToLLVM.cpp`), and Membar
+counts the op among the barriers (`getLocalBarrierStages`); the detector counted only the arrival (`723c8ff`). With the
+arrive counted, the same 4,572 dumps: 4,288 ran, **0 race with barriers**, 779 without.
+
+The `has_tma_scatter` gate on the device (GPU 1, the 288 node ids that ptxas rejected): on the untouched tree 3 of 3
+controls fail with `.tile::scatter4`; with the gate **280 pass and 8 fail, none on `scatter4`**, and under the validator
+the same run records **1,808 launches: 1,664 match, 144 approx, 0 mismatch**, so the non-TMA scatter path of sm_120
+agrees with the semantics. The 8 that still fail (mxfp4 x mxfp4 and nvfp4 x nvfp4 `_p_matmul`) are a crash of `main`
+that the scatter failure was hiding: `tritongpu-optimize-partition-warps` clears the encodings of a partition and
+reruns the layout assignment, a `ttg.convert_layout` already in the partition keeps unencoded types because the TTG
+dialect is legal as a whole in that conversion, and `remove-layout-conversions` dereferences the null encoding in
+`isConvertTrivial` (from `CanonicalizeConvertFromTranspose`). Reproduced with `triton-opt` alone on the 336-line module
+and on a ten-line hand-written one. Reported as triton#11860 with the
+fix as triton#11861 (`relayout-tritongpu` forwards the source of a `convert_layout` that lost its encodings): on the
+device the 8 cases pass, all 288 pass with both patches, and the lit suite is 302 of 302.
+
+`minimize.py --crash` took the 336 lines to 11 in two seconds, and the 11 were a different failure: a region the
+reduction had emptied, which the verifier rejects, counted as "the pass fails". Crash mode now keeps only candidates
+that fail with the signature of the first failure and that `triton-opt` accepts on their own (`2a6e163`).
 
 Coverage gaps this corpus measured: kernels that store through a table of raw device addresses (the recorder sees
 only the launch's own arguments), the fpsan embed/unembed ops, the Hopper value-layout PTX fragment
