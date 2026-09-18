@@ -139,3 +139,45 @@ def test_crash_mode_keeps_what_makes_the_pass_fail() -> None:
     assert '"tt.load"' in red.before and red.lines_to < red.lines_from
     assert minimize.well_formed(red.before)
     assert minimize.pass_argument("tritongpu-fuse-nested-loops") == "tritongpu-fuse-nested-loops"
+
+
+def test_crash_mode_keeps_the_same_failure_not_any_failure() -> None:
+    """A candidate that fails for another reason (a module the verifier rejects, say) is not
+    the crash being reduced: the first failure's signature is the one every survivor has."""
+    generic = (FIXTURES / "p1.ttir.generic").read_text()
+
+    def brittle_pass(text: str) -> str:
+        if '"tt.store"' not in text:
+            raise RuntimeError("<stage>:4:5: error: the verifier rejects a kernel with no store")
+        if '"tt.load"' in text:
+            raise RuntimeError("PLEASE submit a bug report: the pass segfaults on a load")
+        return text
+
+    red = minimize.reduce(None, generic, brittle_pass, crash=True)
+    assert '"tt.load"' in red.before and '"tt.store"' in red.before
+    assert red.lines_to < red.lines_from
+
+
+def test_crash_mode_asks_the_verifier_about_every_candidate() -> None:
+    generic = (FIXTURES / "p1.ttir.generic").read_text()
+    asked: list[str] = []
+
+    def brittle_pass(text: str) -> str:
+        if '"tt.load"' in text:
+            raise RuntimeError("the pass asserts on a load")
+        return text
+
+    def verifier(text: str) -> None:
+        asked.append(text)
+        if '"tt.store"' not in text:
+            raise RuntimeError("no store")
+
+    red = minimize.reduce(None, generic, brittle_pass, crash=True, verify=verifier)
+    assert asked and '"tt.store"' in red.before and '"tt.load"' in red.before
+
+
+def test_failure_signatures_ignore_positions_and_numbers() -> None:
+    a = minimize.failure_signature("<stage>:12:7: error: 'tt.load' op operand #0 must be ptr")
+    b = minimize.failure_signature("<stage>:4:31: error: 'tt.load' op operand #1 must be ptr")
+    assert a == b
+    assert a != minimize.failure_signature("PLEASE submit a bug report to https://github.com/")

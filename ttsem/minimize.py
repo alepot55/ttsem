@@ -184,6 +184,14 @@ class Reduction:
     lines_to: int
 
 
+def failure_signature(message: str) -> str:
+    """What a failure is, without where it is: the first line of the message with positions
+    and numbers blanked, so that the same diagnostic on a smaller module compares equal and a
+    different one (the verifier on a candidate the reduction broke) does not."""
+    first = next((ln for ln in message.splitlines() if ln.strip()), "")
+    return re.sub(r"\d+", "N", first).strip()
+
+
 def reduce(
     record: harness.LaunchRecord | None,
     module_text: str,
@@ -191,12 +199,16 @@ def reduce(
     interesting: Interesting | None = None,
     max_trials: int = 20_000,
     crash: bool = False,
+    verify: Callable[[str], Any] | None = None,
 ) -> Reduction:
     """Greedy reduction to a fixpoint, largest spans first, two transforms per op: delete it,
     or replace it by the zero constant of its result type (which frees everything it used).
 
     A candidate survives when it still parses with every operand defined, the pass accepts it,
-    and ``interesting(candidate, pass(candidate))`` holds."""
+    and ``interesting(candidate, pass(candidate))`` holds. In crash mode the property is that
+    the pass fails *the way it failed on the module as given* (`failure_signature`), on a
+    candidate that ``verify`` accepts: a module the reduction made invalid fails too, and is
+    not the crash."""
     if interesting is None and not crash:
         if record is None:
             raise ValueError("a record is needed to compare meanings; use crash=True without one")
@@ -204,12 +216,26 @@ def reduce(
         def interesting(before: str, after: str) -> bool:
             return meaning_changed(record, before, after)
 
+    signature: list[str] = []  # of the failure on the module as given (crash mode)
+
     def holds(text: str) -> tuple[bool, str]:
         """(the property holds on `text`, the pass's output or '')."""
         try:
             out = run_pass(text)
-        except Exception:
-            return crash, ""  # in crash mode a failing pass is the property itself
+        except Exception as exc:
+            if not crash:
+                return False, ""
+            # in crash mode a failing pass is the property itself, if it is the same failure
+            if not signature:
+                signature.append(failure_signature(str(exc)))
+            elif failure_signature(str(exc)) != signature[0]:
+                return False, ""
+            if verify is not None:
+                try:
+                    verify(text)
+                except Exception:
+                    return False, ""
+            return True, ""
         if crash:
             return False, out
         assert interesting is not None
@@ -438,7 +464,11 @@ def main() -> int:
             return 2
         before = mlir.to_generic(args.module.read_text(), args.triton_opt)
         runner = pass_runner(args.stage, args.triton_opt, pre=pre)
-        reduction = reduce(None, before, runner, crash=True)
+
+        def verifies(text: str) -> None:
+            mlir._run_triton_opt(text, args.triton_opt)
+
+        reduction = reduce(None, before, runner, crash=True, verify=verifies)
         lines = f"{reduction.lines_from} -> {reduction.lines_to} lines"
         print(f"{args.stage}: {lines}, {reduction.trials} trials")
         witness = strip_locs(reduction.before)
