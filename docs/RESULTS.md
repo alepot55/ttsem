@@ -812,6 +812,11 @@ and on a ten-line hand-written one. Reported as triton#11860 with the
 fix as triton#11861 (`relayout-tritongpu` forwards the source of a `convert_layout` that lost its encodings): on the
 device the 8 cases pass, all 288 pass with both patches, and the lit suite is 302 of 302.
 
+With both patches in place the whole `triton_kernels/tests` on the card (plain pytest, 6 min 49 s): 8,406 passed, 147
+failed, **every failure an `OutOfResources` of the 99 KB shared memory of sm_120**, none in a pass and none in ptxas
+(the unpatched tree: 8,098 passed; the `fpsan` and fused-comm failures of `corpus-kernels3` were the plugin's, not
+upstream's). The 8 fixed cases under the validator: 96 launches, 96 match.
+
 `minimize.py --crash` took the 336 lines to 11 in two seconds, and the 11 were a different failure: a region the
 reduction had emptied, which the verifier rejects, counted as "the pass fails". Crash mode now keeps only candidates
 that fail with the signature of the first failure and that `triton-opt` accepts on their own (`2a6e163`).
