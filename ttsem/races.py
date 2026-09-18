@@ -704,6 +704,11 @@ def _h_init_barrier(ri: RaceInterp, op: Op, args: list[Value], results: list[Val
 
 
 def _h_arrive_barrier(ri: RaceInterp, op: Op, args: list[Value], results: list[Value]) -> None:
+    # The arrive has block-level semantics: its lowering puts a `ttg.barrier` of the group in
+    # front of the PTX arrive, whatever the predicate, and Membar counts the op as a barrier
+    # (`getLocalBarrierStages`). Only the arrival itself is predicated.
+    ri.epoch[ri.group] += 1
+    ri.implicit_barriers += 1
     if _predicated_off(op, args, 2):
         return
     ri.arrive(_barrier_key(_md_arg(args, 0)))

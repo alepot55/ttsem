@@ -256,6 +256,25 @@ def test_waiting_on_the_wrong_barrier_orders_nothing() -> None:
     assert report.races
 
 
+def test_an_arrive_orders_the_warps_of_its_group() -> None:
+    """`ttng.arrive_barrier` lowers with a `ttg.barrier` of its own in front of the PTX arrive
+    ("Arrive has block-level semantics", `BarrierOpToLLVM.cpp`), predicated or not, and Membar
+    counts it as a barrier (`getLocalBarrierStages`). `_p_matmul` of `triton_kernels` has a
+    store and a cross-warp load with only the arrive between them."""
+    bar = f'    %bar = "ttg.local_alloc"() {{allocation.offset = 1024 : i32}} : () -> {BARDESC}'
+    arrive = f'    "ttng.arrive_barrier"(%bar) <{{count = 1 : i32}}> : ({BARDESC}) -> ()'
+    (report,) = races.detect(module("\n".join([bar, STORE, arrive, LOAD])))
+    assert report.status == "ok", report.status
+    assert not report.races, [(r.first.op[:40], r.second.op[:40]) for r in report.races]
+    off = '    %off = "arith.constant"() <{value = false}> : () -> i1'
+    predicated = (
+        f'    "ttng.arrive_barrier"(%bar, %off) <{{count = 1 : i32}}> : ({BARDESC}, i1) -> ()'
+    )
+    (report,) = races.detect(module("\n".join([bar, off, STORE, predicated, LOAD])))
+    assert report.status == "ok", report.status
+    assert not report.races, "the barrier in front of the arrive does not depend on the predicate"
+
+
 def test_an_inline_ptx_fragment_is_opaque_and_does_not_hide_the_race() -> None:
     asm = (
         f'    %a = "tt.elementwise_inline_asm"(%r) <{{asm_string = "mov.b32 $0, $1;", '
