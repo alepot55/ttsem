@@ -714,3 +714,87 @@ Gaps left: level 2 has no checks on the tensor-memory ops; `tc_gen5_mma_scaled` 
 blocked-scales `tmem_copy`; DSMEM (cluster gathers, multicast MMA); the reduction tree order under
 cancellation (`test_reduction_matches_loop`: 1e20 + 1 - 1e20 + 1, the device's tree gives 0, the
 program order 1; a cancellation-aware band would call it approx); `tmem_load` with `redOp`.
+
+## 17 Sep: `main` bde7dafd6 on sm_120, the `triton_kernels` corpus and its inline PTX
+
+`main` bde7dafd6 built from source on an RTX PRO 6000 (sm_120), two GPUs: GPU 1 for the suite corpora, GPU 0 for
+layoutfuzz seed 32, shared with another user's jobs.
+Incident: `python/triton_kernels/tests/conftest.py` rewrites `CUDA_VISIBLE_DEVICES` per xdist worker
+(`gw<n>` -> `n % torch.cuda.device_count()`), so under an outer `CUDA_VISIBLE_DEVICES=1` all 8 workers landed on the
+physical GPU 0, next to the other jobs (97 of 98 GB used; the last 42 `loops` per-pass captures on GPU 0 died of CUDA
+OOM). Killed after eight minutes; the conftest's `TRITON_TEST_NUM_GPUS` short-circuit avoids it; the fix that indexes
+into the caller's list is triton#11831.
+
+| corpus | launches / programs | verdicts | diff against the previous run |
+|---|---|---|---|
+| `test_core.py` TTGIR | 14,463 launches | match 12,715, approx 1,507, poison 1, unsupported 65, mismatch 175 | vs 972d18aa0: 24 new bad, all flagged (22 `test_atomic_rmw`, 2 `test_propagate_nan`); 17 no longer bad, all the nondeterministic atomic class; 1 upstream failure, `test_gather[src_shape3-indices_shape3-0]`, `OutOfResources` 131,072 > 101,376 bytes of shared memory, identical on 972d18aa0 (the AMD LDS skip lacks `is_sm12x()`; branch `test-gather-sm12x-lds` prepared locally, not opened) |
+| layoutfuzz `layout` seed 32 (device) | 200 programs | 0 mismatch, 0 compile errors | |
+| layoutfuzz `narrow` seed 32 (device) | 200 programs | 0 mismatch, 2 interpreter compile errors (known narrow-type class) | |
+| layoutfuzz `loops` seed 32 (device) | 200 programs | 0 mismatch, 1 device `OutOfResources` (32-165, 114,688 > 101,376 bytes; a generator/device-limit artifact) | |
+| per pass, `layout` seed 32 (device capture, 92 stages per launch through LLVM) | 200 launches, 18,400 stages | match 18,200, unsupported 200 (all the `llvm` stage before `InitializeWSClusterBarriers`) | 0 mismatch |
+| per pass, `narrow` seed 32 | 198 launches, 18,216 stages | match 18,018, unsupported 198 (the `llvm` stage); 2 programs not captured (the interpreter compile errors above) | 0 mismatch |
+| per pass, `loops` seed 32 | 158 launches, 12,328 stages (42 programs not captured: `CUDA error: out of memory` on GPU 0, see the incident above) | match 12,194, unsupported 134 (the `llvm` stage) | 0 mismatch |
+| language (the other 20 `test_*.py` of `unit/language`) | 3,089 launches (3,168 passed, 6,827 skipped, `test_random.py` not importable in this venv) | match 2,718, approx 309, poison 23, unsupported 30, error 9 (all `test_int_annotation`, the out-of-buffer store of #11738); 0 mismatch | vs 13-14 Sep: 0 new bad, 0 no longer bad |
+| gluon (`python/test/gluon`) | 5,869 launches (5,778 passed, 217 failed in 43 tests, the `test_consan` abort class of #11747 on sm_120a and the gating that #11746 adds, as on 13-14 Sep; `test_frontend.py` not importable in this venv) | match 5,637, approx 49, unsupported 182, mismatch 1 (`test_fpsan.py::test_reduction_matches_loop`, the reduction-tree order case already attributed) | vs 13-14 Sep: 0 new bad; 4 no longer bad, the `test_shared_gather_cga` broadcast cases now `unsupported` (DSMEM) |
+| `unit/cuda` | 48 passed | all recorded launches as before | vs 13-14 Sep: 0 new bad, 0 no longer bad |
+| `python/triton_kernels/tests` (new corpus, `TTSEM_MAX_LAUNCHES=16`), first attempt | 2,821 launches recorded in 8 min before the kill (rc=143, see the incident) | match 2,125, approx 135, unsupported 554, mismatch 5, error 2. The 5 mismatches are one launch of `test_matmul.py::test_op` in five configurations, batched mxfp8 x mxfp8, M=300 N=400 K=416, fp8 e4m3 output: the same two elements of Y in a million (codes 118 vs 119 = 224 vs 240, 199 vs 200), one e4m3 ulp, an accumulation-order flip at a rounding boundary that the 1e-2 wide band did not cover; the fp8 wide band is now one ulp of the type (`b2d6054`). The 2 errors are `_reduce_forward` with a `noinline` helper: two `tt.func`, neither with the recorded name; the entry is now the root of the call graph (`b2d6054`) | superseded by `corpus-kernels3` below |
+| races, `test_core` dumps | 9,701 files, 9,487 ran | 0 race with barriers, 1,437 without | as on 13-14 Sep |
+| races, language dumps | 1,940 files, 1,911 ran | 0 race with barriers, 547 without | |
+| races, gluon dumps | 5,723 files, 5,671 ran | 0 race with barriers, 394 without | |
+| races, `unit/cuda` dumps | 19 files, 18 ran | 0 race with barriers, 0 without | |
+| races, `triton_kernels` dumps of the first attempt | 469 files: 382 ran before, 440 after inline PTX became opaque for the detector (`bbe20d9`, 79 modules carry one); the 29 left are the 50,000-step budget on synthetic inputs | 0 race with barriers, 120 without | first run |
+| `test_random.py` (Philox; `scipy` was missing from the venv on 13-14 Sep and today until 07:20) | 106 launches, 107 passed | match 90, approx 16; races 62 modules, 0 with barriers | first run |
+| `gluon/test_frontend.py` (`expecttest` was missing) | 519 passed, 184 skipped; no device launches recorded (the file checks IR text) | | first run |
+
+### The inline PTX of `triton_kernels`, measured and modelled
+
+Of the first 8,703 launches of the `triton_kernels` rerun, 1,912 were `unsupported` for a single reason,
+`tt.elementwise_inline_asm` (all of `_downcast_to_mxfp` and `_upcast_from_mxfp`, 330 of `_matmul`, `_swiglu`):
+the ecosystem's PTX is eight fragments of six kinds (mxfp4 pack and unpack, E8M0 scales to bf16, tf32 rounding `rn` and `rna`,
+`ex2.approx.ftz`, `max/min.NaN.xorsign.abs`). `ptxprobe.py` ran each of them on the device over specials, ties
+and random patterns (8 tables, 71,692 patterns for the tf32 pair alone) and the rules came out exact: RNE and RNA at
+bit 13 with two different NaN conventions (`rn` canonicalises to `0x7FFFE000`, `rna` keeps sign and masked payload),
+e2m1 with ties to the even code and every NaN saturated to +6, E8M0 byte 0 = 2**-127 and 255 = NaN, `ex2.approx`
+within 1.13 ulp with both flushes. Semantics in `a3a73e0` (mirror `1cafe41`), tests pinned to the device tables.
+Device validation on GPU 1: `test_mxfp.py` + `test_swiglu.py`, 154 passed, 142 launches: **127 match, 15 approx, 0
+unsupported, 0 mismatch** (`_downcast_to_mxfp` 53 match, `_upcast_from_mxfp` 63 match, `_upcast_mxfp4_tile_kernel` 6
+match, `_upcast_ue8m0_scale_kernel` 4 match + 14 approx, `_swiglu` 1 + 1). The full corpus was then restarted with the
+fragments in place (`corpus-kernels3`, GPU 1, `TRITON_TEST_NUM_GPUS=1`, 2 h 58 min, 8,098 passed, 455 failed, 5,386
+skipped): **32,779 launches: match 29,735, approx 1,835, unsupported 973, mismatch 28, error 208**, every non-match
+attributed: the 28 mismatches are the packed-e2m1 class above (zero signs and single-code moves in nvfp4 `Y`, `approx`
+under `d4a00ba`, 0 mismatch in the targeted rerun); the 208 errors are 174 `_p_matmul` launches where the fragment handler
+reshaped a per-program value to the declared scalar type (then a 0-d scalar made 1-d by `ascontiguousarray` that the
+scalar `tt.atomic_rmw` downstream cannot take: `53f2aeb`) and 32 launches of `test_fused_comm_no_local_output`, whose
+kernel stores through a table of raw device addresses (`torch.tensor([d.data_ptr() ...], dtype=uint64)`) to tensors the
+recorder never saw (`MemoryFault: unmapped address`; a recorder gap, not a kernel defect); the 973 unsupported are 824
+fpsan instrumentation mode (by design), 108 `tti.experimental_fpsan_embed/unembed`, 31 `__nv_ffs` (added in `53f2aeb`
+with popc and clz), 8 of the Hopper value-layout PTX fragment, 2 other. Of the 455 upstream failures, 131 are
+`OutOfResources` (99 KB of shared memory on sm_120), 12 `test_fpsan_embed_unembed_torch_tensor`, 24 the fused-comm and
+mixed-fp8 tests, and **288 are `test_op` cases whose matmul takes the TMA scatter path: `target_info.has_tma_gather()` is
+`cuda_capability_geq(10, 0)`, true on sm_120, and ptxas answers `Feature '.tile::scatter4' not supported on .target
+'sm_120a'`** (reproduced without the validator; a one-line gate is on the local branch `triton-kernels-tma-gather-sm12x`, **not
+verified on the device and not opened**). The pre-fragment rerun
+(`corpus-kernels2`) was stopped at 38% once its role, the same numbers without the fragments, was served.
+
+The first 1,318 launches of `corpus-kernels3` had one mismatch: `_matmul` with an nvfp4 output, two bytes of Y
+differing as 0x80 vs 0x00 and 0x0D vs 0x8D, a negative zero against a positive one inside a packed e2m1 nibble (the
+sign of an underflowed product in the epilogue). An i8 buffer of a launch that contains the packing fragment is now
+decoded to e2m1 pairs and held to the launch's float policy, one code being the ulp of the type (`d4a00ba`, mirror
+`d065d98`); other integer buffers stay bitwise. Targeted device check `test_matmul.py -k nvfp4` (`corpus-nvfp4`, 254 passed, 34 upstream
+`OutOfResources` at 116 KB of shared memory on the 99 KB device): 3,088 launches, **2,954 match, 134 approx, 0
+unsupported, 0 mismatch**.
+
+`corpus-kernels3` runs with the fragments but without the packed-e2m1 comparison (its workers imported the plugin at
+08:39): its nvfp4 `_matmul` mismatches are all that class (zero signs, and single-code moves 3 -> 4 and 2 -> 3 in the
+low or high nibble), which the targeted rerun above, with the comparison in place, reports as `approx`.
+The race step of the stopped pre-fragment rerun (`corpus-kernels2`) died with its tmux session; the races of the
+final corpus are those of `corpus-kernels3`.
+
+Not read yet. Three results of this session were still running when the link to the machine dropped and are **not
+in the numbers above**: the rerun of the 207 failing node ids with the scalar-safe fragments (`corpus-rerun2`, expected
+to clear the 174 `_p_matmul` errors; the first rerun, with the reshape removed but 0-d scalars still promoted, had 184
+errors), the race detector over the 4,572 dumps of `corpus-kernels3`, and the device check of the `has_tma_gather` gate.
+
+Coverage gaps this corpus measured: kernels that store through a table of raw device addresses (the recorder sees
+only the launch's own arguments), the fpsan embed/unembed ops, the Hopper value-layout PTX fragment
+(`.reg .b32 b, c, z, ...`, 8 launches), and the detector's 50,000-step budget on synthetic inputs (29 of 469 modules).
