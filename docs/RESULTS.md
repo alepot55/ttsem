@@ -773,8 +773,8 @@ with popc and clz), 8 of the Hopper value-layout PTX fragment, 2 other. Of the 4
 mixed-fp8 tests, and **288 are `test_op` cases whose matmul takes the TMA scatter path: `target_info.has_tma_gather()` is
 `cuda_capability_geq(10, 0)`, true on sm_120, and ptxas answers `Feature '.tile::scatter4' not supported on .target
 'sm_120a'`** (reproduced without the validator; reported as triton#11859; sm_12x has TMA gather but not scatter, as #11344 and the `is_sm12x()` skip of `test_tma_scatter` say, so the gate
-is a `has_tma_scatter()` that only `has_scatter_tma` consults: local branch `triton-kernels-tma-scatter-sm12x`, **not
-verified on the device**, so no PR yet). The pre-fragment rerun
+is a `has_tma_scatter()` that only `has_scatter_tma` consults: triton#11862, checked on the device
+on 18 Sep, see below). The pre-fragment rerun
 (`corpus-kernels2`) was stopped at 38% once its role, the same numbers without the fragments, was served.
 
 The first 1,318 launches of `corpus-kernels3` had one mismatch: `_matmul` with an nvfp4 output, two bytes of Y
