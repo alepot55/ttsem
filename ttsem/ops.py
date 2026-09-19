@@ -1268,6 +1268,12 @@ def _extern_elementwise(interp: Interp, op: Op, args: list[Value]) -> list[Value
         base = to_float(args[0], op.operand_types[0])
         with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
             return [from_float(np.power(base, np.asarray(args[1]).astype(base.dtype)), _rty(op))]
+    if symbol in ("__nv_llrint", "__nv_llrintf"):  # nearest integer, ties to even, as an integer
+        if len(args) != 1:
+            raise Unsupported(op.name, f"{symbol} takes 1 operand, got {len(args)}")
+        with np.errstate(invalid="ignore"):
+            rounded = np.rint(to_float(args[0], op.operand_types[0]).astype(np.float64))
+            return [np.nan_to_num(rounded, nan=0.0).astype(to_numpy(_rty(op)))]
     entry = _EXTERN.get(symbol)
     if entry is None:
         raise Unsupported(op.name, f"libdevice symbol {symbol!r}")

@@ -1315,6 +1315,17 @@ def test_extern_elementwise_powi_takes_an_integer_exponent() -> None:
     assert got.tolist() == [1024.0, -27.0, 4.0]
 
 
+def test_extern_elementwise_llrint_rounds_to_even_and_returns_integers() -> None:
+    llrint = op(
+        "tt.extern_elementwise",
+        [tensor((4,), "f32")],
+        tensor((4,), "i64"),
+        attrs={"symbol": "__nv_llrintf"},
+    )
+    got = one(llrint, [np.array([0.5, 1.5, -2.5, 126.7], np.float32)])
+    assert got.dtype == np.int64 and got.tolist() == [0, 2, -2, 127]
+
+
 def test_extern_elementwise_unknown_symbol_names_it() -> None:
     target = op("tt.extern_elementwise", [F32], F32, attrs={"symbol": "__nv_j0f"})
     with pytest.raises(Unsupported, match="__nv_j0f"):
