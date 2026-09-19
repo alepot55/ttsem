@@ -218,12 +218,28 @@ def _is_cuda(device: Any) -> bool:
 
 def _cuda_is_cpu() -> Any:
     """A torch function mode that sends every `device="cuda"` to the CPU, so that a program or
-    a test suite written for a GPU runs unmodified on a machine without one. Only the device
-    moves: dtypes, shapes, strides and values are torch's own."""
+    a test suite written for a GPU runs unmodified on a machine without one, and that poisons
+    the memory `torch.empty` and its kin return. Nothing else changes: dtypes, shapes, strides
+    and values are torch's own."""
     import torch
     from torch.overrides import TorchFunctionMode
 
     cpu = torch.device("cpu")
+    uninitialised = {"empty", "empty_like", "empty_strided", "new_empty", "new_empty_strided"}
+
+    def poison(tensor: Any) -> Any:
+        """Memory nobody wrote holds NaN (a loud pattern for integers): `torch.empty` returns
+        zero pages often enough, on a GPU too, that a kernel reading its output before writing
+        it passes its tests."""
+        if not isinstance(tensor, torch.Tensor) or tensor.numel() == 0:
+            return tensor
+        if tensor.dtype.is_floating_point or tensor.dtype.is_complex:
+            tensor.fill_(float("nan"))
+        elif tensor.dtype == torch.bool:
+            tensor.fill_(True)
+        else:
+            tensor.fill_(torch.iinfo(tensor.dtype).max - 0x5A)
+        return tensor
 
     class CudaIsCpu(TorchFunctionMode):
         def __torch_function__(
@@ -233,6 +249,8 @@ def _cuda_is_cpu() -> Any:
             if _is_cuda(kwargs.get("device")):
                 kwargs["device"] = cpu
             name = getattr(func, "__name__", "")
+            if name in uninitialised:
+                return poison(func(*args, **kwargs))
             if name == "cuda" and args and isinstance(args[0], torch.Tensor):
                 return args[0]
             if name == "to" and args and isinstance(args[0], torch.Tensor):

@@ -21,6 +21,7 @@ A launch stops with a `KernelFault`, the failure of the test that launched it, w
 | `oob_write`, `oob_read` | an access outside the tensors it was given: which line, which argument, how many elements past the end | the allocator rounds sizes up, the access lands in padding, every test passes |
 | `race` | two program instances touch the same element and the result depends on which runs first | run one after the other the output is right; on a GPU it is wrong now and then |
 | `poison` | a value the IR leaves undefined reaches a store | it is whatever the hardware happens to do |
+| a wrong result full of NaN | the kernel read memory nobody wrote: `torch.empty` and its kin are poisoned here | fresh pages are zero more often than not, so accumulating into `torch.empty` passes until the allocator reuses memory |
 | compile errors | code that `TRITON_INTERPRET=1` accepts and the compiler rejects (`triton.cdiv` on a runtime value inside `@triton.jit`, ...) | the interpreter is Python; this runs the real frontend |
 
 The message names the line of **your** source:

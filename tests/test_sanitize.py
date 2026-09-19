@@ -63,3 +63,17 @@ def test_a_pytest_suite_written_for_a_gpu_fails_where_the_kernel_is_wrong(capsys
     assert code != 0
     assert "1 failed, 1 passed" in out  # n = 1024 hides it, n = 1000 does not
     assert "24 element(s) past the end" in out and "suite_no_mask.py:15" in out
+
+
+def test_memory_from_torch_empty_is_poisoned_so_reading_it_shows(capsys) -> None:
+    """`torch.empty` returns zero pages often enough, on a GPU too, that a kernel accumulating
+    into it passes its tests. Here such memory holds NaN (a loud pattern for integers), so the
+    same program fails every time."""
+    with pytest.raises(AssertionError, match="depends on what the memory held"):
+        sanitize.run_script(AGENTS / "accumulate_into_empty.py")
+    assert "ALLNAN True" in capsys.readouterr().out  # every element, not whatever was there
+
+
+def test_poisoned_memory_does_not_disturb_a_program_that_writes_before_it_reads(capsys) -> None:
+    report = sanitize.run_script(AGENTS / "cuda_script.py")  # its `out` is a `torch.empty`
+    assert report.verdict == "ok" and "SCRIPT_OK 999000.0" in capsys.readouterr().out
