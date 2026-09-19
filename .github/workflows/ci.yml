@@ -63,3 +63,14 @@ jobs:
 
       - name: Live demo
         run: python -m ttsem demo --live
+
+  # The action this repository ships, used on itself: a test file written for `device="cuda"`
+  # runs on this CPU runner, every launch compiled by Triton and executed by the semantics.
+  action:
+    name: the action on a GPU test suite (no GPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        with:
+          args: examples/ci -q

@@ -81,6 +81,17 @@ what the compiler rejects or dies with `free(): invalid pointer`. The official t
 they are (`03-matrix-multiplication.py`: all 34 launches of its autotuner judged, "Triton and
 Torch match"). The page written for an agent to read: [`docs/AGENTS.md`](docs/AGENTS.md).
 
+In CI, on GitHub's free runners (this repository does it to itself on every push):
+
+```yaml
+- uses: alepot55/ttsem@main
+  with:
+    install: pip install -e .        # your project
+    args: tests/kernels -q           # pytest arguments
+```
+
+For Claude Code and other agents that load skills: [`skills/triton-verify/SKILL.md`](skills/triton-verify/SKILL.md).
+
 ## What it found
 
 Upstream defects where this tool, the per-pass validator, the delta minimiser, the race detector or
