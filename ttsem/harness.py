@@ -1218,7 +1218,11 @@ def _entry_candidates(module: Any, fn_name: str) -> list[str]:
 
 
 def execute(
-    record: LaunchRecord, ir_text: str, trace_reads: bool = False, raise_faults: bool = False
+    record: LaunchRecord,
+    ir_text: str,
+    trace_reads: bool = False,
+    raise_faults: bool = False,
+    trace_access: bool = False,
 ) -> Execution:
     """Run ``ir_text`` (generic-form IR) on ``record``'s pre-launch state. The memory the run
     leaves behind is in the result, or ``failure`` says why it did not run to the end.
@@ -1245,6 +1249,8 @@ def execute(
 
     memory = Memory()
     memory.trace_reads = trace_reads
+    if trace_access:
+        memory.access_log = []
     registered: set[int] = set()
     for name in runtime_names:
         if name in record.ptrs:

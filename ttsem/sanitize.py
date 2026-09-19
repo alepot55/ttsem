@@ -17,15 +17,18 @@ does not explain them either (``free(): invalid pointer``).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from ttsem import harness
 import numpy as np
+from ttsem import pidraces
 from ttsem import values
 from ttsem.memory import MemoryFault
 from triton.runtime.jit import JITFunction
@@ -33,7 +36,7 @@ from triton.runtime.jit import JITFunction
 
 @dataclasses.dataclass
 class Fault:
-    kind: str  # oob_write | oob_read | poison
+    kind: str  # oob_write | oob_read | poison | race
     launch: int
     kernel: str
     op: str
@@ -48,7 +51,7 @@ class Fault:
 
 @dataclasses.dataclass
 class Report:
-    verdict: str  # ok | oob_write | oob_read | poison | unsupported | error
+    verdict: str  # ok | oob_write | oob_read | poison | race | unsupported | error
     launches: int
     fault: Fault | None = None
     message_for_agent: str = ""
@@ -61,7 +64,7 @@ class KernelFault(Exception):
         self.fault = fault
 
 
-class _Stop(Exception):
+class Unjudged(Exception):
     """The launch could not be judged (unsupported op, internal error): the run ends here."""
 
     def __init__(self, verdict: str, detail: str, unsupported: list[str]) -> None:
@@ -128,7 +131,27 @@ def _locate(record: harness.LaunchRecord, fault: MemoryFault) -> tuple[str | Non
     return best[1], best[2], best[3]
 
 
-def _message(fault: Fault) -> str:
+def _race_fault(record: harness.LaunchRecord, race: pidraces.PidRace, launch: int) -> Fault:
+    """The race as a fault on the storing side, with the buffer and the element it is about."""
+    buffer, element = None, None
+    for name, base in record.bases.items():
+        arr = record.pre[name]
+        if base <= race.address < base + arr.size * arr.itemsize:
+            buffer, element = name, int((race.address - base) // arr.itemsize)
+    sides = sorted((race.first, race.second), key=lambda side: side[1] == "r")  # a writer first
+    (pid_a, kind_a, op_a), (pid_b, kind_b, op_b) = sides
+    words = {"r": "loads", "w": "stores to", "a": "atomically updates"}
+    other = _source_of(op_b)
+    other_where = f"{Path(other[0]).name}:{other[1]}: {other[2]}" if other[1] else op_b[:120]
+    detail = (
+        f"program instances {pid_a} and {pid_b} both touch element {element} of `{buffer}`: "
+        f"{pid_a} {words[kind_a]} it, {pid_b} {words[kind_b]} it (`{other_where}`). "
+        f"{race.shared_bytes} byte(s) are shared this way ({race.kind})."
+    )
+    return Fault("race", launch, record.fn_name, op_a, buffer, detail=detail)
+
+
+def message(fault: Fault) -> str:
     where = f"kernel `{fault.kernel}`, launch {fault.launch}"
     op = fault.op.split(" loc(")[0][:160]
     if fault.source_line:
@@ -147,9 +170,14 @@ def _message(fault: Fault) -> str:
             "access against the tensor's real size, for every program id and for sizes that are "
             "not a multiple of the block."
         )
-    return (
-        f"{where}: `{fault.op[:160]}` uses a value the semantics leaves undefined: {fault.detail}"
-    )
+    if fault.kind == "race":
+        return (
+            f"{where}: `{op}`: {fault.detail} Program instances run in any order and at the same "
+            "time, so the result depends on the schedule; run one after the other it looks "
+            "right, and an output comparison cannot see it. Make the instances write disjoint "
+            "elements, or use an atomic update (`tl.atomic_add` and the like) for the shared ones."
+        )
+    return f"{where}: `{op}` uses a value the semantics leaves undefined: {fault.detail}"
 
 
 def _write_back(record: harness.LaunchRecord, execution: harness.Execution) -> None:
@@ -176,27 +204,34 @@ def _write_back(record: harness.LaunchRecord, execution: harness.Execution) -> N
         flat[: raw.size].copy_(torch.from_numpy(raw.copy()))
 
 
-def run_program(
-    program: Path, argv: list[str] | tuple[str, ...] = (), cc: int = harness.DEFAULT_CC
-) -> Report:
-    """Run ``program`` (a script with ``main()``) on the CPU under the semantics."""
+@dataclasses.dataclass
+class Session:
+    launches: int = 0
+
+
+@contextlib.contextmanager
+def session(cc: int = harness.DEFAULT_CC, source: str = "<program>") -> Iterator[Session]:
+    """While open, every Triton launch of this process is executed by the semantics on the CPU
+    tensors it was given and written back into them. A launch that faults raises
+    :class:`KernelFault` out of the launching call."""
     harness._install_fake_driver(cc)
     target = harness.target_for("cpu", cc)
-    launches = [0]
+    state = Session()
     orig_run = JITFunction.run
 
     def run(self: JITFunction, *args: Any, grid: Any, warmup: bool, **kwargs: Any) -> Any:
         if warmup:
             return None
-        launch = launches[0]
-        launches[0] += 1
+        launch = state.launches
+        state.launches += 1
         recorded = harness.record_launch(
-            self, args, kwargs, grid, lambda *a, **k: None, str(program), launch
+            self, args, kwargs, grid, lambda *a, **k: None, source, launch
         )
         record = recorded.record
         ir_text = harness.ir_for_launch(record, "ttir", target)
         try:
-            execution = harness.execute(record, ir_text, raise_faults=True)
+            many = int(np.prod([int(g) for g in record.grid])) > 1
+            execution = harness.execute(record, ir_text, raise_faults=True, trace_access=many)
         except MemoryFault as exc:
             buffer, past, before = _locate(record, exc)
             kind = "oob_write" if exc.kind == "write" else "oob_read"
@@ -208,21 +243,36 @@ def run_program(
             ) from exc
         if execution.failure is not None:
             failure = execution.failure
-            raise _Stop(failure.verdict, failure.message, list(failure.unsupported or []))
+            raise Unjudged(failure.verdict, failure.message, list(failure.unsupported or []))
         _write_back(record, execution)
+        race = pidraces.find_race(execution.memory.access_log)
+        if race is not None:
+            raise KernelFault(_with_source(_race_fault(record, race, launch)))
         return None
 
     JITFunction.run = run
     try:
-        harness._run_program(program, "cpu", tuple(argv))
-    except KernelFault as stop:
-        fault = stop.fault
-        return Report(fault.kind, launches[0], fault, _message(fault))
-    except _Stop as stop:
-        return Report(stop.verdict, launches[0], None, stop.detail, stop.unsupported)
+        yield state
     finally:
         JITFunction.run = orig_run
-    return Report("ok", launches[0])
+
+
+def report_of(fault: Fault, launches: int) -> Report:
+    return Report(fault.kind, launches, fault, message(fault))
+
+
+def run_program(
+    program: Path, argv: list[str] | tuple[str, ...] = (), cc: int = harness.DEFAULT_CC
+) -> Report:
+    """Run ``program`` (a script with ``main()``) on the CPU under the semantics."""
+    with session(cc, str(program)) as state:
+        try:
+            harness._run_program(program, "cpu", tuple(argv))
+        except KernelFault as stop:
+            return report_of(stop.fault, state.launches)
+        except Unjudged as stop:
+            return Report(stop.verdict, state.launches, None, stop.detail, stop.unsupported)
+    return Report("ok", state.launches)
 
 
 def main() -> int:

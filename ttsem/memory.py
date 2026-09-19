@@ -11,6 +11,7 @@ address whose lane is live raises `MemoryFault`.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 from ttsem.values import Poison
@@ -87,6 +88,14 @@ class Memory:
         self._order = np.zeros(0, dtype=np.int64)
         self.trace_reads = False  # when set, every load's byte addresses are recorded
         self._reads: list[np.ndarray] = []
+        # When a list, every access is recorded as (agent, kind, op, element addresses, itemsize,
+        # bytes written or None): who touched what, for the race detector between program
+        # instances (`pidraces.py`). `agent` and `current_op` are set by the interpreter.
+        self.access_log: list[tuple[Any, str, str, np.ndarray, int, np.ndarray | None]] | None = (
+            None
+        )
+        self.agent: Any = (0, 0, 0)
+        self.current_op = ""
 
     def register(self, base: int, array: np.ndarray) -> None:
         if not array.flags["C_CONTIGUOUS"]:
@@ -170,6 +179,8 @@ class Memory:
         out.reshape(-1)[live] = self._read(flat, dtype)
         if self.trace_reads and flat.size:
             self._reads.append(_byte_span(flat, dtype.itemsize))
+        if self.access_log is not None and flat.size:
+            self.access_log.append((self.agent, "r", self.current_op, flat, dtype.itemsize, None))
         return out
 
     def store(self, addrs: np.ndarray, values: np.ndarray, mask: np.ndarray | None) -> None:
@@ -178,6 +189,11 @@ class Memory:
         flat = np.asarray(addrs, dtype=np.int64).reshape(-1)[live]
         vals = np.ascontiguousarray(np.broadcast_to(values, shape).reshape(-1)[live])
         self._write(flat, vals)
+        if self.access_log is not None and flat.size:
+            raw = vals.view(np.uint8).reshape(flat.size, -1)
+            self.access_log.append(
+                (self.agent, "w", self.current_op, flat, vals.dtype.itemsize, raw)
+            )
 
     def atomic(
         self,
@@ -217,6 +233,10 @@ class Memory:
         live = _live(mask, shape).reshape(-1)
         flat = np.asarray(addrs, dtype=np.int64).reshape(-1)
         old = np.zeros(int(np.prod(shape, dtype=np.int64)), dtype=val.dtype)
+        if self.access_log is not None and live.any():
+            self.access_log.append(
+                (self.agent, "a", self.current_op, flat[live], val.dtype.itemsize, None)
+            )
         for i in np.nonzero(live)[0]:
             addr = flat[i : i + 1]
             cur = self._read(addr, val.dtype)
