@@ -22,6 +22,11 @@ The package is a library first; every entry point below is a module you run with
   python -m ttsem.minimize PROGRAM.py [--stage PASS] [--out small.mlir]
       Shrink that module to the smallest one on which the pass still changes the meaning.
 
+  python -m ttsem.sanitize pytest [PYTEST ARGS] | SCRIPT.py
+      Run a test suite or a script written for a GPU on a machine without one: every
+      launch is executed by the semantics, and an out-of-bounds access, a race between
+      program instances or an undefined value fails the test with the kernel's own line.
+
   python -m ttsem.races MODULE.generic.mlir [--strip-barriers]
       Shared-memory races between the warps of a CTA, from one execution of the module.
       Needs no Triton and no GPU.

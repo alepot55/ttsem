@@ -66,6 +66,21 @@ first pass that changes the meaning: tritongpu-fuse-nested-loops (triton#11519, 
 Nothing in the tool knows about assumes, dominance or loop fusion. It knows what every op means,
 and it asks, after every pass, whether the answer is still the same one.
 
+## For coding agents: Triton tests without a GPU
+
+```
+python -m ttsem.sanitize pytest tests/ -q     # a suite written for `device="cuda"`, unmodified
+python -m ttsem.sanitize script.py
+```
+
+Every launch is compiled by Triton's real frontend and executed by the semantics on the CPU; an
+out-of-bounds access, a race between program instances or an undefined value is the failure of the
+test that launched the kernel, with the line of the kernel's own source. A GPU forgives most of
+these (allocations are rounded up, schedules are lucky) and `TRITON_INTERPRET=1` either accepts
+what the compiler rejects or dies with `free(): invalid pointer`. The official tutorials run as
+they are (`03-matrix-multiplication.py`: all 34 launches of its autotuner judged, "Triton and
+Torch match"). The page written for an agent to read: [`docs/AGENTS.md`](docs/AGENTS.md).
+
 ## What it found
 
 Upstream defects where this tool, the per-pass validator, the delta minimiser, the race detector or

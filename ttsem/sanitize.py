@@ -1,6 +1,7 @@
 """Run a Triton program without a GPU, every launch executed by the semantics.
 
-    python sanitize.py program.py [-- args of the program]
+    python -m ttsem.sanitize program.py [-- args of the program]
+    python -m ttsem.sanitize pytest tests/ -q         # a test suite written for a GPU, as it is
 
 ``JITFunction.run`` is replaced for the run. Each launch is recorded from the CPU tensors it was
 given, compiled to TTIR for the target, executed by the level-1 semantics on a copy of their
@@ -59,9 +60,15 @@ class Report:
 
 
 class KernelFault(Exception):
+    """Raised out of the launching call. Its text is the message for the author of the kernel,
+    so a test runner that only prints the exception already says what to fix."""
+
     def __init__(self, fault: Fault) -> None:
         super().__init__(fault.detail)
         self.fault = fault
+
+    def __str__(self) -> str:
+        return message(self.fault)
 
 
 class Unjudged(Exception):
@@ -204,22 +211,99 @@ def _write_back(record: harness.LaunchRecord, execution: harness.Execution) -> N
         flat[: raw.size].copy_(torch.from_numpy(raw.copy()))
 
 
+def _is_cuda(device: Any) -> bool:
+    return str(device).startswith("cuda") if device is not None else False
+
+
+def _cuda_is_cpu() -> Any:
+    """A torch function mode that sends every `device="cuda"` to the CPU, so that a program or
+    a test suite written for a GPU runs unmodified on a machine without one. Only the device
+    moves: dtypes, shapes, strides and values are torch's own."""
+    import torch
+    from torch.overrides import TorchFunctionMode
+
+    cpu = torch.device("cpu")
+
+    class CudaIsCpu(TorchFunctionMode):
+        def __torch_function__(
+            self, func: Any, types: Any, args: Any = (), kwargs: Any = None
+        ) -> Any:
+            kwargs = dict(kwargs or {})
+            if _is_cuda(kwargs.get("device")):
+                kwargs["device"] = cpu
+            name = getattr(func, "__name__", "")
+            if name == "cuda" and args and isinstance(args[0], torch.Tensor):
+                return args[0]
+            if name == "to" and args and isinstance(args[0], torch.Tensor):
+                args = tuple(
+                    cpu if _is_cuda(a) and not isinstance(a, torch.Tensor) else a for a in args
+                )
+            return func(*args, **kwargs)
+
+    return CudaIsCpu()
+
+
+def _no_benchmarks() -> Any:
+    """Timing means nothing under an interpreter. A benchmark call runs its function once (so
+    every configuration an autotuner tries is still executed, and judged) and reports a
+    constant; a `perf_report` is skipped with a line saying so. Returns the undo."""
+    import triton.testing as testing
+    from triton.runtime import driver
+
+    def bench_once(fn: Any, *args: Any, quantiles: Any = None, **kwargs: Any) -> Any:
+        fn()
+        return [1.0] * len(quantiles) if quantiles else 1.0
+
+    def skip_report(self: Any, *args: Any, **kwargs: Any) -> None:
+        print("ttsem: benchmarks are not run without a GPU (perf_report skipped)")
+
+    saved = (testing.do_bench, getattr(testing, "do_bench_cudagraph", None), testing.Mark.run)
+    testing.do_bench = bench_once
+    if saved[1] is not None:
+        testing.do_bench_cudagraph = bench_once
+    testing.Mark.run = skip_report
+    active = driver.active
+    had = getattr(active, "get_benchmarker", None)
+    active.get_benchmarker = lambda: bench_once
+    if not hasattr(active, "utils"):  # programs size their launches from the device's properties
+        import types
+
+        active.utils = types.SimpleNamespace(
+            get_device_properties=lambda device=0: active.get_device_properties(device)
+        )
+
+    def undo() -> None:
+        testing.do_bench = saved[0]
+        if saved[1] is not None:
+            testing.do_bench_cudagraph = saved[1]
+        testing.Mark.run = saved[2]
+        if had is not None:
+            active.get_benchmarker = had
+
+    return undo
+
+
 @dataclasses.dataclass
 class Session:
     launches: int = 0
 
 
 @contextlib.contextmanager
-def session(cc: int = harness.DEFAULT_CC, source: str = "<program>") -> Iterator[Session]:
+def session(
+    cc: int = harness.DEFAULT_CC, source: str = "<program>", cuda_is_cpu: bool = True
+) -> Iterator[Session]:
     """While open, every Triton launch of this process is executed by the semantics on the CPU
     tensors it was given and written back into them. A launch that faults raises
-    :class:`KernelFault` out of the launching call."""
+    :class:`KernelFault` out of the launching call. With ``cuda_is_cpu`` every request for a
+    CUDA device gets the CPU, so code written for a GPU runs as it is."""
     harness._install_fake_driver(cc)
+    restore_bench = _no_benchmarks()
     target = harness.target_for("cpu", cc)
     state = Session()
     orig_run = JITFunction.run
 
     def run(self: JITFunction, *args: Any, grid: Any, warmup: bool, **kwargs: Any) -> Any:
+        __tracebackhide__ = True  # pytest: the failure is the caller's line, not ours
         if warmup:
             return None
         launch = state.launches
@@ -236,11 +320,11 @@ def session(cc: int = harness.DEFAULT_CC, source: str = "<program>") -> Iterator
             buffer, past, before = _locate(record, exc)
             kind = "oob_write" if exc.kind == "write" else "oob_read"
             fault = Fault(kind, launch, record.fn_name, _op_of(exc), buffer, past, before, str(exc))
-            raise KernelFault(_with_source(fault)) from exc
+            raise KernelFault(_with_source(fault)) from None
         except values.Poison as exc:
             raise KernelFault(
                 _with_source(Fault("poison", launch, record.fn_name, _op_of(exc), detail=str(exc)))
-            ) from exc
+            ) from None
         if execution.failure is not None:
             failure = execution.failure
             raise Unjudged(failure.verdict, failure.message, list(failure.unsupported or []))
@@ -251,10 +335,13 @@ def session(cc: int = harness.DEFAULT_CC, source: str = "<program>") -> Iterator
         return None
 
     JITFunction.run = run
+    redirect = _cuda_is_cpu() if cuda_is_cpu else contextlib.nullcontext()
     try:
-        yield state
+        with redirect:
+            yield state
     finally:
         JITFunction.run = orig_run
+        restore_bench()
 
 
 def report_of(fault: Fault, launches: int) -> Report:
@@ -275,7 +362,41 @@ def run_program(
     return Report("ok", state.launches)
 
 
+def run_script(
+    script: Path, argv: list[str] | tuple[str, ...] = (), cc: int = harness.DEFAULT_CC
+) -> Report:
+    """Run any Python script as ``python script.py argv...`` would, under the semantics."""
+    import runpy
+
+    old_argv = sys.argv
+    sys.argv = [str(script), *argv]
+    try:
+        with session(cc, str(script)) as state:
+            try:
+                runpy.run_path(str(script), run_name="__main__")
+            except KernelFault as stop:
+                return report_of(stop.fault, state.launches)
+            except Unjudged as stop:
+                return Report(stop.verdict, state.launches, None, stop.detail, stop.unsupported)
+    finally:
+        sys.argv = old_argv
+    return Report("ok", state.launches)
+
+
+def run_pytest(args: list[str], cc: int = harness.DEFAULT_CC) -> int:
+    """``pytest args...`` in this process with every launch under the semantics: a kernel fault
+    is the failure of the test that launched it, with the message for the author as its text."""
+    import pytest
+
+    with session(cc, "<pytest>"):
+        return int(pytest.main(list(args)))
+
+
 def main() -> int:
+    """`sanitize.py script.py [args]`, or `sanitize.py pytest [pytest args]`."""
+    argv = sys.argv[1:]
+    if argv and argv[0] == "pytest":
+        return run_pytest(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "")
     ap.add_argument("program", type=Path)
     ap.add_argument("--cc", type=int, default=harness.DEFAULT_CC)
@@ -283,7 +404,9 @@ def main() -> int:
     ap.add_argument("rest", nargs=argparse.REMAINDER, help="arguments of the program, after --")
     args = ap.parse_args()
     rest = [a for a in args.rest if a != "--"]
-    report = run_program(args.program, rest, args.cc)
+    has_main = "def main(" in args.program.read_text()
+    runner = run_program if has_main else run_script
+    report = runner(args.program, rest, args.cc)
     print(f"{report.verdict}: {report.launches} launch(es)")
     if report.message_for_agent:
         print(report.message_for_agent)
