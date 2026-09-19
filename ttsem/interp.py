@@ -175,7 +175,10 @@ class Interp:
             results = handler(self, op, [self.value(n) for n in op.operands])
         except Exception as e:
             if not isinstance(e, Unsupported) and type(e).__module__ != "ops":
-                e.add_note(f"while evaluating {(op.text or op.name)[:300]}")
+                text = op.text or op.name
+                at = text.rfind(" loc(")  # the location is kept whole: it names the source line
+                head, where = (text[:at], text[at:]) if at > 0 else (text, "")
+                e.add_note(f"while evaluating {head[:300]}{where}")
             raise
         self.bind_results(op, results)
 

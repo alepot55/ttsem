@@ -30,6 +30,20 @@ def test_the_same_bytes_from_two_instances_are_not_a_race() -> None:
     assert pidraces.find_race([_e(0, "w", [8], [7]), _e(1, "w", [8], [7])]) is None
 
 
+def test_instances_that_each_store_the_same_sequence_leave_the_same_bytes() -> None:
+    # every instance writes 1 then 2: whatever the schedule, the last store is somebody's 2
+    same = [_e(0, "w", [8], [1]), _e(0, "w", [8], [2]), _e(1, "w", [8], [1]), _e(1, "w", [8], [2])]
+    assert pidraces.find_race(same) is None
+    differ = [
+        _e(0, "w", [8], [2]),
+        _e(0, "w", [8], [1]),
+        _e(1, "w", [8], [1]),
+        _e(1, "w", [8], [2]),
+    ]
+    race = pidraces.find_race(differ)
+    assert race is not None and race.kind == "write-write"
+
+
 def test_a_load_of_what_another_instance_stores_is_a_race() -> None:
     race = pidraces.find_race(
         [_e(0, "r", [8]), _e(0, "w", [8], [1]), _e(1, "r", [8]), _e(1, "w", [8], [1])]

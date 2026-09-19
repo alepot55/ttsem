@@ -87,12 +87,27 @@ def _op_of(exc: BaseException) -> str:
     return ""
 
 
-_LOC = re.compile(r'loc\("([^"]+)":(\d+):\d+')
+_LOC = re.compile(r'loc\((?:"[^"]*"\()?"([^"]+)":(\d+):\d+')  # plain, or named: loc("x"("f":1:2))
+_ALIAS_USE = re.compile(r"loc\((#loc\d*)\)\s*$")
+_ALIAS_DEF = re.compile(r"^(#loc\d*) = loc\((.*)\)\s*$", re.M)
 
 
-def _source_of(op_text: str) -> tuple[str, int, str]:
-    """(file, line, text of the line) the op was compiled from, read off its `loc`."""
+def _source_of(op_text: str, ir_text: str = "") -> tuple[str, int, str]:
+    """(file, line, text of the line) the op was compiled from, read off its `loc`. The printer
+    writes most locations as aliases (`loc(#loc7)`, defined at the end of the module, possibly
+    through a name: `#loc7 = loc("x"(#loc3))`), so the module's text resolves them."""
     m = _LOC.search(op_text)
+    use = _ALIAS_USE.search(op_text)
+    if m is None and use is not None and ir_text:
+        table = dict(_ALIAS_DEF.findall(ir_text))
+        alias, body = use.group(1), ""
+        for _ in range(8):  # name -> name -> file:line, never deep
+            body = table.get(alias, "")
+            m = _LOC.search(f"loc({body}")
+            inner = re.search(r"\((#loc\d*)\)", body)
+            if m is not None or inner is None:
+                break
+            alias = inner.group(1)
     if m is None:
         return "", 0, ""
     path, line = m.group(1), int(m.group(2))
@@ -103,8 +118,8 @@ def _source_of(op_text: str) -> tuple[str, int, str]:
     return path, line, text
 
 
-def _with_source(fault: Fault) -> Fault:
-    fault.source_file, fault.source_line, fault.source_text = _source_of(fault.op)
+def _with_source(fault: Fault, ir_text: str = "") -> Fault:
+    fault.source_file, fault.source_line, fault.source_text = _source_of(fault.op, ir_text)
     return fault
 
 
@@ -139,7 +154,9 @@ def _locate(record: harness.LaunchRecord, fault: MemoryFault) -> tuple[str | Non
     return best[1], best[2], best[3]
 
 
-def _race_fault(record: harness.LaunchRecord, race: pidraces.PidRace, launch: int) -> Fault:
+def _race_fault(
+    record: harness.LaunchRecord, race: pidraces.PidRace, launch: int, ir_text: str = ""
+) -> Fault:
     """The race as a fault on the storing side, with the buffer and the element it is about."""
     buffer, element = None, None
     for name, base in record.bases.items():
@@ -149,7 +166,7 @@ def _race_fault(record: harness.LaunchRecord, race: pidraces.PidRace, launch: in
     sides = sorted((race.first, race.second), key=lambda side: side[1] == "r")  # a writer first
     (pid_a, kind_a, op_a), (pid_b, kind_b, op_b) = sides
     words = {"r": "loads", "w": "stores to", "a": "atomically updates"}
-    other = _source_of(op_b)
+    other = _source_of(op_b, ir_text)
     other_where = f"{Path(other[0]).name}:{other[1]}: {other[2]}" if other[1] else op_b[:120]
     detail = (
         f"program instances {pid_a} and {pid_b} both touch element {element} of `{buffer}`: "
@@ -262,6 +279,40 @@ def _cuda_is_cpu() -> Any:
     return CudaIsCpu()
 
 
+def _pretend_cuda() -> Any:
+    """What a GPU program asks of torch before it launches anything and the fake driver's stub of
+    `torch.cuda` does not answer: `assert x.is_cuda`, a device guard, `set_device`. While the
+    session is open every tensor is on the one pretend device. Returns the undo."""
+    import torch
+
+    class NoDevice(contextlib.nullcontext):  # type: ignore[type-arg]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__()
+
+    answers: dict[str, Any] = {
+        "device": NoDevice,
+        "_DeviceGuard": NoDevice,
+        "set_device": lambda device=None: None,
+    }
+    saved = {name: getattr(torch.cuda, name, None) for name in answers}
+    for name, answer in answers.items():
+        setattr(torch.cuda, name, answer)
+    torch.Tensor.is_cuda = property(lambda self: True)  # type: ignore[assignment,misc]
+    had_stream = hasattr(torch._C, "_cuda_getCurrentRawStream")
+    if not had_stream:  # imported by name by kernels that Inductor generated
+        torch._C._cuda_getCurrentRawStream = lambda device=0: 0  # type: ignore[attr-defined]
+
+    def undo() -> None:
+        del torch.Tensor.is_cuda
+        if not had_stream:
+            del torch._C._cuda_getCurrentRawStream
+        for name, original in saved.items():
+            if original is not None:
+                setattr(torch.cuda, name, original)
+
+    return undo
+
+
 def _no_benchmarks() -> Any:
     """Timing means nothing under an interpreter. A benchmark call runs its function once (so
     every configuration an autotuner tries is still executed, and judged) and reports a
@@ -342,10 +393,12 @@ def session(
             buffer, past, before = _locate(record, exc)
             kind = "oob_write" if exc.kind == "write" else "oob_read"
             fault = Fault(kind, launch, record.fn_name, _op_of(exc), buffer, past, before, str(exc))
-            raise KernelFault(_with_source(fault)) from None
+            raise KernelFault(_with_source(fault, ir_text)) from None
         except values.Poison as exc:
             raise KernelFault(
-                _with_source(Fault("poison", launch, record.fn_name, _op_of(exc), detail=str(exc)))
+                _with_source(
+                    Fault("poison", launch, record.fn_name, _op_of(exc), detail=str(exc)), ir_text
+                )
             ) from None
         if execution.failure is not None:
             failure = execution.failure
@@ -355,16 +408,18 @@ def session(
             state.races_unchecked += 1
         race = pidraces.find_race(execution.memory.access_log)
         if race is not None:
-            raise KernelFault(_with_source(_race_fault(record, race, launch)))
+            raise KernelFault(_with_source(_race_fault(record, race, launch, ir_text), ir_text))
         return None
 
     JITFunction.run = run
     redirect = _cuda_is_cpu() if cuda_is_cpu else contextlib.nullcontext()
+    restore_cuda = _pretend_cuda() if cuda_is_cpu else (lambda: None)
     try:
         with redirect:
             yield state
     finally:
         JITFunction.run = orig_run
+        restore_cuda()
         restore_bench()
 
 

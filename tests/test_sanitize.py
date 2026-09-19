@@ -77,3 +77,24 @@ def test_memory_from_torch_empty_is_poisoned_so_reading_it_shows(capsys) -> None
 def test_poisoned_memory_does_not_disturb_a_program_that_writes_before_it_reads(capsys) -> None:
     report = sanitize.run_script(AGENTS / "cuda_script.py")  # its `out` is a `torch.empty`
     assert report.verdict == "ok" and "SCRIPT_OK 999000.0" in capsys.readouterr().out
+
+
+def test_the_source_line_is_found_through_named_and_aliased_locations(tmp_path: Path) -> None:
+    src = tmp_path / "k.py"
+    src.write_text("first\ntl.store(p, x)\n")
+    plain = f'"tt.store"(%p, %x) : () -> () loc("{src}":2:4)'
+    named = f'%v = "tt.load"(%p) : () -> f32 loc("v"("{src}":2:4))'
+    module = f'#loc3 = loc("{src}":2:4)\n#loc7 = loc("v"(#loc3))\n'
+    for op_text, ir_text in ((plain, ""), (named, ""), ("%v = tt.load %p loc(#loc7)", module)):
+        assert sanitize._source_of(op_text, ir_text) == (str(src), 2, "tl.store(p, x)")
+
+
+def test_a_program_that_asks_whether_its_tensors_are_on_the_gpu_is_told_yes() -> None:
+    import torch
+
+    with sanitize.session():
+        x = torch.zeros(4, device="cuda")
+        assert x.is_cuda
+        with torch.cuda.device(0):
+            torch.cuda.set_device(0)
+    assert not torch.zeros(1).is_cuda

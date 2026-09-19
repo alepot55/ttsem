@@ -7,7 +7,7 @@ outputs passes. With `Memory.access_log` on, every load, store and atomic update
 the instance that made it, and this module looks for the pairs that make the result depend on
 the schedule:
 
-- two instances store different bytes to the same address;
+- the last stores of two instances to the same address hold different bytes;
 - one instance loads an address another one stores to or updates atomically;
 - one instance stores to an address another one updates atomically.
 
@@ -138,8 +138,13 @@ def find_race(log: list[Entry] | None) -> PidRace | None:
 
     w = kind == 1
     if w.any():
-        keys, lo, hi = _spread(addr[w], who[w])
-        _, vlo, vhi = _spread(addr[w], val[w])
+        # what an address holds in the end is the last store of some instance, so only the last
+        # store of each instance counts: instances that each write v1 then v2 always leave v2
+        order = np.lexsort((entry[w], who[w], addr[w]))
+        a, o, v = addr[w][order], who[w][order], val[w][order]
+        last = np.concatenate(((a[1:] != a[:-1]) | (o[1:] != o[:-1]), [True]))
+        keys, lo, hi = _spread(a[last], o[last])
+        _, vlo, vhi = _spread(a[last], v[last])
         clash = keys[(lo != hi) & (vlo != vhi)]
         if clash.size:
             found.append(("write-write", clash, 1, 1))

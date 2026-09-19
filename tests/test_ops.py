@@ -1304,6 +1304,17 @@ def test_extern_elementwise_binary_and_ternary() -> None:
     assert float(one(fmaf, [np.float32(2.0), np.float32(3.0), np.float32(1.0)])) == 7.0
 
 
+def test_extern_elementwise_powi_takes_an_integer_exponent() -> None:
+    powi = op(
+        "tt.extern_elementwise",
+        [tensor((3,), "f32"), tensor((3,), "i32")],
+        tensor((3,), "f32"),
+        attrs={"symbol": "__nv_powif"},
+    )
+    got = one(powi, [np.array([2.0, -3.0, 0.5], np.float32), np.array([10, 3, -2], np.int32)])
+    assert got.tolist() == [1024.0, -27.0, 4.0]
+
+
 def test_extern_elementwise_unknown_symbol_names_it() -> None:
     target = op("tt.extern_elementwise", [F32], F32, attrs={"symbol": "__nv_j0f"})
     with pytest.raises(Unsupported, match="__nv_j0f"):
