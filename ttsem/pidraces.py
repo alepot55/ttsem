@@ -34,7 +34,12 @@ class PidRace:
 
 
 def _expand(log: list[Entry]) -> tuple[np.ndarray, ...]:
-    """Every access as byte rows: address, instance index, kind code, entry index, byte written."""
+    """Every access as rows: address, instance index, kind code, entry index, value written.
+    When every access has the same element size (the usual case) a row is an element and its
+    value the element's bytes as one integer; otherwise a row is a byte."""
+    sizes = {itemsize for _, _, _, _, itemsize, _ in log}
+    if len(sizes) == 1 and next(iter(sizes)) <= 8:
+        return _expand_elements(log, next(iter(sizes)))
     agents: dict[Any, int] = {}
     addr, who, kind, entry, val = [], [], [], [], []
     codes = {"r": 0, "w": 1, "a": 2}
@@ -51,6 +56,24 @@ def _expand(log: list[Entry]) -> tuple[np.ndarray, ...]:
     if not addr:
         empty = np.zeros(0, dtype=np.int64)
         return empty, empty, empty.astype(np.int8), empty, empty.astype(np.int16)
+    return tuple(np.concatenate(x) for x in (addr, who, kind, entry, val))
+
+
+def _expand_elements(log: list[Entry], itemsize: int) -> tuple[np.ndarray, ...]:
+    agents: dict[Any, int] = {}
+    addr, who, kind, entry, val = [], [], [], [], []
+    codes = {"r": 0, "w": 1, "a": 2}
+    weights = (1 << (8 * np.arange(itemsize, dtype=np.uint64))).astype(np.uint64)
+    for index, (agent, k, _op, addrs, _size, raw) in enumerate(log):
+        ident = agents.setdefault(agent, len(agents))
+        addr.append(addrs)
+        who.append(np.full(addrs.size, ident, dtype=np.int64))
+        kind.append(np.full(addrs.size, codes[k], dtype=np.int8))
+        entry.append(np.full(addrs.size, index, dtype=np.int64))
+        if raw is None:
+            val.append(np.zeros(addrs.size, dtype=np.uint64))
+        else:
+            val.append((raw.reshape(addrs.size, itemsize).astype(np.uint64) * weights).sum(axis=1))
     return tuple(np.concatenate(x) for x in (addr, who, kind, entry, val))
 
 
@@ -113,4 +136,6 @@ def find_race(log: list[Entry] | None) -> PidRace | None:
                 break
     b = int(second_rows[0])
     ea, eb = log[int(entry[a])], log[int(entry[b])]
-    return PidRace(name, at, (ea[0], ea[1], ea[2]), (eb[0], eb[1], eb[2]), int(clash.size))
+    unit = log[0][4] if len({e[4] for e in log}) == 1 and log[0][4] <= 8 else 1
+    shared = int(clash.size) * unit
+    return PidRace(name, at, (ea[0], ea[1], ea[2]), (eb[0], eb[1], eb[2]), shared)

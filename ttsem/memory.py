@@ -96,6 +96,20 @@ class Memory:
         )
         self.agent: Any = (0, 0, 0)
         self.current_op = ""
+        # The log holds every address of every access: past this many elements it is dropped
+        # and `access_overflow` says the launch was too large to be checked for races.
+        self.access_budget = 4_000_000
+        self.access_overflow = False
+        self._logged = 0
+
+    def _log(self, kind: str, addrs: np.ndarray, itemsize: int, raw: np.ndarray | None) -> None:
+        if self.access_log is None or not addrs.size:
+            return
+        self._logged += int(addrs.size)
+        if self._logged > self.access_budget:
+            self.access_log, self.access_overflow = None, True
+            return
+        self.access_log.append((self.agent, kind, self.current_op, addrs, itemsize, raw))
 
     def register(self, base: int, array: np.ndarray) -> None:
         if not array.flags["C_CONTIGUOUS"]:
@@ -179,8 +193,7 @@ class Memory:
         out.reshape(-1)[live] = self._read(flat, dtype)
         if self.trace_reads and flat.size:
             self._reads.append(_byte_span(flat, dtype.itemsize))
-        if self.access_log is not None and flat.size:
-            self.access_log.append((self.agent, "r", self.current_op, flat, dtype.itemsize, None))
+        self._log("r", flat, dtype.itemsize, None)
         return out
 
     def store(self, addrs: np.ndarray, values: np.ndarray, mask: np.ndarray | None) -> None:
@@ -190,10 +203,7 @@ class Memory:
         vals = np.ascontiguousarray(np.broadcast_to(values, shape).reshape(-1)[live])
         self._write(flat, vals)
         if self.access_log is not None and flat.size:
-            raw = vals.view(np.uint8).reshape(flat.size, -1)
-            self.access_log.append(
-                (self.agent, "w", self.current_op, flat, vals.dtype.itemsize, raw)
-            )
+            self._log("w", flat, vals.dtype.itemsize, vals.view(np.uint8).reshape(flat.size, -1))
 
     def atomic(
         self,
@@ -234,9 +244,7 @@ class Memory:
         flat = np.asarray(addrs, dtype=np.int64).reshape(-1)
         old = np.zeros(int(np.prod(shape, dtype=np.int64)), dtype=val.dtype)
         if self.access_log is not None and live.any():
-            self.access_log.append(
-                (self.agent, "a", self.current_op, flat[live], val.dtype.itemsize, None)
-            )
+            self._log("a", flat[live], val.dtype.itemsize, None)
         for i in np.nonzero(live)[0]:
             addr = flat[i : i + 1]
             cur = self._read(addr, val.dtype)

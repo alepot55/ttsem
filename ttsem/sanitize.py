@@ -57,6 +57,7 @@ class Report:
     fault: Fault | None = None
     message_for_agent: str = ""
     unsupported: list[str] = dataclasses.field(default_factory=list)
+    races_unchecked: int = 0
 
 
 class KernelFault(Exception):
@@ -268,9 +269,11 @@ def _no_benchmarks() -> Any:
     if not hasattr(active, "utils"):  # programs size their launches from the device's properties
         import types
 
-        active.utils = types.SimpleNamespace(
-            get_device_properties=lambda device=0: active.get_device_properties(device)
-        )
+        def properties(device: Any = 0) -> dict[str, Any]:
+            # the keys of the NVIDIA driver; the register count is Blackwell's, the warp is 32
+            return {"max_num_regs": 1 << 16, "warpSize": 32, **active.get_device_properties(device)}
+
+        active.utils = types.SimpleNamespace(get_device_properties=properties)
 
     def undo() -> None:
         testing.do_bench = saved[0]
@@ -286,6 +289,7 @@ def _no_benchmarks() -> Any:
 @dataclasses.dataclass
 class Session:
     launches: int = 0
+    races_unchecked: int = 0  # launches too large for the access log (`Memory.access_budget`)
 
 
 @contextlib.contextmanager
@@ -329,6 +333,8 @@ def session(
             failure = execution.failure
             raise Unjudged(failure.verdict, failure.message, list(failure.unsupported or []))
         _write_back(record, execution)
+        if execution.memory.access_overflow:
+            state.races_unchecked += 1
         race = pidraces.find_race(execution.memory.access_log)
         if race is not None:
             raise KernelFault(_with_source(_race_fault(record, race, launch)))
@@ -359,7 +365,7 @@ def run_program(
             return report_of(stop.fault, state.launches)
         except Unjudged as stop:
             return Report(stop.verdict, state.launches, None, stop.detail, stop.unsupported)
-    return Report("ok", state.launches)
+    return Report("ok", state.launches, races_unchecked=state.races_unchecked)
 
 
 def run_script(
@@ -380,7 +386,7 @@ def run_script(
                 return Report(stop.verdict, state.launches, None, stop.detail, stop.unsupported)
     finally:
         sys.argv = old_argv
-    return Report("ok", state.launches)
+    return Report("ok", state.launches, races_unchecked=state.races_unchecked)
 
 
 def run_pytest(args: list[str], cc: int = harness.DEFAULT_CC) -> int:
@@ -408,6 +414,8 @@ def main() -> int:
     runner = run_program if has_main else run_script
     report = runner(args.program, rest, args.cc)
     print(f"{report.verdict}: {report.launches} launch(es)")
+    if report.races_unchecked:
+        print(f"{report.races_unchecked} launch(es) too large to be checked for races")
     if report.message_for_agent:
         print(report.message_for_agent)
     if args.json:

@@ -46,3 +46,29 @@ def test_atomic_updates_of_one_address_are_not_a_race_but_a_plain_store_next_to_
     assert pidraces.find_race([_e(0, "a", [8]), _e(1, "a", [8]), _e(2, "a", [8])]) is None
     race = pidraces.find_race([_e(0, "a", [8]), _e(1, "w", [8], [0])])
     assert race is not None and race.kind == "write-atomic"
+
+
+def test_elements_of_one_size_are_compared_whole_not_byte_by_byte() -> None:
+    four = np.array([[1, 0, 0, 0]], dtype=np.uint8)
+    other = np.array([[2, 0, 0, 0]], dtype=np.uint8)
+    a = ((0, 0, 0), "w", "store a", np.array([64], dtype=np.int64), 4, four)
+    b = ((1, 0, 0), "w", "store b", np.array([64], dtype=np.int64), 4, other)
+    race = pidraces.find_race([a, b])
+    assert race is not None and race.kind == "write-write" and race.address == 64
+    assert race.shared_bytes == 4
+    same = ((1, 0, 0), "w", "store b", np.array([64], dtype=np.int64), 4, four)
+    assert pidraces.find_race([a, same]) is None
+
+
+def test_the_access_log_stops_at_its_budget_and_says_so() -> None:
+    from ttsem.memory import Memory
+
+    memory = Memory()
+    memory.register(4096, np.zeros(64, dtype=np.int32))
+    memory.access_log = []
+    memory.access_budget = 40
+    addrs = 4096 + 4 * np.arange(32, dtype=np.int64)
+    memory.load(addrs, None, None, np.dtype(np.int32))
+    assert memory.access_log is not None and len(memory.access_log) == 1
+    memory.load(addrs, None, None, np.dtype(np.int32))  # 64 elements logged: over the budget
+    assert memory.access_log is None and memory.access_overflow
