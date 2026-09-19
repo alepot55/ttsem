@@ -1158,11 +1158,45 @@ def _fp4_to_fp(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
 
 # --------------------------------------------------------------------- tt: mapped regions
 
+
 # libdevice, by the base name of the symbol: CUDA spells the float entry point `__nv_<name>f`
 # and the double one `__nv_<name>`, so both are generated from one line here. Every one of
 # these is computed in the decoded dtype of the operands, which is `float32` for the `f`
 # variants: like `math.*`, they do not model the device's fast approximations, so a result
 # that depends on the last bit differs and the harness reports it as `approx`.
+def _erfinv(y: np.ndarray) -> np.ndarray:
+    """The inverse error function: Giles' approximation, then two Newton steps on `math.erf`."""
+    y = np.asarray(y, dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        w = -np.log((1.0 - y) * (1.0 + y))
+        small = w < 5.0
+        ws, wl = w - 2.5, np.sqrt(np.where(small, 5.0, w)) - 3.0
+        ps = 2.81022636e-08
+        for c in (3.43273939e-07, -3.5233877e-06, -4.39150654e-06, 0.00021858087, -0.00125372503,
+                  -0.00417768164, 0.246640727, 1.50140941):  # fmt: skip
+            ps = c + ps * ws
+        pl = -0.000200214257
+        for c in (0.000100950558, 0.00134934322, -0.00367342844, 0.00573950773, -0.0076224613,
+                  0.00943887047, 1.00167406, 2.83297682):  # fmt: skip
+            pl = c + pl * wl
+        x = np.where(small, ps, pl) * y
+        erf = np.vectorize(math.erf, otypes=[np.float64])
+        for _ in range(2):
+            x = x - (erf(x) - y) / (2.0 / math.sqrt(math.pi) * np.exp(-x * x))
+    x = np.where(np.abs(y) == 1.0, np.copysign(np.inf, y), x)
+    return np.where(np.abs(y) > 1.0, np.nan, x)
+
+
+def _lgamma(x: np.ndarray) -> np.ndarray:
+    def one(v: float) -> float:
+        try:
+            return math.lgamma(v)
+        except ValueError:  # a pole: zero and the negative integers
+            return math.inf
+
+    return np.vectorize(one, otypes=[np.float64])(np.asarray(x, dtype=np.float64))
+
+
 _LIBDEVICE: dict[str, tuple[int, Callable[..., np.ndarray]]] = {
     "exp": (1, np.exp),
     "exp2": (1, np.exp2),
@@ -1186,6 +1220,8 @@ _LIBDEVICE: dict[str, tuple[int, Callable[..., np.ndarray]]] = {
     "tanh": (1, np.tanh),
     "erf": (1, np.vectorize(math.erf, otypes=[np.float64])),
     "erfc": (1, np.vectorize(math.erfc, otypes=[np.float64])),
+    "erfinv": (1, _erfinv),
+    "lgamma": (1, _lgamma),
     "floor": (1, np.floor),
     "ceil": (1, np.ceil),
     "trunc": (1, np.trunc),
@@ -1268,6 +1304,11 @@ def _extern_elementwise(interp: Interp, op: Op, args: list[Value]) -> list[Value
         base = to_float(args[0], op.operand_types[0])
         with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
             return [from_float(np.power(base, np.asarray(args[1]).astype(base.dtype)), _rty(op))]
+    if symbol in ("__nv_signbit", "__nv_signbitf", "__nv_signbitd"):  # nonzero for a set sign bit
+        if len(args) != 1:
+            raise Unsupported(op.name, f"{symbol} takes 1 operand, got {len(args)}")
+        signed = np.signbit(to_float(args[0], op.operand_types[0]))
+        return [signed.astype(to_numpy(_rty(op)))]
     if symbol in ("__nv_llrint", "__nv_llrintf"):  # nearest integer, ties to even, as an integer
         if len(args) != 1:
             raise Unsupported(op.name, f"{symbol} takes 1 operand, got {len(args)}")

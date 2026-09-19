@@ -1326,6 +1326,22 @@ def test_extern_elementwise_llrint_rounds_to_even_and_returns_integers() -> None
     assert got.dtype == np.int64 and got.tolist() == [0, 2, -2, 127]
 
 
+def test_extern_elementwise_erfinv_lgamma_and_signbit() -> None:
+    x = np.array([0.0, 0.5, -0.9, 1.0], np.float32)
+    erfinv = op("tt.extern_elementwise", [tensor((4,), "f32")], tensor((4,), "f32"),
+                attrs={"symbol": "__nv_erfinvf"})  # fmt: skip
+    got = one(erfinv, [x])
+    assert np.allclose(got[:3], [0.0, 0.4769363, -1.1630871], atol=1e-6) and np.isinf(got[3])
+    lgamma = op("tt.extern_elementwise", [tensor((3,), "f32")], tensor((3,), "f32"),
+                attrs={"symbol": "__nv_lgammaf"})  # fmt: skip
+    assert np.allclose(
+        one(lgamma, [np.array([1.0, 5.0, 0.5], np.float32)]), [0.0, 3.1780539, 0.5723649]
+    )
+    signbit = op("tt.extern_elementwise", [tensor((3,), "f32")], tensor((3,), "i32"),
+                 attrs={"symbol": "__nv_signbitf"})  # fmt: skip
+    assert one(signbit, [np.array([-1.0, 2.0, -0.0], np.float32)]).tolist() == [1, 0, 1]
+
+
 def test_extern_elementwise_unknown_symbol_names_it() -> None:
     target = op("tt.extern_elementwise", [F32], F32, attrs={"symbol": "__nv_j0f"})
     with pytest.raises(Unsupported, match="__nv_j0f"):
