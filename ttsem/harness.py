@@ -919,6 +919,7 @@ def record_launch(
     bound = _bind_names(fn.arg_names, args, kwargs, _param_defaults(fn))
     if callable(grid):
         grid = grid(bound)
+    len(grid)  # as the launcher does: `kernel[n](...)` with a bare int is a TypeError there too
     leaves = [(leaf, v) for name, value in bound.items() for leaf, v in _flat_args(name, value)]
     tensors = {leaf: v for leaf, v in leaves if _is_tensor_like(v)}
     tensors.update({leaf: v.base for leaf, v in leaves if _is_descriptor(v)})

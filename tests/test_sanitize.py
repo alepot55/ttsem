@@ -98,3 +98,18 @@ def test_a_program_that_asks_whether_its_tensors_are_on_the_gpu_is_told_yes() ->
         with torch.cuda.device(0):
             torch.cuda.set_device(0)
     assert not torch.zeros(1).is_cuda
+
+
+def test_a_launch_grid_that_is_a_bare_int_fails_as_it_does_on_a_gpu(tmp_path: Path) -> None:
+    script = tmp_path / "int_grid.py"
+    script.write_text(
+        "import torch, triton, triton.language as tl\n"
+        "@triton.jit\n"
+        "def k(x, n, B: tl.constexpr):\n"
+        "    o = tl.arange(0, B)\n"
+        "    tl.store(x + o, o.to(tl.float32), mask=o < n)\n"
+        "x = torch.zeros(4, device='cuda')\n"
+        "k[1](x, 4, B=4)\n"
+    )
+    with pytest.raises(TypeError, match="has no len"):
+        sanitize.run_script(script)
