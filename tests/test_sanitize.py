@@ -94,10 +94,12 @@ def test_a_program_that_asks_whether_its_tensors_are_on_the_gpu_is_told_yes() ->
 
     with sanitize.session():
         x = torch.zeros(4, device="cuda")
-        assert x.is_cuda
+        assert x.is_cuda and x.device.type == "cuda"
+        y = torch.ones(4, device=x.device) + x.to(x.device)  # a device read off a tensor works
+        assert y.tolist() == [1.0] * 4 and torch.empty_like(x).shape == (4,)
         with torch.cuda.device(0):
             torch.cuda.set_device(0)
-    assert not torch.zeros(1).is_cuda
+    assert not torch.zeros(1).is_cuda and torch.zeros(1).device.type == "cpu"
 
 
 def test_a_launch_grid_that_is_a_bare_int_fails_as_it_does_on_a_gpu(tmp_path: Path) -> None:
@@ -113,3 +115,16 @@ def test_a_launch_grid_that_is_a_bare_int_fails_as_it_does_on_a_gpu(tmp_path: Pa
     )
     with pytest.raises(TypeError, match="has no len"):
         sanitize.run_script(script)
+
+
+def test_a_second_poison_pattern_shows_memory_returned_without_being_written(monkeypatch) -> None:
+    import torch
+
+    def never_written() -> list[float]:
+        with sanitize.session():
+            return torch.empty(2, device="cuda").tolist()
+
+    first = never_written()
+    monkeypatch.setenv("TTSEM_POISON", "second")
+    second = never_written()
+    assert first != second and second == [-12345.0, -12345.0]

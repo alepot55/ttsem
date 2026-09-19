@@ -21,6 +21,7 @@ import argparse
 import contextlib
 import dataclasses
 import json
+import os
 import re
 import sys
 from collections.abc import Iterator
@@ -247,15 +248,17 @@ def _cuda_is_cpu() -> Any:
     def poison(tensor: Any) -> Any:
         """Memory nobody wrote holds NaN (a loud pattern for integers): `torch.empty` returns
         zero pages often enough, on a GPU too, that a kernel reading its output before writing
-        it passes its tests."""
+        it passes its tests. `TTSEM_POISON=second` selects a second pattern: what differs between
+        two runs of one program is memory it returned without ever writing it."""
         if not isinstance(tensor, torch.Tensor) or tensor.numel() == 0:
             return tensor
+        second = os.environ.get("TTSEM_POISON") == "second"
         if tensor.dtype.is_floating_point or tensor.dtype.is_complex:
-            tensor.fill_(float("nan"))
+            tensor.fill_(-12345.0 if second else float("nan"))
         elif tensor.dtype == torch.bool:
-            tensor.fill_(True)
+            tensor.fill_(not second)
         else:
-            tensor.fill_(torch.iinfo(tensor.dtype).max - 0x5A)
+            tensor.fill_(torch.iinfo(tensor.dtype).max - (0x3C if second else 0x5A))
         return tensor
 
     class CudaIsCpu(TorchFunctionMode):
@@ -279,11 +282,12 @@ def _cuda_is_cpu() -> Any:
     return CudaIsCpu()
 
 
-def _pretend_cuda() -> Any:
+def _pretend_cuda(mode: Any) -> Any:
     """What a GPU program asks of torch before it launches anything and the fake driver's stub of
     `torch.cuda` does not answer: `assert x.is_cuda`, a device guard, `set_device`. While the
     session is open every tensor is on the one pretend device. Returns the undo."""
     import torch
+    from torch.overrides import _get_current_function_mode_stack
 
     class NoDevice(contextlib.nullcontext):  # type: ignore[type-arg]
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -298,12 +302,27 @@ def _pretend_cuda() -> Any:
     for name, answer in answers.items():
         setattr(torch.cuda, name, answer)
     torch.Tensor.is_cuda = property(lambda self: True)  # type: ignore[assignment,misc]
+    # `x.device.type == "cuda"` is the other common guard, and `if out.device.type == "cpu"` a
+    # common fallback branch that would skip the kernel: every tensor says it is on the pretend
+    # device. A device read from a tensor and passed on (`device=x.device`, `.to(x.device)`) comes
+    # back through the function mode, which sends it to the CPU.
+    # Only where the function mode is in force, because a pretend device that is passed on must
+    # come back through it: not on another thread, and not inside a call the mode is handling
+    # (a mode is off while it handles one, and `backward` runs the program's own code that way).
+    pretend = torch.device("cuda", 0)
+    real = torch._C.TensorBase.device.__get__  # type: ignore[attr-defined]
+
+    def device(self: Any) -> Any:
+        return pretend if mode in _get_current_function_mode_stack() else real(self)
+
+    torch.Tensor.device = property(device)  # type: ignore[assignment,misc]
     had_stream = hasattr(torch._C, "_cuda_getCurrentRawStream")
     if not had_stream:  # imported by name by kernels that Inductor generated
         torch._C._cuda_getCurrentRawStream = lambda device=0: 0  # type: ignore[attr-defined]
 
     def undo() -> None:
         del torch.Tensor.is_cuda
+        del torch.Tensor.device
         if not had_stream:
             del torch._C._cuda_getCurrentRawStream
         for name, original in saved.items():
@@ -413,7 +432,7 @@ def session(
 
     JITFunction.run = run
     redirect = _cuda_is_cpu() if cuda_is_cpu else contextlib.nullcontext()
-    restore_cuda = _pretend_cuda() if cuda_is_cpu else (lambda: None)
+    restore_cuda = _pretend_cuda(redirect) if cuda_is_cpu else (lambda: None)
     try:
         with redirect:
             yield state

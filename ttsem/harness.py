@@ -553,7 +553,9 @@ def storage_copy(tensor: Any) -> tuple[int, np.ndarray]:
     import torch
 
     tensor = _unwrap(tensor)
-    flat = torch.empty(0, dtype=tensor.dtype, device=tensor.device)
+    # the device torch knows, not the one a session makes tensors report (`sanitize._pretend_cuda`)
+    where = torch._C.TensorBase.device.__get__(tensor)  # type: ignore[attr-defined]
+    flat = torch.empty(0, dtype=tensor.dtype, device=where)
     flat.set_(tensor.untyped_storage())
     return int(flat.data_ptr()), _to_numpy(flat)
 
