@@ -1706,13 +1706,26 @@ def _slice_at(x: np.ndarray, axis: int, i: int) -> np.ndarray:
 
 @register("tt.reduce")
 def _reduce(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
+    # The IR does not order a reduction, and its combiner is associative by contract. The fold
+    # is a balanced tree over neighbours, left operand on the left: what devices and torch do,
+    # which in a narrow float is a different number from a left fold (512 bf16 squares: 528
+    # pairwise, 496 left to right, 529.3 exactly). A level of the tree is one evaluation of the
+    # region over all its pairs, so a reduction costs log2(n) evaluations, not n.
     axis = _int_attr(op, "axis")
-    srcs = [np.asarray(a) for a in args]
-    n = srcs[0].shape[axis]
-    acc = [_slice_at(s, axis, 0) for s in srcs]
-    for i in range(1, n):
-        cur = [_slice_at(s, axis, i) for s in srcs]
-        acc = [np.asarray(v) for v in interp.run_region(op.regions[0], [*acc, *cur])]
+    level = [np.moveaxis(np.asarray(a), axis, 0) for a in args]
+    while level[0].shape[0] > 1:
+        n = level[0].shape[0]
+        pairs = n - (n % 2)
+        left = [x[0:pairs:2] for x in level]
+        right = [x[1:pairs:2] for x in level]
+        merged = [np.asarray(v) for v in interp.run_region(op.regions[0], [*left, *right])]
+        if n % 2:
+            merged = [
+                np.concatenate([m, x[n - 1 : n].astype(m.dtype, copy=False)], axis=0)
+                for m, x in zip(merged, level, strict=True)
+            ]
+        level = merged
+    acc = [x[0] for x in level]
     # The combine region already produced values in the storage encoding of the result type,
     # so this only fixes the dtype: `cast_to` would *re-encode* them, and for bf16 and the fp8
     # kinds that reads the bit pattern as a number (a bf16 256.0 is the uint16 0x4380, which

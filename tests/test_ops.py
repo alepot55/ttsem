@@ -1432,8 +1432,9 @@ def test_fma_op_keeps_the_bits_the_unfused_expression_loses() -> None:
 
 
 def test_reduce_of_bf16_does_not_re_encode_the_accumulator() -> None:
-    # a left fold of 1024 bf16 ones saturates at 256; `cast_to` on the result used to read the
-    # bit pattern 0x4380 as a number and encode it again, giving 17280 (`test_sum_dtype`).
+    # `cast_to` on the result used to read the accumulator's bit pattern as a number and encode
+    # it again (`test_sum_dtype`). The fold is a balanced tree, as on a device: 1024 ones are
+    # 1024, where a left fold in bf16 saturates at 256.
     body = region(
         block(
             [("%l", BF16), ("%r", BF16)],
@@ -1446,7 +1447,33 @@ def test_reduce_of_bf16_does_not_re_encode_the_accumulator() -> None:
     src = np.full(1024, from_float(np.float32(1.0), BF16), dtype=np.uint16)
     target = op("tt.reduce", [tensor((1024,), "bf16")], BF16, attrs={"axis": 0}, regions=[body])
     got = one(target, [src])
-    assert got.dtype == np.uint16 and float(to_float(got, BF16)) == 256.0
+    assert got.dtype == np.uint16 and float(to_float(got, BF16)) == 1024.0
+
+
+def test_reduce_folds_as_a_balanced_tree_and_keeps_the_operand_order() -> None:
+    """The IR does not order a reduction; devices (and torch) fold pairwise, which in a narrow
+    float is a different number from a left fold: 512 squares in bf16 sum to 528 pairwise and
+    496 left to right, against 529.3 (Liger-Kernel's bf16 rms_norm under the sanitizer). The
+    tree keeps the left operand on the left, so a combiner that is only associative works."""
+    body = region(
+        block(
+            [("%l", I32), ("%r", I32)],
+            [
+                op("arith.subi", [I32, I32], I32, results=["%s"], operands=["%l", "%r"]),
+                op("tt.reduce.return", [I32], [], operands=["%s"], results=[]),
+            ],
+        )
+    )
+    # l - r folded pairwise over [8, 1, 2, 3, 4]: ((8-1) - (2-3)) - 4 = 4; a left fold gives -2
+    src = np.array([8, 1, 2, 3, 4], dtype=np.int32)
+    target = op("tt.reduce", [tensor((5,), "i32")], I32, attrs={"axis": 0}, regions=[body])
+    assert int(one(target, [src])) == 4
+    # along axis 1 of a matrix, every row on its own
+    grid = np.array([[8, 1, 2, 3, 4], [1, 1, 1, 1, 1]], dtype=np.int32)
+    rows = op(
+        "tt.reduce", [tensor((2, 5), "i32")], tensor((2,), "i32"), attrs={"axis": 1}, regions=[body]
+    )
+    assert one(rows, [grid]).tolist() == [4, -1]
 
 
 def test_atomic_add_on_bf16_adds_values_not_bit_patterns() -> None:

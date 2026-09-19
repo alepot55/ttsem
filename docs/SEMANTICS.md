@@ -235,15 +235,20 @@ only then multiplied, with the accumulation of `tt.dot`.
 
 ## Reductions and scans
 
-- The combine region of `tt.reduce` / `tt.scan` is run once per index along the axis, on whole
-  **slices** rather than element by element. Every op a combiner can contain is elementwise, so
-  this is exact, and it is what makes a 128x64 reduction take microseconds instead of seconds.
-- Combining associates left to right in increasing index order, with the accumulator as the
-  left pair of block arguments and the incoming element as the right pair. Triton does not
-  specify the order and the hardware's tree order can differ for a non-associative combiner;
-  the fixtures use `+` and `max`, for which it does not matter. Float addition at a narrow
-  width is not associative enough for that to stay invisible over a whole suite: see the
-  device deviations at the end.
+- The combine region of `tt.scan` is run once per index along the axis and that of `tt.reduce`
+  once per level of a tree, on whole **slices** rather than element by element. Every op a
+  combiner can contain is elementwise, so this is exact, and it is what makes a reduction over
+  8192 elements cost 13 evaluations of the region instead of 8191.
+- **A `tt.reduce` folds as a balanced tree over neighbours**, the left operand on the left: level
+  by level `(x0 . x1), (x2 . x3), ...`, an odd element carried up unchanged. The IR does not
+  order a reduction and its combiner is associative by contract; devices (and torch) fold
+  pairwise, and in a narrow float that is a different *number* from a left fold, not a different
+  rounding: 512 bf16 squares sum to 528 pairwise and 496 left to right, against 529.3. Until 19
+  Sep 2026 this semantics folded left to right; Liger-Kernel's bf16 `rms_norm` tests, run under
+  the sanitizer, were off by 5% in the weight gradient for that reason alone, and two deviations
+  listed further down (the argmax over a NaN, the bf16 sum of 1024 ones) were the same thing.
+  A `tt.scan` still associates left to right, with the accumulator as the left pair of block
+  arguments and the incoming element as the right pair.
 - A reverse `tt.scan` flips the input, scans, and flips back, as the shipped interpreter does.
 - `tt.histogram` counts, in bin `i`, the live lanes **equal to** `i`; a value below zero or at
   or above the bin count belongs to no bin and is dropped. "Each bin has a width of 1 and bins
@@ -440,16 +445,17 @@ policy above.
   `test_argmax_argmin_with_nan` and `test_argmax_argmin_tie_break_fast_with_nan`: the argmax
   combiner keeps `(a, ia)` when `a > b` or (`a == b` and `ia < ib`), with *ordered* float
   predicates, so a NaN on the right wins and a NaN on the left loses. Over `[3, 5, nan, -inf]`
-  the left fold this semantics runs ends at index 3, and the device's butterfly ends at index
-  1, which is the index the test asserts. Both are legal evaluations of the same region:
+  a left fold ends at index 3, and the device's butterfly ends at index
+  1, which is the index the test asserts and, since the fold became a balanced tree, the one this
+  semantics gives too. Both are legal evaluations of the same region:
   `tt.reduce` does not specify the association, and this combiner is not associative. The
   "argmax ignores NaN" property the test names holds only for the tree the lowering happens to
   pick.
 - **A left fold of a narrow float saturates where a balanced tree does not.**
   `test_sum_dtype`'s last launch sums 1024 `bf16` ones with a `bf16` accumulator. bf16 has 8
-  bits of significand, so `256 + 1` rounds back to `256` (a tie, to even) and the left fold
-  this semantics runs stops at 256; the device's balanced tree doubles exactly at every level
-  and reaches 1024, which is what the test asserts. Nothing in `tt.reduce` says which one it
+  bits of significand, so `256 + 1` rounds back to `256` (a tie, to even) and a left fold
+  stops at 256; the device's balanced tree doubles exactly at every level and reaches 1024, which
+  is what the test asserts and what this semantics gives since its fold became a tree (19 Sep 2026). Nothing in `tt.reduce` says which one it
   is, and the difference is a factor of four, not a rounding.
 - **`arith.remf` loses the sign of a zero remainder.**
   `test_bin_op` with `%` and a `bfloat16` operand, 12 elements over four launches: where the
