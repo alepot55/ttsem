@@ -72,3 +72,22 @@ def test_the_access_log_stops_at_its_budget_and_says_so() -> None:
     assert memory.access_log is not None and len(memory.access_log) == 1
     memory.load(addrs, None, None, np.dtype(np.int32))  # 64 elements logged: over the budget
     assert memory.access_log is None and memory.access_overflow
+
+
+def test_the_range_check_does_not_hide_a_race_inside_interleaved_ranges() -> None:
+    """Two instances whose address ranges interleave (strided outputs) are looked at closely,
+    and a shared element among them is still found; without one, still no race."""
+    a = _e(0, "w", [0, 8, 16], [1, 1, 1])
+    b = _e(1, "w", [4, 12, 16], [2, 2, 2])
+    race = pidraces.find_race([a, b])
+    assert race is not None and race.address == 16
+    c = _e(1, "w", [4, 12, 20], [2, 2, 2])
+    assert pidraces.find_race([a, c]) is None
+
+
+def test_a_load_by_one_instance_inside_what_another_stores_is_found_past_the_range_check() -> None:
+    log = [_e(0, "w", [100, 101, 102], [1, 1, 1]), _e(1, "w", [200], [1]), _e(1, "r", [101])]
+    race = pidraces.find_race(log)
+    assert race is not None and race.kind == "read-write" and race.address == 101
+    quiet = [_e(0, "w", [100, 101, 102], [1, 1, 1]), _e(1, "w", [200], [1]), _e(1, "r", [50, 300])]
+    assert pidraces.find_race(quiet) is None

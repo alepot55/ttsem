@@ -153,8 +153,11 @@ class Memory:
         except MemoryFault as fault:
             fault.kind = "read"
             raise
-        raw = np.zeros((addrs.size, dtype.itemsize), dtype=np.uint8)
         span = np.arange(dtype.itemsize, dtype=np.int64)
+        if idx.size and idx.min() == idx.max():  # one buffer: the usual access, no grouping
+            raw = self._views[int(idx[0])][off[:, None] + span]
+            return np.ascontiguousarray(raw).view(dtype).reshape(-1)
+        raw = np.zeros((addrs.size, dtype.itemsize), dtype=np.uint8)
         for b in np.unique(idx):
             sel = idx == b
             raw[sel] = self._views[int(b)][off[sel][:, None] + span]
@@ -171,6 +174,9 @@ class Memory:
         raw = np.ascontiguousarray(vals).view(np.uint8).reshape(addrs.size, -1)
         _reject_conflicting_lanes(addrs, raw)
         span = np.arange(vals.dtype.itemsize, dtype=np.int64)
+        if idx.min() == idx.max():  # one buffer: the usual access, no grouping
+            self._views[int(idx[0])][off[:, None] + span] = raw
+            return
         for b in np.unique(idx):
             sel = idx == b
             self._views[int(b)][off[sel][:, None] + span] = raw[sel]

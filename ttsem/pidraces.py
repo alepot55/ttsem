@@ -85,8 +85,51 @@ def _spread(keys: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return k[starts], np.minimum.reduceat(v, starts), np.maximum.reduceat(v, starts)
 
 
+def _may_overlap(log: list[Entry]) -> bool:
+    """False when no two instances can share an address a race needs: every instance's stores
+    and atomic updates stay inside an address range no other instance touches at all, except
+    by loads of ranges nobody writes. Ranges are [min, max] per access, so True is only
+    "look closer"; the usual kernel (each instance its own slice of the output, everyone
+    loading the same inputs) is settled here without sorting a single address."""
+    writes: list[tuple[int, int, Any]] = []
+    reads: list[tuple[int, int, Any]] = []
+    for agent, kind, _op, addrs, itemsize, _raw in log:
+        span = (int(addrs.min()), int(addrs.max()) + itemsize - 1, agent)
+        (reads if kind == "r" else writes).append(span)
+    if not writes:
+        return False
+    writes.sort(key=lambda w: (w[0], w[1]))
+    reach, owner = writes[0][1], writes[0][2]
+    for lo, hi, agent in writes[1:]:
+        if lo <= reach and agent != owner:
+            return True
+        if hi > reach:
+            reach, owner = hi, agent
+    starts = [w[0] for w in writes]
+    ends_running: list[int] = []
+    top = -1
+    for w in writes:
+        top = max(top, w[1])
+        ends_running.append(top)
+    import bisect
+
+    for lo, hi, agent in reads:
+        k = bisect.bisect_right(starts, hi)  # writes starting at or before the read's end
+        if k and ends_running[k - 1] >= lo:
+            # some write range reaches into the read: a race only if another instance's
+            j = k - 1
+            while j >= 0 and ends_running[j] >= lo:
+                wlo, whi, wagent = writes[j]
+                if whi >= lo and wlo <= hi and wagent != agent:
+                    return True
+                j -= 1
+    return False
+
+
 def find_race(log: list[Entry] | None) -> PidRace | None:
     if not log:
+        return None
+    if not _may_overlap(log):
         return None
     addr, who, kind, entry, val = _expand(log)
     if addr.size == 0 or np.unique(who).size < 2:
