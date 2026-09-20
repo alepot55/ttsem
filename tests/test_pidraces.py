@@ -105,3 +105,17 @@ def test_a_load_by_one_instance_inside_what_another_stores_is_found_past_the_ran
     assert race is not None and race.kind == "read-write" and race.address == 101
     quiet = [_e(0, "w", [100, 101, 102], [1, 1, 1]), _e(1, "w", [200], [1]), _e(1, "r", [50, 300])]
     assert pidraces.find_race(quiet) is None
+
+
+def test_a_store_of_the_bytes_already_there_is_no_conflict_for_a_load() -> None:
+    # instance 1 writes back what address 8 already held (kind `s`): instance 0 loads the same
+    # bytes before and after it
+    assert pidraces.find_race([_e(0, "r", [8]), _e(1, "s", [8], [5]), _e(1, "w", [9], [1])]) is None
+    race = pidraces.find_race([_e(0, "r", [8]), _e(1, "w", [8], [6])])
+    assert race is not None and race.kind == "read-write"
+
+
+def test_a_silent_store_still_counts_among_the_last_stores_of_its_address() -> None:
+    # instance 0 rewrites the 5 that was there, instance 1 leaves a 6: the order decides
+    race = pidraces.find_race([_e(0, "s", [8], [5]), _e(1, "w", [8], [6])])
+    assert race is not None and race.kind == "write-write"

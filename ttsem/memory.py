@@ -207,9 +207,22 @@ class Memory:
         live = _live(mask, shape).reshape(-1)
         flat = np.asarray(addrs, dtype=np.int64).reshape(-1)[live]
         vals = np.ascontiguousarray(np.broadcast_to(values, shape).reshape(-1)[live])
+        silent = None
+        if self.access_log is not None and flat.size:
+            try:  # a store of the bytes already there changes nothing for whoever loads them
+                held = np.ascontiguousarray(self._read(flat, vals.dtype)).view(np.uint8)
+                silent = held.reshape(flat.size, -1) == vals.view(np.uint8).reshape(flat.size, -1)
+                silent = silent.all(axis=1)
+            except MemoryFault:
+                silent = None  # out of bounds: the write below says so
         self._write(flat, vals)
         if self.access_log is not None and flat.size:
-            self._log("w", flat, vals.dtype.itemsize, vals.view(np.uint8).reshape(flat.size, -1))
+            raw = vals.view(np.uint8).reshape(flat.size, -1)
+            if silent is None or not silent.any():
+                self._log("w", flat, vals.dtype.itemsize, raw)
+            else:
+                self._log("w", flat[~silent], vals.dtype.itemsize, raw[~silent])
+                self._log("s", flat[silent], vals.dtype.itemsize, raw[silent])
 
     def atomic(
         self,

@@ -195,3 +195,40 @@ def test_the_output_code_of_torch_compile_runs_here_and_its_race_is_seen() -> No
     finally:
         undo()
         inductor_utils.print_performance = once  # type: ignore[assignment]
+
+
+def test_a_kernel_that_writes_back_rows_it_did_not_change_does_not_race_with_their_readers() -> (
+    None
+):
+    """What a compiler emits for `x[::2] += x[1::2]`: every instance stores its whole block of
+    `x`, the odd rows with the values they had, while other instances load those rows."""
+    import torch
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def even_rows_plus_odd(x_ptr, n, cols, BLOCK: tl.constexpr):
+        i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = i < n
+        row = i // cols
+        own = tl.load(x_ptr + i, mask)
+        below = tl.load(x_ptr + i + cols, mask & (row % 2 == 0), other=0.0)
+        tl.store(x_ptr + i, tl.where(row % 2 == 0, own + below, own), mask)
+
+    @triton.jit
+    def every_row_plus_the_next(x_ptr, n, cols, BLOCK: tl.constexpr):
+        i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = i < n
+        own = tl.load(x_ptr + i, mask)
+        below = tl.load(x_ptr + i + cols, mask & (i + cols < n), other=0.0)
+        tl.store(x_ptr + i, own + below, mask)
+
+    with sanitize.session():
+        x = torch.arange(64, dtype=torch.float32, device="cuda").reshape(8, 8) + 1.0
+        want = x.clone()
+        want[::2] += want[1::2].clone()
+        even_rows_plus_odd[(8,)](x, 64, 8, BLOCK=8)
+        assert torch.equal(x, want)
+        with pytest.raises(sanitize.KernelFault) as stop:
+            every_row_plus_the_next[(8,)](x, 64, 8, BLOCK=8)
+        assert stop.value.fault.kind == "race"

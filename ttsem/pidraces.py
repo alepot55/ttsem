@@ -12,6 +12,12 @@ the schedule:
 - one instance stores to an address another one updates atomically.
 
 Two atomic updates of one address are not a race (that is what they are for), nor are two loads.
+A store of the bytes the address already holds (kind `s`, a silent store) is no conflict for a
+load: whoever loads sees the same bytes before and after it. Compilers write whole tensors back
+after an update of a slice (`x[::2] += ...` stores the untouched rows of `x` again), and every
+instance that reads those rows would otherwise be a race with the one that rewrites them. A silent
+store still counts among the last stores of its address: if another instance leaves other bytes
+there, the end state depends on the order.
 """
 
 from __future__ import annotations
@@ -42,7 +48,7 @@ def _expand(log: list[Entry]) -> tuple[np.ndarray, ...]:
         return _expand_elements(log, next(iter(sizes)))
     agents: dict[Any, int] = {}
     addr, who, kind, entry, val = [], [], [], [], []
-    codes = {"r": 0, "w": 1, "a": 2}
+    codes = {"r": 0, "w": 1, "a": 2, "s": 3}
     for index, (agent, k, _op, addrs, itemsize, raw) in enumerate(log):
         ident = agents.setdefault(agent, len(agents))
         span = (addrs[:, None] + np.arange(itemsize, dtype=np.int64)[None, :]).reshape(-1)
@@ -62,7 +68,7 @@ def _expand(log: list[Entry]) -> tuple[np.ndarray, ...]:
 def _expand_elements(log: list[Entry], itemsize: int) -> tuple[np.ndarray, ...]:
     agents: dict[Any, int] = {}
     addr, who, kind, entry, val = [], [], [], [], []
-    codes = {"r": 0, "w": 1, "a": 2}
+    codes = {"r": 0, "w": 1, "a": 2, "s": 3}
     weights = (1 << (8 * np.arange(itemsize, dtype=np.uint64))).astype(np.uint64)
     for index, (agent, k, _op, addrs, _size, raw) in enumerate(log):
         ident = agents.setdefault(agent, len(agents))
@@ -134,20 +140,22 @@ def find_race(log: list[Entry] | None) -> PidRace | None:
     addr, who, kind, entry, val = _expand(log)
     if addr.size == 0 or np.unique(who).size < 2:
         return None
-    found: list[tuple[str, np.ndarray, int, int]] = []  # (kind, conflict addrs, code a, code b)
+    # (kind, conflict addrs, the accesses of one side, the accesses of the other)
+    found: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
 
     w = kind == 1
-    if w.any():
+    stores = w | (kind == 3)
+    if stores.any():
         # what an address holds in the end is the last store of some instance, so only the last
         # store of each instance counts: instances that each write v1 then v2 always leave v2
-        order = np.lexsort((entry[w], who[w], addr[w]))
-        a, o, v = addr[w][order], who[w][order], val[w][order]
+        order = np.lexsort((entry[stores], who[stores], addr[stores]))
+        a, o, v = addr[stores][order], who[stores][order], val[stores][order]
         last = np.concatenate(((a[1:] != a[:-1]) | (o[1:] != o[:-1]), [True]))
         keys, lo, hi = _spread(a[last], o[last])
         _, vlo, vhi = _spread(a[last], v[last])
         clash = keys[(lo != hi) & (vlo != vhi)]
         if clash.size:
-            found.append(("write-write", clash, 1, 1))
+            found.append(("write-write", clash, stores, stores))
 
     def cross(a_mask: np.ndarray, b_mask: np.ndarray) -> np.ndarray:
         """Addresses touched under `a_mask` by one instance and under `b_mask` by another."""
@@ -162,23 +170,22 @@ def find_race(log: list[Entry] | None) -> PidRace | None:
     reads, atomics = kind == 0, kind == 2
     rw = cross(reads, w | atomics)
     if rw.size:
-        found.append(("read-write", rw, 0, -1))
+        found.append(("read-write", rw, reads, w | atomics))
     wa = cross(w, atomics)
     if wa.size:
-        found.append(("write-atomic", wa, 1, 2))
+        found.append(("write-atomic", wa, w, atomics))
     if not found:
         return None
 
-    name, clash, code_a, code_b = found[0]
+    name, clash, side_a, side_b = found[0]
     at = int(clash.min())
     here = addr == at
-    first_rows = np.flatnonzero(here & (kind == code_a))
-    other_kinds = (kind != 0) if code_b == -1 else (kind == code_b)
+    first_rows = np.flatnonzero(here & side_a)
     a = int(first_rows[0])
-    second_rows = np.flatnonzero(here & other_kinds & (who != who[a]))
+    second_rows = np.flatnonzero(here & side_b & (who != who[a]))
     if second_rows.size == 0:  # the first row was not one of the clashing instances
         for cand in first_rows[1:]:
-            second_rows = np.flatnonzero(here & other_kinds & (who != who[cand]))
+            second_rows = np.flatnonzero(here & side_b & (who != who[cand]))
             if second_rows.size:
                 a = int(cand)
                 break
