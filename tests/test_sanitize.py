@@ -128,3 +128,19 @@ def test_a_second_poison_pattern_shows_memory_returned_without_being_written(mon
     monkeypatch.setenv("TTSEM_POISON", "second")
     second = never_written()
     assert first != second and second == [-12345.0, -12345.0]
+
+
+def test_code_in_inductors_style_finds_its_grid_helper_and_its_allocator() -> None:
+    import torch
+
+    undo = sanitize.inductor_names()
+    try:
+        from torch._inductor.runtime.triton_heuristics import grid
+
+        assert grid(1000)({"XBLOCK": 256}) == (4, 1, 1)
+        assert grid(6, 1000)({"XBLOCK": 256, "YBLOCK": 4}) == (4, 2, 1)  # the last one is x
+        with sanitize.session():
+            buf = torch._C._dynamo.guards._empty_strided_cuda((2, 3), (3, 1), torch.float32)
+            assert buf.shape == (2, 3) and buf.stride() == (3, 1) and bool(buf.isnan().all())
+    finally:
+        undo()
