@@ -52,5 +52,6 @@ include = [
 testpaths = ["tests"]
 
 [tool.ruff]
+extend-exclude = ["tests/fixtures/inductor"]
 line-length = 100
 target-version = "py312"

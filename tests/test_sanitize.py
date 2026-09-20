@@ -166,3 +166,32 @@ def test_a_kernel_warmed_up_and_launched_through_its_handle_is_judged(tmp_path: 
     )
     report = sanitize.run_script(script)
     assert (report.verdict, report.launches) == ("ok", 1)
+
+
+def test_the_output_code_of_torch_compile_runs_here_and_its_race_is_seen() -> None:
+    """Two files TorchInductor 2.9.1 wrote on a GPU (fixtures/inductor). In one,
+    `x /= x.sum(0, keepdim=True); return x * 2.0` is fused into a kernel that reads the rows it is
+    overwriting (on the device: 8.4 M of 12.6 M elements wrong at 3 x 2048 x 2048); the other is
+    the out-of-place form, which is right."""
+    import runpy
+
+    pytest.importorskip("torch._inductor.runtime.triton_heuristics")
+    import torch._inductor.utils as inductor_utils
+
+    fixtures = Path(__file__).resolve().parent / "fixtures" / "inductor"
+    once = inductor_utils.print_performance
+    inductor_utils.print_performance = lambda fn, *a, **k: fn()  # type: ignore[assignment]
+    undo = sanitize.inductor_names()
+    try:
+        with sanitize.session() as state:
+            safe = runpy.run_path(str(fixtures / "safe_share_output_code.py"), run_name="code")
+            safe["benchmark_compiled_module"](times=1, repeat=1)
+            assert state.launches == 1
+        with sanitize.session(), pytest.raises(sanitize.KernelFault) as stop:
+            racy = runpy.run_path(str(fixtures / "channel_share_output_code.py"), run_name="code")
+            racy["benchmark_compiled_module"](times=1, repeat=1)
+        assert stop.value.fault.kind == "race"
+        assert "triton_poi_fused_copy__div_mul_sum_0" in stop.value.fault.kernel
+    finally:
+        undo()
+        inductor_utils.print_performance = once  # type: ignore[assignment]
