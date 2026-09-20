@@ -1340,6 +1340,14 @@ def test_extern_elementwise_erfinv_lgamma_and_signbit() -> None:
     signbit = op("tt.extern_elementwise", [tensor((3,), "f32")], tensor((3,), "i32"),
                  attrs={"symbol": "__nv_signbitf"})  # fmt: skip
     assert one(signbit, [np.array([-1.0, 2.0, -0.0], np.float32)]).tolist() == [1, 0, 1]
+    for symbol, want in (
+        ("__nv_isnanf", [0, 1, 0]),
+        ("__nv_isinff", [0, 0, 1]),
+        ("__nv_finitef", [1, 0, 0]),
+    ):
+        predicate = op("tt.extern_elementwise", [tensor((3,), "f32")], tensor((3,), "i32"),
+                       attrs={"symbol": symbol})  # fmt: skip
+        assert one(predicate, [np.array([1.0, np.nan, np.inf], np.float32)]).tolist() == want
 
 
 def test_extern_elementwise_unknown_symbol_names_it() -> None:

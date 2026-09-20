@@ -1290,6 +1290,16 @@ _EXTERN_INT: dict[str, Callable[[np.ndarray], np.ndarray]] = {
 }
 
 
+# libdevice's predicates on a float, by the base name of the symbol (`f` and `d` suffixed variants)
+_EXTERN_TEST: dict[str, Callable[[np.ndarray], np.ndarray]] = {
+    "__nv_signbit": np.signbit,
+    "__nv_isnan": np.isnan,
+    "__nv_isinf": np.isinf,
+    "__nv_finite": np.isfinite,
+    "__nv_isfinite": np.isfinite,
+}
+
+
 @register("tt.extern_elementwise")
 def _extern_elementwise(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     symbol = str(_attr(op, "symbol", ""))
@@ -1304,11 +1314,11 @@ def _extern_elementwise(interp: Interp, op: Op, args: list[Value]) -> list[Value
         base = to_float(args[0], op.operand_types[0])
         with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
             return [from_float(np.power(base, np.asarray(args[1]).astype(base.dtype)), _rty(op))]
-    if symbol in ("__nv_signbit", "__nv_signbitf", "__nv_signbitd"):  # nonzero for a set sign bit
+    test = _EXTERN_TEST.get(symbol.removesuffix("f").removesuffix("d"))
+    if test is not None:  # a float in, nonzero or zero out
         if len(args) != 1:
             raise Unsupported(op.name, f"{symbol} takes 1 operand, got {len(args)}")
-        signed = np.signbit(to_float(args[0], op.operand_types[0]))
-        return [signed.astype(to_numpy(_rty(op)))]
+        return [test(to_float(args[0], op.operand_types[0])).astype(to_numpy(_rty(op)))]
     if symbol in ("__nv_llrint", "__nv_llrintf"):  # nearest integer, ties to even, as an integer
         if len(args) != 1:
             raise Unsupported(op.name, f"{symbol} takes 1 operand, got {len(args)}")
