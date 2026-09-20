@@ -405,7 +405,8 @@ def _no_benchmarks() -> Any:
 
         def properties(device: Any = 0) -> dict[str, Any]:
             # the keys of the NVIDIA driver; the register count is Blackwell's, the warp is 32
-            return {"max_num_regs": 1 << 16, "warpSize": 32, **active.get_device_properties(device)}
+            sizes = {"max_num_regs": 1 << 16, "warpSize": 32, "multiprocessor_count": 128}
+            return {**sizes, "max_shared_mem": 1 << 18, **active.get_device_properties(device)}
 
         active.utils = types.SimpleNamespace(get_device_properties=properties)
 
@@ -418,6 +419,35 @@ def _no_benchmarks() -> Any:
             active.get_benchmarker = had
 
     return undo
+
+
+class _Warm:
+    """What `kernel.warmup(...)` returns here. The official softmax tutorial, and the answers that
+    copy it, compile a kernel ahead of the launch to read its register count and shared-memory
+    use, size the launch grid from them, and launch through `kernel[grid](every argument)`.
+    There is no binary to read those from without a GPU toolchain: the numbers below are
+    placeholders of a plausible size. They change how many program instances share the rows,
+    never what a correct kernel computes; the launch itself is judged like any other."""
+
+    n_regs, n_spills = 8, 0
+
+    def __init__(self, fn: JITFunction, kwargs: dict[str, Any]) -> None:
+        import types
+
+        self._fn = fn
+        options = ("num_warps", "num_stages", "num_ctx", "enable_fp_fusion")
+        names = set(getattr(fn, "arg_names", ()))
+        self._options = {k: kwargs[k] for k in options if k in kwargs and k not in names}
+        self.metadata = types.SimpleNamespace(shared=1024, num_warps=kwargs.get("num_warps", 4))
+
+    def _init_handles(self) -> None:
+        return None
+
+    def __getitem__(self, grid: Any) -> Any:
+        def launch(*args: Any) -> Any:
+            return self._fn.run(*args, grid=grid, warmup=False, **self._options)
+
+        return launch
 
 
 @dataclasses.dataclass
@@ -443,7 +473,7 @@ def session(
     def run(self: JITFunction, *args: Any, grid: Any, warmup: bool, **kwargs: Any) -> Any:
         __tracebackhide__ = True  # pytest: the failure is the caller's line, not ours
         if warmup:
-            return None
+            return _Warm(self, kwargs)
         launch = state.launches
         state.launches += 1
         recorded = harness.record_launch(

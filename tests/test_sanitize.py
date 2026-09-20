@@ -144,3 +144,25 @@ def test_code_in_inductors_style_finds_its_grid_helper_and_its_allocator() -> No
             assert buf.shape == (2, 3) and buf.stride() == (3, 1) and bool(buf.isnan().all())
     finally:
         undo()
+
+
+def test_a_kernel_warmed_up_and_launched_through_its_handle_is_judged(tmp_path: Path) -> None:
+    # the idiom of the official softmax tutorial: warmup, read the register count, kernel[grid](...)
+    script = tmp_path / "warm.py"
+    script.write_text(
+        "import torch, triton, triton.language as tl\n"
+        "@triton.jit\n"
+        "def double(out, x, n, B: tl.constexpr, num_stages: tl.constexpr):\n"
+        "    o = tl.program_id(0) * B + tl.arange(0, B)\n"
+        "    tl.store(out + o, tl.load(x + o, mask=o < n) * 2, mask=o < n)\n"
+        "x = torch.arange(10, device='cuda', dtype=torch.float32)\n"
+        "out = torch.empty_like(x)\n"
+        "k = double.warmup(out, x, 10, B=16, num_stages=2, num_warps=4, grid=(1,))\n"
+        "k._init_handles()\n"
+        "programs = max(1, min(64 // k.n_regs, 1))\n"
+        "assert k.metadata.shared > 0\n"
+        "k[(programs, 1, 1)](out, x, 10, 16, 2)\n"
+        "assert out.tolist() == [2.0 * i for i in range(10)]\n"
+    )
+    report = sanitize.run_script(script)
+    assert (report.verdict, report.launches) == ("ok", 1)
