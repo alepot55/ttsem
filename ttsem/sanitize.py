@@ -391,6 +391,12 @@ def inductor_names(block: int | None = None) -> Any:
         for name in ("XBLOCK", "YBLOCK", "ZBLOCK"):
             if block is not None and self.configs[0].kwargs.get(name, 0) > block:
                 self.configs[0].kwargs[name] = block
+        # a kernel the user wrote keeps its constexprs among the constants, not in the config,
+        # and the interpret path passes only the config: BLOCK would be missing at the launch
+        constants = self.triton_meta.get("constants", {})
+        for name in self.inductor_meta.get("declared_constexpr_names", ()):
+            if name in constants:
+                self.configs[0].kwargs.setdefault(name, constants[name])
 
     def triton_kernel(self: Any, name: str, source: str, device_str: str = "cuda") -> Any:
         return getattr(codecache.PyCodeCache.load(source), name)

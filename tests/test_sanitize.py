@@ -197,6 +197,33 @@ def test_the_output_code_of_torch_compile_runs_here_and_its_race_is_seen() -> No
         inductor_utils.print_performance = once  # type: ignore[assignment]
 
 
+def test_a_kernel_the_user_wrote_runs_from_the_output_code_with_its_constexprs() -> None:
+    """What torch 2.14 wrote for `y = x.clone(); reverse_kernel[grid](y, x, n, BLOCK=1024)` at 4096
+    elements: the clone is gone and the kernel gets `x` twice. BLOCK is among the kernel's
+    constants, not in a config, and Inductor's interpret path passes only the config. On the
+    device this size comes out right, 2 M elements do not (1.7 M wrong on an RTX 4070)."""
+    import runpy
+
+    pytest.importorskip("torch._inductor.runtime.triton_heuristics")
+    import torch._inductor.utils as inductor_utils
+
+    fixtures = Path(__file__).resolve().parent / "fixtures" / "inductor"
+    once = inductor_utils.print_performance
+    inductor_utils.print_performance = lambda fn, *a, **k: fn()  # type: ignore[assignment]
+    undo = sanitize.inductor_names()
+    try:
+        with sanitize.session(), pytest.raises(sanitize.KernelFault) as stop:
+            code = runpy.run_path(
+                str(fixtures / "user_kernel_clone_removed_output_code.py"), run_name="code"
+            )
+            code["benchmark_compiled_module"](code["get_args"](), times=1, repeat=1)
+        assert stop.value.fault.kind == "race"
+        assert "reverse_kernel" in stop.value.fault.kernel
+    finally:
+        undo()
+        inductor_utils.print_performance = once  # type: ignore[assignment]
+
+
 def test_a_kernel_that_writes_back_rows_it_did_not_change_does_not_race_with_their_readers() -> (
     None
 ):
