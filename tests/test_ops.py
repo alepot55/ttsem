@@ -1349,6 +1349,16 @@ def test_extern_elementwise_erfinv_lgamma_and_signbit() -> None:
                        attrs={"symbol": symbol})  # fmt: skip
         assert one(predicate, [np.array([1.0, np.nan, np.inf], np.float32)]).tolist() == want
 
+    for symbol, fn, at in (
+        ("__nv_asinhf", np.arcsinh, [0.0, 1.5, -2.0]),
+        ("__nv_acoshf", np.arccosh, [1.0, 1.5, 9.0]),
+        ("__nv_atanhf", np.arctanh, [0.0, 0.5, -0.9]),
+    ):
+        inverse = op("tt.extern_elementwise", [tensor((3,), "f32")], tensor((3,), "f32"),
+                     attrs={"symbol": symbol})  # fmt: skip
+        values = np.array(at, np.float32)
+        assert np.allclose(one(inverse, [values]), fn(values), atol=1e-6)
+
 
 def test_extern_elementwise_unknown_symbol_names_it() -> None:
     target = op("tt.extern_elementwise", [F32], F32, attrs={"symbol": "__nv_j0f"})
