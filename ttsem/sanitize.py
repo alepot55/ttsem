@@ -155,6 +155,57 @@ def _locate(record: harness.LaunchRecord, fault: MemoryFault) -> tuple[str | Non
     return best[1], best[2], best[3]
 
 
+LOOKBACK = re.compile(r"exclusive_scan_decoupled_lookback\w*\(\s*(\w+)")
+
+
+def _without_protocol_buffers(
+    record: harness.LaunchRecord, fn_source: str, log: list[Any] | None
+) -> list[Any] | None:
+    """The access log without the scratch buffer of a decoupled-lookback scan.
+
+    TorchInductor's split scan (`triton_helpers.exclusive_scan_decoupled_lookback*`) passes each
+    block's partial to the next through a scratch buffer: a plain store of the value, then an
+    atomic exchange of a flag with release order; the next block spins on the flag with acquire
+    order, then loads the value. The spin makes that order hold in every schedule. A replay that
+    runs the program instances one after another sees the plain store and the plain load of two
+    instances and cannot tell a forced order from an incidental one, so the scratch buffer of
+    that protocol is left out of the race check (and only that buffer: everything else the
+    kernel touches is judged as usual)."""
+    if not log:
+        return log
+    names = set(LOOKBACK.findall(fn_source))
+    spans = []
+    for name in names:
+        if name in record.bases:
+            arr = record.pre[name]
+            spans.append((record.bases[name], record.bases[name] + arr.size * arr.itemsize))
+    if not spans:
+        return log
+    kept = []
+    for entry in log:
+        addrs = entry[3]
+        inside = np.zeros(addrs.shape, dtype=bool)
+        for lo, hi in spans:
+            inside |= (addrs >= lo) & (addrs < hi)
+        if not inside.all():
+            kept.append(
+                entry
+                if not inside.any()
+                else (
+                    *entry[:3],
+                    addrs[~inside],
+                    *entry[4:5],
+                    None if entry[5] is None else _drop_raw(entry, inside),
+                )
+            )
+    return kept
+
+
+def _drop_raw(entry: Any, inside: np.ndarray) -> np.ndarray:
+    raw = entry[5].reshape(entry[3].size, -1)
+    return raw[~inside].reshape(-1)
+
+
 def _race_fault(
     record: harness.LaunchRecord, race: pidraces.PidRace, launch: int, ir_text: str = ""
 ) -> Fault:
@@ -542,7 +593,10 @@ def session(
         _write_back(record, execution)
         if execution.memory.access_overflow:
             state.races_unchecked += 1
-        race = pidraces.find_race(execution.memory.access_log)
+        log = _without_protocol_buffers(
+            record, getattr(self, "src", "") or "", execution.memory.access_log
+        )
+        race = pidraces.find_race(log)
         if race is not None:
             raise KernelFault(_with_source(_race_fault(record, race, launch, ir_text), ir_text))
         return None

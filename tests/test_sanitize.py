@@ -224,6 +224,34 @@ def test_a_kernel_the_user_wrote_runs_from_the_output_code_with_its_constexprs()
         inductor_utils.print_performance = once  # type: ignore[assignment]
 
 
+def test_the_scratch_buffer_of_a_decoupled_lookback_scan_is_not_a_race() -> None:
+    """Inductor's split scan passes each block's partial to the next through a scratch buffer:
+    a plain store, then a flag exchanged with release order, which the next block spins on with
+    acquire order before its plain load. Run one after the other, the two plain accesses look
+    like a race; the spin makes the order hold in every schedule."""
+    import runpy
+
+    pytest.importorskip("torch._inductor.runtime.triton_heuristics")
+    import torch
+    import torch._inductor.utils as inductor_utils
+
+    fixtures = Path(__file__).resolve().parent / "fixtures" / "inductor"
+    once = inductor_utils.print_performance
+    inductor_utils.print_performance = lambda fn, *a, **k: fn()  # type: ignore[assignment]
+    undo = sanitize.inductor_names()
+    try:
+        with sanitize.session() as state:
+            code = runpy.run_path(str(fixtures / "split_scan_output_code.py"), run_name="code")
+            (x,) = code["get_args"]()
+            want = (x > 0.5).to(torch.int64).cumsum(0) * 2
+            (got,) = code["call"]([x])
+            assert state.launches == 1  # the scan and the multiply are one kernel
+        assert torch.equal(got.cpu(), want.cpu())
+    finally:
+        undo()
+        inductor_utils.print_performance = once  # type: ignore[assignment]
+
+
 def test_a_kernel_that_writes_back_rows_it_did_not_change_does_not_race_with_their_readers() -> (
     None
 ):
