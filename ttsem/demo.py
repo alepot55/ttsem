@@ -19,7 +19,7 @@ pass the demo names is derived and not a string in this file.
 ``examples/e15_repro.py`` through the fake driver with the IR dump on, runs the module that
 every pass in the pipeline receives through :class:`ttsem.interp.Interp` on the launch's own
 inputs, and compares each one with the launch's reference output. That needs the Triton wheel
-(``pip install 'ttsem[triton]'``) but still no GPU, and takes tens of seconds.
+(the ``triton`` extra) but still no GPU, and takes tens of seconds.
 
 Why the recording carries verdicts and not IR: a stage dump of this pipeline is some megabytes
 of MLIR per launch, and the recording is meant to be read in a diff. Reproducing the verdicts
@@ -46,7 +46,10 @@ from pathlib import Path
 from typing import Any
 
 _ROOT = Path(__file__).resolve().parent.parent
-EXAMPLES = _ROOT / "examples"
+# A clone has them in examples/; an installed wheel carries the two the demo needs in _examples/.
+EXAMPLES = (
+    _ROOT / "examples" if (_ROOT / "examples").is_dir() else Path(__file__).parent / "_examples"
+)
 
 DEFAULT_RECORDING = EXAMPLES / "e15_11519_main_e1f944a7a.json"
 LIVE_PROGRAM = EXAMPLES / "e15_repro.py"
@@ -240,7 +243,7 @@ def run_live(program: Path, out: Any) -> int:
             "--live needs the Triton wheel, which is not installed here.\n"
             "It compiles the kernel (through the fake driver, so no GPU is needed) to get the\n"
             "module every pass receives. Install it with:\n"
-            "    pip install 'ttsem[triton]'\n"
+            "    pip install 'ttsem[triton] @ git+https://github.com/alepot55/ttsem'\n"
             "The default `python -m ttsem demo` replays a committed recording instead.",
             file=out,
         )

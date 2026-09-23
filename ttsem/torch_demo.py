@@ -73,7 +73,7 @@ def run_case(case: Case, out: Any) -> str:
     import torch
     from torch._inductor import config
 
-    from ttsem import sanitize
+    from ttsem import _fakedriver, sanitize
 
     config.cpu_backend = "triton"
     fn = case.build()
@@ -81,9 +81,8 @@ def run_case(case: Case, out: Any) -> str:
     want = fn(x.clone())
     out.write(f"\n{case.issue}: {case.source}\n")
     out.write(f"  eager     {[round(v, 1) for v in want[:6].tolist()]} ...\n")
-    real_is_available = torch.cuda.is_available
     with sanitize.session(source=f"torch.compile({case.source})", cuda_is_cpu=False) as state:
-        torch.cuda.is_available = real_is_available  # the fake driver answers Triton, not Dynamo
+        _fakedriver.unstub_torch_cuda()  # the fake driver answers Triton, not Dynamo or Inductor
         undo = sanitize.inductor_names(block=16)
         torch._dynamo.reset()
         try:
@@ -114,7 +113,10 @@ def main(argv: list[str] | None = None, out: Any = None) -> int:
     try:
         import torch
     except ImportError:
-        out.write("this demo needs torch and the Triton wheel: pip install 'ttsem[triton]'\n")
+        out.write(
+            "this demo needs torch and the Triton wheel:\n"
+            "    pip install 'ttsem[triton] @ git+https://github.com/alepot55/ttsem'\n"
+        )
         return 2
     out.write(f"torch {torch.__version__}, no GPU: Inductor's Triton code run under ttsem\n")
     verdicts = [run_case(c, out) for c in CASES if args.case in (None, c.issue)]

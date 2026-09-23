@@ -8,6 +8,8 @@ IR out of the result.
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class _FakeDriver:
     """Enough of a driver to import and specialise a kernel without a GPU.
@@ -74,6 +76,12 @@ class _FakeDriver:
         return None
 
 
+# ``torch.cuda`` as torch defined it, kept by the first stub: code that asks torch itself (Dynamo
+# saving the RNG state, Inductor reading device properties) needs the real answers while Triton
+# sees the target, and :func:`unstub_torch_cuda` gives them back.
+_REAL_TORCH_CUDA: dict[str, Any] = {}
+
+
 def _stub_torch_cuda(cc: int) -> None:
     """Answer the ``torch.cuda`` queries as the chosen target would.
 
@@ -85,16 +93,6 @@ def _stub_torch_cuda(cc: int) -> None:
     import torch
 
     cap = (cc // 10, cc % 10)
-    torch.cuda.get_device_capability = lambda device=None: cap
-    torch.cuda.get_device_name = lambda device=None: f"fake-sm{cc}"
-    torch.cuda.is_available = lambda: True
-    torch.cuda.device_count = lambda: 1
-    torch.cuda.current_device = lambda: 0
-    torch.cuda.synchronize = lambda device=None: None
-    torch.cuda.empty_cache = lambda: None
-    torch.cuda.manual_seed = lambda seed: None
-    torch.cuda.manual_seed_all = lambda seed: None
-    torch.cuda.device = lambda idx=None: contextlib.nullcontext()
 
     class _Props:
         name = f"fake-sm{cc}"
@@ -102,7 +100,30 @@ def _stub_torch_cuda(cc: int) -> None:
         multi_processor_count = 128
         total_memory = 1 << 34
 
-    torch.cuda.get_device_properties = lambda device=None: _Props()
+    stubs: dict[str, Any] = {
+        "get_device_capability": lambda device=None: cap,
+        "get_device_name": lambda device=None: f"fake-sm{cc}",
+        "is_available": lambda: True,
+        "device_count": lambda: 1,
+        "current_device": lambda: 0,
+        "synchronize": lambda device=None: None,
+        "empty_cache": lambda: None,
+        "manual_seed": lambda seed: None,
+        "manual_seed_all": lambda seed: None,
+        "device": lambda idx=None: contextlib.nullcontext(),
+        "get_device_properties": lambda device=None: _Props(),
+    }
+    for name, stub in stubs.items():
+        _REAL_TORCH_CUDA.setdefault(name, getattr(torch.cuda, name))
+        setattr(torch.cuda, name, stub)
 
 
-__all__ = ["_FakeDriver", "_stub_torch_cuda"]
+def unstub_torch_cuda() -> None:
+    """Put back the ``torch.cuda`` functions :func:`_stub_torch_cuda` replaced."""
+    import torch
+
+    for name, real in _REAL_TORCH_CUDA.items():
+        setattr(torch.cuda, name, real)
+
+
+__all__ = ["_FakeDriver", "_stub_torch_cuda", "unstub_torch_cuda"]

@@ -76,8 +76,9 @@ def _require_triton() -> None:
     if not TRITON_AVAILABLE:
         raise RuntimeError(
             "this needs a Triton install: recording or compiling a launch goes through the "
-            "wheel. Install the extra with `pip install 'ttsem[triton]'`. Running an already "
-            "recorded module through the semantics needs numpy only."
+            "wheel. Install the extra with `pip install 'ttsem[triton] @ git+https://github.com/"
+            "alepot55/ttsem'`. Running an already recorded module through the semantics needs "
+            "numpy only."
         )
 
 

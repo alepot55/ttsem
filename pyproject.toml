@@ -35,6 +35,12 @@ Issues = "https://github.com/alepot55/ttsem/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["ttsem"]
 
+# The recorded demo and its live program travel in the wheel, so `python -m ttsem demo` works after
+# `pip install git+...` as well as from a clone.
+[tool.hatch.build.targets.wheel.force-include]
+"examples/e15_11519_main_e1f944a7a.json" = "ttsem/_examples/e15_11519_main_e1f944a7a.json"
+"examples/e15_repro.py" = "ttsem/_examples/e15_repro.py"
+
 [tool.hatch.build.targets.sdist]
 include = [
     "ttsem",
