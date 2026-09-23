@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -76,6 +77,8 @@ def run_case(case: Case, out: Any) -> str:
     from ttsem import _fakedriver, sanitize
 
     config.cpu_backend = "triton"
+    # Inductor asks Triton for a CPU backend to run on; nothing runs there, ttsem does
+    warnings.filterwarnings("ignore", message="Could not find an active CPU backend")
     fn = case.build()
     x = torch.arange(64, dtype=torch.float32)
     want = fn(x.clone())
