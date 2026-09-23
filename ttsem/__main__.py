@@ -14,6 +14,10 @@ The package is a library first; every entry point below is a module you run with
       The whole idea on one real bug (triton#11519): replay the committed recording of a
       per-pass validation, or, with --live and the Triton wheel, redo it here. No GPU.
 
+  python -m ttsem demo --torch
+      Races in the kernels torch.compile generates (pytorch#197829, #198033), found by
+      running Inductor's Triton code under the semantics. Needs torch; no GPU.
+
   python -m ttsem.validate PROGRAM.py [--device cpu|cuda] [--json OUT]
       Compile PROGRAM.py's first launch with the dump on and run every pass's input
       through the semantics. Names the first pass whose output the semantics reads

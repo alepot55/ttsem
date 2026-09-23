@@ -305,7 +305,18 @@ def main(argv: list[str] | None = None, out: Any = None) -> int:
         default=LIVE_PROGRAM,
         help="the program --live validates: any script with a main() taking --device and --out",
     )
-    args = parser.parse_args(argv)
+    parser.add_argument(
+        "--torch",
+        action="store_true",
+        help="races in the kernels torch.compile generates, found without a GPU (needs torch)",
+    )
+    args, rest = parser.parse_known_args(argv)
+    if args.torch:
+        from ttsem.torch_demo import main as torch_main
+
+        return torch_main(rest, out)
+    if rest:
+        parser.error(f"unrecognized arguments: {' '.join(rest)}")
     if args.live:
         return run_live(args.program, out)
     return run_recorded(args.recording, out)
