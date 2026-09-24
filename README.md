@@ -5,7 +5,7 @@ every compiler pass, it names the first pass that changed what a kernel computes
 
 ## What it found
 
-State on 23 Sep 2026; **ours** is a fix by the author. ttsem sees the first three as races in code
+State on 25 Sep 2026; **ours** is a fix by the author. ttsem sees the first three as races in code
 `torch.compile` emits at shapes where the GPU is right; the rest came from the fuzzers and test runs
 built around it, or from reading code ([LEDGER.md](LEDGER.md) says which).
 
@@ -19,6 +19,10 @@ built around it, or from reading code ([LEDGER.md](LEDGER.md) says which).
 | PyTorch [#198332](https://github.com/pytorch/pytorch/issues/198332): `copy_strided`'s lowering; under `dynamic=True` a CPU kernel writes past its output | open, fix [#198335](https://github.com/pytorch/pytorch/pull/198335) (ours) |
 | PyTorch [#198343](https://github.com/pytorch/pytorch/issues/198343): `lerp` with a weight >= 0.5 takes `end`'s strides, so `x.lerp_(end_t, 0.75); x.view(-1)` fails to compile, a regression | open, fix [#198348](https://github.com/pytorch/pytorch/pull/198348) (ours) |
 | PyTorch [#198364](https://github.com/pytorch/pytorch/issues/198364): `copysign`, `floor_divide`, `div` floor, `addr(beta=0)`, `put` return other strides than eager, and a later `view` fails to compile | open |
+| PyTorch [#198533](https://github.com/pytorch/pytorch/issues/198533): `y.index_put_((mask,), v)` with a mask reading `y` through a transposed view reads the update's own output, a regression | open, fix [#198549](https://github.com/pytorch/pytorch/pull/198549) (ours) |
+| PyTorch [#198545](https://github.com/pytorch/pytorch/issues/198545): on CUDA, `iinfo.min // b` with `b < 0` has the wrong sign | open |
+| PyTorch [#198553](https://github.com/pytorch/pytorch/issues/198553): on CUDA, a fused mask whose modular index has a negative base gives wrong values | open |
+| PyTorch [#198555](https://github.com/pytorch/pytorch/issues/198555): the generated C++ negates integers with signed overflow; on `iinfo.min` an argmax goes wrong and a SIGFPE kills the process | open |
 | Triton [#11519](https://github.com/triton-lang/triton/issues/11519), [#11612](https://github.com/triton-lang/triton/issues/11612): `fuse-nested-loops` miscompile (the demo below) and crash | **fixed**, not by us |
 | Triton [#11601](https://github.com/triton-lang/triton/issues/11601), [#11614](https://github.com/triton-lang/triton/issues/11614): the same pass with `flatten=True` reads memory the source never reads; an unpredicated reduce store (3.8.0 regression) | open, fixes [#11692](https://github.com/triton-lang/triton/pull/11692) (ours), [#11630](https://github.com/triton-lang/triton/pull/11630) |
 | Triton [#11730](https://github.com/triton-lang/triton/issues/11730), [#11733](https://github.com/triton-lang/triton/issues/11733): 3.8.0 on sm_120, a missing exit barrier and a wrong mxfp4 `dot_scaled` | open, backports [#11731](https://github.com/triton-lang/triton/pull/11731), [#11734](https://github.com/triton-lang/triton/pull/11734) (ours) |
