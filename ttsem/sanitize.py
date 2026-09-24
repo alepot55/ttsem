@@ -546,6 +546,29 @@ class _Warm:
 class Session:
     launches: int = 0
     races_unchecked: int = 0  # launches too large for the access log (`Memory.access_budget`)
+    # (compute capability, bytes): while set, a launch whose kernel needs more shared memory
+    # than that on that GPU raises Triton's `OutOfResources` instead of running, as the runtime
+    # does on the device, so an autotuner skips such a configuration as it would there
+    shared_limit: tuple[int, int] | None = None
+    shared_unknown: int = 0  # launches checked whose compile for that GPU failed (not skipped)
+
+
+def _check_shared(state: Session, record: harness.LaunchRecord) -> None:
+    """Raise `OutOfResources` when `record`'s kernel needs more shared memory than
+    `state.shared_limit` allows, by Triton's own count for that GPU (`harness.shared_memory`).
+    A kernel that does not compile for that GPU is let through and counted."""
+    if state.shared_limit is None:
+        return
+    from triton.runtime.errors import OutOfResources
+
+    cc, limit = state.shared_limit
+    try:
+        need = harness.shared_memory(record, harness.target_for("cpu", cc))
+    except Exception:  # noqa: BLE001  whatever the backend raises for this GPU
+        state.shared_unknown += 1
+        return
+    if need > limit:
+        raise OutOfResources(need, limit, "shared memory")
 
 
 @contextlib.contextmanager
@@ -567,11 +590,12 @@ def session(
         if warmup:
             return _Warm(self, kwargs)
         launch = state.launches
-        state.launches += 1
         recorded = harness.record_launch(
             self, args, kwargs, grid, lambda *a, **k: None, source, launch
         )
         record = recorded.record
+        _check_shared(state, record)  # a kernel the GPU could not launch is not a launch
+        state.launches += 1
         ir_text = harness.ir_for_launch(record, "ttir", target)
         try:
             many = int(np.prod([int(g) for g in record.grid])) > 1

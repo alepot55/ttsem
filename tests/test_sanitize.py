@@ -168,6 +168,96 @@ def test_a_kernel_warmed_up_and_launched_through_its_handle_is_judged(tmp_path: 
     assert (report.verdict, report.launches) == ("ok", 1)
 
 
+def test_the_matmul_tutorial_on_a_matrix_smaller_than_its_block_is_not_a_conflict(
+    tmp_path: Path,
+) -> None:
+    """The tutorial wraps rows with `% M`, so with M = 48 and BLOCK_M = 64 two lanes load the
+    same row and store the same product to one address, which is benign on the device (both
+    lanes compute the same bits). The semantics used to read it as a conflicting store, because
+    numpy's `matmul` summed the two copies of the row in different orders (fixed 24 Sep
+    2026)."""
+    script = tmp_path / "tutorial.py"
+    script.write_text(
+        "import torch, triton, triton.language as tl\n"
+        "@triton.jit\n"
+        "def mm(a, b, c, M, N, K, BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr):\n"
+        "    rm = (tl.program_id(0) * BM + tl.arange(0, BM)) % M\n"
+        "    rn = (tl.program_id(1) * BN + tl.arange(0, BN)) % N\n"
+        "    rk = tl.arange(0, BK)\n"
+        "    acc = tl.zeros((BM, BN), dtype=tl.float32)\n"
+        "    for k in range(0, tl.cdiv(K, BK)):\n"
+        "        x = tl.load(a + rm[:, None] * K + (k * BK + rk)[None, :])\n"
+        "        y = tl.load(b + (k * BK + rk)[:, None] * N + rn[None, :])\n"
+        "        acc += tl.dot(x, y)\n"
+        "    tl.store(c + rm[:, None] * N + rn[None, :], acc, mask=rm[:, None] < M)\n"
+        "torch.manual_seed(0)\n"
+        "a = torch.randn(48, 64, device='cuda')\n"
+        "b = torch.randn(64, 64, device='cuda')\n"
+        "c = torch.empty(48, 64, device='cuda')\n"
+        "mm[(1, 1)](a, b, c, 48, 64, 64, BM=64, BN=64, BK=32)\n"
+        "assert torch.allclose(c, a @ b, atol=5e-2, rtol=1e-2)\n"
+    )
+    report = sanitize.run_script(script)
+    assert (report.verdict, report.launches) == ("ok", 1), report
+
+
+TUNED = """import triton, triton.language as tl
+@triton.autotune(
+    configs=[
+        triton.Config({"BM": 128, "BK": 64}, num_stages=4),  # 131072 bytes on sm_90
+        triton.Config({"BM": 16, "BK": 16}, num_stages=1),  # 1024 bytes
+    ],
+    key=["M"],
+)
+@triton.jit
+def mm(a, b, c, M, BM: tl.constexpr, BK: tl.constexpr):
+    r = tl.arange(0, BM) % M
+    acc = tl.zeros((BM, BM), dtype=tl.float32)
+    for k in range(0, M, BK):
+        rk = k + tl.arange(0, BK)
+        x = tl.load(a + r[:, None] * M + rk[None, :], mask=rk[None, :] < M, other=0.0)
+        y = tl.load(b + rk[:, None] * M + r[None, :], mask=rk[:, None] < M, other=0.0)
+        acc += tl.dot(x, y)
+    tl.store(c + r[:, None] * M + r[None, :], acc)
+"""
+
+
+def test_a_config_needing_more_shared_memory_than_the_gpu_has_is_skipped_as_on_the_gpu(
+    tmp_path: Path,
+) -> None:
+    """On a device, a launch whose kernel needs more shared memory than the device has raises
+    `OutOfResources`, and an autotuner skips that configuration. With `shared_limit` the
+    session does the same, by Triton's own count for that GPU: the configuration never runs,
+    so nothing it would compute (or fault on) is judged."""
+    import importlib.util
+
+    import torch
+    from triton.runtime.errors import OutOfResources
+
+    source = tmp_path / "tuned.py"
+    source.write_text(TUNED)
+    spec = importlib.util.spec_from_file_location("tuned", source)
+    assert spec is not None and spec.loader is not None
+    tuned = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tuned)
+    with sanitize.session() as state:
+        torch.manual_seed(0)
+        a = torch.randn(16, 16, device="cuda", dtype=torch.float16)
+        b = torch.randn(16, 16, device="cuda", dtype=torch.float16)
+        c = torch.empty(16, 16, device="cuda")
+        state.shared_limit = (90, 101376)  # an sm_90 compile, an Ada-sized limit
+        tuned.mm[(1,)](a, b, c, 16)
+        assert tuned.mm.best_config.kwargs["BM"] == 16
+        assert state.launches == 2  # the small config, benchmarked once and run once
+        torch.testing.assert_close(c, a.float() @ b.float(), atol=1e-2, rtol=1e-2)
+        big = {"BM": 128, "BK": 64, "num_stages": 4}
+        with pytest.raises(OutOfResources, match="Required: 131072"):
+            tuned.mm.fn.run(a, b, c, 16, grid=(1,), warmup=False, **big)
+        state.shared_limit = None
+        tuned.mm.fn.run(a, b, c, 16, grid=(1,), warmup=False, **big)  # no limit: it runs
+        assert state.launches == 3
+
+
 def test_the_output_code_of_torch_compile_runs_here_and_its_race_is_seen() -> None:
     """Two files TorchInductor 2.9.1 wrote on a GPU (fixtures/inductor). In one,
     `x /= x.sum(0, keepdim=True); return x * 2.0` is fused into a kernel that reads the rows it is

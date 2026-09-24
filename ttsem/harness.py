@@ -1020,6 +1020,21 @@ def _compile_asm(
     return dict(compiled.asm)
 
 
+def shared_memory(record: LaunchRecord, target: GPUTarget) -> int:
+    """Bytes of shared memory the kernel of ``record``'s launch needs on ``target``: Triton's own
+    number (``metadata.shared``, from the allocation pass), the one its runtime compares with the
+    device's limit before a launch and its autotuner uses to skip a configuration
+    (``OutOfResources``). A full compile for ``target``, kept in Triton's cache."""
+    options, signature, constexprs, attrs = _specialize(
+        record.fn, record.args, record.kwargs, target
+    )
+    src = _source_class(record.fn)(
+        fn=record.fn, signature=signature, constexprs=constexprs, attrs=attrs
+    )
+    compiled = triton.compile(src, target=target, options=options.__dict__)
+    return int(compiled.metadata.shared)
+
+
 def _source_class(fn: JITFunction) -> Any:
     """The `ASTSource` a kernel compiles through: a Gluon kernel's frontend emits TTGIR
     directly (`GluonASTSource`, `Language.GLUON`) and the plain one would fail to parse it."""
