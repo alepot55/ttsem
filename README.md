@@ -111,6 +111,18 @@ with sanitize.session():  # every Triton launch runs under ttsem; a fault raises
     code["benchmark_compiled_module"](code["get_args"](), times=1, repeat=1)  # torch >= 2.10
 ```
 
+## Judging model-written kernels
+
+`python -m ttsem judge task.py answer.py` checks a [KernelBench](https://github.com/ScalingIntelligence/KernelBench)
+answer written with Triton on a CPU: the answer's `ModelNew` against the task's `Model`, by
+KernelBench's own rule (five seeded trials, `allclose` at 1e-2; `--rule v3` for the KernelBench-v3
+harness), every Triton launch executed by ttsem, large tasks shrunk to sizes an interpreter runs.
+The verdict is `verified` (exit 0), `wrong`, `unsafe` (out-of-bounds access, race between program
+instances, or memory nobody wrote, at the answer's own line), `no_kernel` (PyTorch does the work),
+`error`, `too_slow` or `not_judged`; `--json` prints the whole record, `--manifest M.jsonl --out DIR`
+judges a batch. Each answer is model-written code and runs in its own `bwrap` sandbox (read-only
+filesystem, no network); without `bwrap` the judge refuses to run unless given `--no-sandbox`.
+
 ## How it was built
 
 Built by Alessandro Potenza with Claude Code (Anthropic's coding agent) as the engineering agent
