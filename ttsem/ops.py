@@ -816,6 +816,87 @@ def _to_tf32(x: np.ndarray) -> np.ndarray:
     return (bits & np.uint32(0xFFFFE000)).view(np.float32)
 
 
+# An f32 with its low 12 mantissa bits clear has at most 12 significant bits (tf32, f16, bf16
+# and the fp8 kinds all decode to such values), so the product of two of them is exact in f32.
+_LOW12 = np.uint32(0xFFF)
+# The low 29 bits of an f64 fraction are what a rounding to f32 drops; an f64 exactly halfway
+# between two f32 neighbours has them equal to `_HALF29`.
+_LOW29 = np.int64((1 << 29) - 1)
+_HALF29 = np.int64(1 << 28)
+
+
+def _exact_in_f32(a: np.ndarray, b: np.ndarray) -> bool:
+    """Every product of an element of `a` with an element of `b` is exact in f32: each has at
+    most 12 significant bits, and the magnitudes keep every nonzero product in the normal
+    range (a bf16 or tf32 product can leave it: their exponents are f32's)."""
+    if (a.view(np.uint32) & _LOW12).any() or (b.view(np.uint32) & _LOW12).any():
+        return False
+    mag_a, mag_b = np.abs(a[a != 0]), np.abs(b[b != 0])
+    if not mag_a.size or not mag_b.size:
+        return True
+    top = float(mag_a.max()) * float(mag_b.max())
+    return top < 2.0**127 and float(mag_a.min()) * float(mag_b.min()) >= 2.0**-126
+
+
+def _round_to_odd_where_halfway(s: np.ndarray, x: np.ndarray, p: np.ndarray) -> None:
+    """Make `s = fl64(x + p)` safe to round again, to f32: where `s` landed exactly on an f32
+    halfway point (or in the f32 subnormal range) without being exact, move it one f64 ulp to
+    the odd neighbour on the side of the exact sum (round to odd), so the f32 rounding of `s`
+    is the correct rounding of `x + p` (53 >= 24 + 2 bits)."""
+    risky = ((s.view(np.int64) & _LOW29) == _HALF29) | (np.abs(s) < 2.0**-125)
+    if not risky.any():
+        return
+    where = np.nonzero(risky)
+    sum_, lhs, rhs = s[where], x[where].astype(np.float64), p[where]
+    back = sum_ - lhs
+    err = (lhs - (sum_ - back)) + (rhs - back)  # TwoSum: sum_ + err == lhs + rhs exactly
+    even = (sum_.view(np.int64) & 1) == 0
+    fix = (err != 0) & even & np.isfinite(sum_)
+    s[where] = np.where(fix, np.nextafter(sum_, np.copysign(np.inf, err)), sum_)
+
+
+def _fma_chain(a: np.ndarray, b: np.ndarray, c: np.ndarray, acc_dtype: type) -> np.ndarray:
+    """`c + a @ b` over the last two axes, every output element summed in one fixed order.
+
+    The accumulator starts at `c` and takes the products k = 0, 1, ..., K-1 from left to right,
+    each by a fused multiply-add: the exact product is added and the sum rounded once into
+    `acc_dtype`. An element depends only on its row of `a`, its column of `b` and its `c`: not
+    on where it sits in the tile, on the other rows, or on the machine. numpy's `matmul` (BLAS)
+    gives none of these guarantees: OpenBLAS sums a row in an order that depends on its place
+    in a micro-tile, so two lanes holding the same row (a block wider than the matrix, wrapped
+    with `offs % M`) got results 1 to 3 ulp apart and their common store read as a conflict,
+    and the bits changed from one CPU to another. This order is also the one a dot on the FMA
+    path executes: on an RTX 4070 it reproduces every bit of three K-loop `ieee` f32 dots, of
+    which `matmul` then `+ c` reproduced 10 to 19%.
+
+    With an f32 accumulator every step is a correctly rounded `fmaf`: products of operands with
+    at most 12 significant bits are exact in f32 (`_exact_in_f32`); otherwise the product is
+    taken in f64, where it is exact, and the double rounding f64 then f32 is repaired where it
+    can bite. An f64 accumulator rounds each product before adding it (numpy has no f64 fma).
+    """
+    a = np.asarray(a, dtype=acc_dtype)
+    b = np.asarray(b, dtype=acc_dtype)
+    shape = np.broadcast_shapes(a.shape[:-2], b.shape[:-2]) + (a.shape[-2], b.shape[-1])
+    acc = np.array(np.broadcast_to(np.asarray(c, dtype=acc_dtype), shape))
+    cols = np.moveaxis(a, -1, 0)[..., None]  # (K, ..., M, 1): column k of a
+    rows = np.moveaxis(b, -2, 0)[..., None, :]  # (K, ..., 1, N): row k of b
+    with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+        if acc_dtype == np.float64 or _exact_in_f32(a, b):
+            prod = np.empty(shape, dtype=acc_dtype)
+            for k in range(cols.shape[0]):
+                np.multiply(cols[k], rows[k], out=prod)
+                acc += prod
+            return acc
+        cols, rows = cols.astype(np.float64), rows.astype(np.float64)
+        prod, total = np.empty(shape, np.float64), np.empty(shape, np.float64)
+        for k in range(cols.shape[0]):
+            np.multiply(cols[k], rows[k], out=prod)
+            np.add(prod, acc, out=total)
+            _round_to_odd_where_halfway(total, acc, prod)
+            acc[...] = total
+    return acc
+
+
 def _fma_dot(op: Op) -> bool:
     """A dot whose operands carry a `dot_op` layout over a *blocked* parent is lowered to
     scalar FMAs, which multiply f32 in full whatever `inputPrecision` says (the tf32 rounding
@@ -840,7 +921,7 @@ def _dot(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     b = to_float(args[1], tb).astype(acc_dtype)
     if _int_attr(op, "inputPrecision", 0) == 0 and ta.scalar.name == "f32" and not _fma_dot(op):
         a, b = _to_tf32(a), _to_tf32(b)
-    out = np.matmul(a, b, dtype=acc_dtype) + to_float(args[2], tc).astype(acc_dtype)
+    out = _fma_chain(a, b, to_float(args[2], tc), acc_dtype)
     return [from_float(out, rty)]
 
 
@@ -1141,9 +1222,7 @@ def _dot_scaled(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     acc_dtype = np.float64 if rty.scalar.name == "f64" else np.float32
     lhs = _scaled_operand(op, a, a_scale, fmt_a, 0, compute).astype(acc_dtype)
     rhs = _scaled_operand(op, b, b_scale, fmt_b, 1, compute).astype(acc_dtype)
-    with np.errstate(invalid="ignore"):
-        out = np.matmul(lhs, rhs, dtype=acc_dtype)
-    return [from_float(out + to_float(c[0], c[1]).astype(acc_dtype), rty)]
+    return [from_float(_fma_chain(lhs, rhs, to_float(c[0], c[1]), acc_dtype), rty)]
 
 
 @register("ttg.fp4_to_fp")
@@ -2418,10 +2497,10 @@ def _tc_gen5_mma(interp: Interp, op: Op, args: list[Value]) -> list[Value]:
     unsigned = _attr(op, "is_unsigned") is not None
     if is_float(d.elem):
         acc_dtype = np.float64 if d.elem.scalar.name == "f64" else np.float32
-        prod = np.matmul(_mma_operand(a, acc_dtype, False), _mma_operand(b, acc_dtype, False))
         acc = to_float(np.asarray(d.data), d.elem).astype(acc_dtype)
-        out = prod + (acc if bool(np.asarray(use_d[0])) else 0)
-        d.data[...] = from_float(out, d.elem)
+        start = acc if bool(np.asarray(use_d[0])) else np.zeros_like(acc)
+        lhs, rhs = _mma_operand(a, acc_dtype, False), _mma_operand(b, acc_dtype, False)
+        d.data[...] = from_float(_fma_chain(lhs, rhs, start, acc_dtype), d.elem)
     else:
         prod = np.matmul(_mma_operand(a, np.int64, unsigned), _mma_operand(b, np.int64, unsigned))
         acc = np.asarray(d.data).astype(np.int64)
@@ -2460,10 +2539,9 @@ def _tc_gen5_mma_scaled(interp: Interp, op: Op, args: list[Value]) -> list[Value
     lhs = _scaled_operand(op, (a.data, ta), (a_scale.data, tas), fmt_a, 0, compute)
     rhs = _scaled_operand(op, (b.data, tb), (b_scale.data, tbs), fmt_b, 1, compute)
     acc_dtype = np.float64 if d.elem.scalar.name == "f64" else np.float32
-    with np.errstate(invalid="ignore"):
-        prod = np.matmul(lhs.astype(acc_dtype), rhs.astype(acc_dtype))
     acc = to_float(np.asarray(d.data), d.elem).astype(acc_dtype)
-    d.data[...] = from_float(prod + (acc if bool(np.asarray(use_d[0])) else 0), d.elem)
+    start = acc if bool(np.asarray(use_d[0])) else np.zeros_like(acc)
+    d.data[...] = from_float(_fma_chain(lhs, rhs, start, acc_dtype), d.elem)
     for i, bar in enumerate(barriers):
         if i < len(barrier_preds) and not bool(np.asarray(barrier_preds[i])):
             continue

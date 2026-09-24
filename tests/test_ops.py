@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 
 import numpy as np
 import pytest
@@ -645,6 +646,76 @@ def test_dot_bf16_decodes_the_bit_patterns() -> None:
         [a, b, np.zeros((1, 1), np.float32)],
     )
     assert got[0, 0] == np.float32(11.0)
+
+
+def test_dot_lanes_that_hold_one_row_compute_one_value() -> None:
+    """A block wider than the matrix wraps its rows (`offs % M`, as Triton's matmul tutorial
+    does), so two lanes hold the same row of `a` and store to one address. As on the device,
+    both must compute the same bits: numpy's `matmul` summed a row in an order that depends on
+    its place in the BLAS micro-tile, and the 1 to 3 ulp between the two lanes read as a
+    conflicting store (fixed 24 Sep 2026)."""
+    rng = np.random.default_rng(0)
+    rows = np.arange(64) % 48
+    for precision in (0, 2):  # tf32 (products exact in f32) and ieee (products taken in f64)
+        a = rng.standard_normal((48, 32)).astype(np.float32)[rows]
+        b = rng.standard_normal((32, 64)).astype(np.float32)
+        c = rng.standard_normal((48, 64)).astype(np.float32)[rows]
+        got = _dot(a, b, c, "f32", "f32", inputPrecision=precision)
+        assert np.array_equal(got[48:].view(np.uint32), got[:16].view(np.uint32))
+        for place in (0, 7, 31, 60, 63):  # nor does a row's result depend on where it sits
+            a2, c2 = a.copy(), c.copy()
+            a2[place], c2[place] = a[5], c[5]
+            again = _dot(a2, b, c2, "f32", "f32", inputPrecision=precision)
+            assert np.array_equal(again[place].view(np.uint32), got[5].view(np.uint32))
+
+
+def _nearest_f32(x: Fraction) -> float:
+    """`x` rounded to the nearest f32, ties to even (normal range)."""
+    if x == 0:
+        return 0.0
+    mag = abs(x)
+    e = mag.numerator.bit_length() - mag.denominator.bit_length()
+    if Fraction(2) ** e > mag:
+        e -= 1
+    ulp = Fraction(2) ** (e - 23)
+    return float(round(x / ulp) * ulp)
+
+
+def test_dot_is_a_chain_of_fused_multiply_adds_that_starts_at_c() -> None:
+    """Every element starts at `c` and takes `a[i, k] * b[k, j]` for k = 0, 1, ... in order,
+    each step rounded once to f32 from the exact value: what a dot on the FMA path executes
+    (on an RTX 4070 this order reproduced every bit of three K-loop `ieee` dots)."""
+    rng = np.random.default_rng(1)
+    a = rng.standard_normal((3, 8)).astype(np.float32)
+    b = rng.standard_normal((8, 2)).astype(np.float32)
+    c = rng.standard_normal((3, 2)).astype(np.float32)
+    got = _dot(a, b, c, "f32", "f32", inputPrecision=2)
+    for i in range(3):
+        for j in range(2):
+            acc = Fraction(float(c[i, j]))
+            for k in range(8):
+                acc = Fraction(
+                    _nearest_f32(acc + Fraction(float(a[i, k])) * Fraction(float(b[k, j])))
+                )
+            assert float(got[i, j]) == float(acc)
+    # one step where rounding the product first, or the sum through f64, lands on 1 + 2**-22:
+    # the exact 1 + 2**-23 + 2**-24 - 2**-70 is just below the halfway point
+    a1 = np.array([[2.0**-24 * (1 + 2.0**-23)]], np.float32)
+    b1 = np.array([[1 - 2.0**-23]], np.float32)
+    c1 = np.array([[1 + 2.0**-23]], np.float32)
+    assert _dot(a1, b1, c1, "f32", "f32", inputPrecision=2)[0, 0] == np.float32(1 + 2.0**-23)
+
+
+def test_dot_3d_is_one_2d_dot_per_batch() -> None:
+    rng = np.random.default_rng(2)
+    a = rng.standard_normal((2, 16, 16)).astype(np.float32)
+    b = rng.standard_normal((2, 16, 16)).astype(np.float32)
+    c = rng.standard_normal((2, 16, 16)).astype(np.float32)
+    types = [tensor((2, 16, 16), "f32")] * 3
+    got = one(op("tt.dot", types, types[0], attrs={"inputPrecision": 0}), [a, b, c])
+    for i in range(2):
+        want = _dot(a[i], b[i], c[i], "f32", "f32", inputPrecision=0)
+        assert np.array_equal(got[i].view(np.uint32), want.view(np.uint32))
 
 
 def test_rejected_ops() -> None:

@@ -138,6 +138,19 @@ are filled. The barrier wait in the partition is what makes that detectable.
   changes nothing and removes an overflow question.
 - Float operands are decoded and accumulated in `float32` (`float64` when the result is `f64`),
   then rounded into the result type.
+- **The order is fixed per output element** (`ops._fma_chain`): the accumulator starts at `c`
+  and takes `a[i, k] * b[k, j]` for k = 0, 1, ..., K-1 from left to right, each step a fused
+  multiply-add rounded once into the accumulator type (an `f32` step is a correctly rounded
+  `fmaf`; an `f64` step rounds the product first). An element is a function of its row of `a`,
+  its column of `b` and its `c` only. Until 24 Sep 2026 this was numpy's `matmul` then `+ c`,
+  whose BLAS sums a row in an order that depends on its place in the micro-tile and on the
+  CPU: two lanes holding the same row (a block wider than the matrix, wrapped with `offs % M`,
+  as in Triton's matmul tutorial) got results 1 to 3 ulp apart, and their common store was
+  reported as a conflict that no device produces. On an RTX 4070 this order reproduces every
+  bit of K-loop `ieee` `f32` dots (the FMA path), where `matmul` then `+ c` reproduced 10 to
+  19%; on the tensor-core path neither order is bit-exact (2 to 54% of the bits, the two within
+  a few points of each other), which the `"wide"` band of the comparison absorbs.
+  `tt.dot_scaled`, `ttng.warp_group_dot` and the `tc_gen5` MMAs use the same chain.
 - `bf16` operands are **decoded** to `float32`. The shipped interpreter multiplies the raw
   `uint16` bit patterns, which is a bug (the companion fuzzer's `mma.py` documents it and works
   around it in the generated programs). The device is the tie-breaker and `p4` matches.
@@ -534,7 +547,7 @@ itself, before and after every pass.
   layout, which duplicates every 32x128b chunk over four warps, changes the element count and
   is declined. Tokens are placeholders: level 1 runs in program order.
 - `ttng.tc_gen5_mma` is `d = (useD ? d : 0) + a @ b`, done at once. Float operands accumulate
-  in f32 (f64 for an f64 accumulator), f32 operands lose their low 13 mantissa bits first
+  in f32 (f64 for an f64 accumulator) in the order of `tt.dot`, starting at `d` or 0, f32 operands lose their low 13 mantissa bits first
   because the tensor core only multiplies tf32 (an `ieee` dot reaches the op already split into
   the three tf32 products of its emulation, so each MMA is exact on what it is given); integer
   operands accumulate in i32 and read as unsigned under `is_unsigned`. Every barrier operand
@@ -545,7 +558,7 @@ itself, before and after every pass.
   with the scales read from tensor memory as the logical `[M, K / group]` and `[N, K / group]`
   arrays that `tt.dot_scaled` takes (a `tmem_alloc` from a register tensor keeps them; the
   blocked-scales `tmem_copy` path is declined). Decoding, the scale groups and the NaN rule are
-  those of `tt.dot_scaled`; the products accumulate in f32.
+  those of `tt.dot_scaled`; the products accumulate in f32, in the order of `tt.dot`.
 - Checked against the CPU reference on three warp-specialized `desc_dot` programs compiled by
   `main` for sm_100 (arefs lowered to mbarriers, `tmem_alloc`/`store`/`load`, `tc_gen5_mma`,
   `tc_gen5_commit`): TTIR and final TTGIR both `match`.
