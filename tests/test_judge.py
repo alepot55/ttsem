@@ -1,0 +1,198 @@
+"""`judge`: KernelBench answers judged without a GPU, each in its own sandboxed process.
+
+The four answers under `fixtures/judge/` are the four outcomes a model-written kernel most often
+has: right, wrong by value, right by value but reading past the end of its input, and no kernel
+at all. They run through the judge's own `bwrap` sandbox like any answer, so those tests skip
+where the sandbox cannot run.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from ttsem import judge, judge_shapes
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "judge"
+TASK = FIXTURES / "task_relu.py"
+ROOT = Path(__file__).resolve().parent.parent
+
+needs_sandbox = pytest.mark.skipif(
+    importlib.util.find_spec("torch") is None
+    or importlib.util.find_spec("triton") is None
+    or judge.sandbox_problem() is not None,
+    reason="needs torch, Triton and a working bwrap",
+)
+
+
+@pytest.fixture(scope="module")
+def batch(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """The four answers judged once, as a manifest, two at a time. The manifest's paths are
+    relative to its own directory."""
+    here = tmp_path_factory.mktemp("judge")
+    manifest = here / "manifest.jsonl"
+    lines = []
+    for name in ("ok", "wrong", "unsafe", "no_kernel"):
+        answer = os.path.relpath(FIXTURES / f"answer_{name}.py", here)
+        item = {"id": name, "task": os.path.relpath(TASK, here), "answer": answer, "label": "x"}
+        lines.append(json.dumps(item))
+    manifest.write_text("\n".join(lines) + "\n")
+    out = here / "out"
+    done = subprocess.run(
+        [sys.executable, "-m", "ttsem", "judge", "--manifest", str(manifest), "--out", str(out)]
+        + ["--jobs", "2"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+    rows = [json.loads(line) for line in (out / "rows.jsonl").read_text().splitlines()]
+    return {"done": done, "rows": {row["id"]: row for row in rows}}
+
+
+@needs_sandbox
+def test_a_correct_kernel_is_verified(batch: dict[str, Any]) -> None:
+    row = batch["rows"]["ok"]
+    assert row["scaled"]["verdict"] == "verified", row
+    assert "full" not in row  # 4000 elements: the task is judged at its real shape at once
+    assert len(row["scaled"]["trials"]) == 5  # KernelBench's five trials
+    assert all(t["launches"] == 1 and t["max_abs_diff"] == 0 for t in row["scaled"]["trials"])
+    assert row["label"] == "x"  # what the manifest carries rides along
+
+
+@needs_sandbox
+def test_a_wrong_value_is_wrong_in_the_first_trial(batch: dict[str, Any]) -> None:
+    report = batch["rows"]["wrong"]["scaled"]
+    assert report["verdict"] == "wrong", report
+    trial = report["trials"][-1]
+    assert len(report["trials"]) == 1 and not trial["pass"] and not trial["allclose"]
+    assert trial["max_abs_diff"] > 0.1  # a tenth of the most negative input
+    assert judge.describe(report).startswith("wrong in trial 1 (seed ")
+
+
+@needs_sandbox
+def test_a_load_without_its_mask_is_unsafe_at_the_answers_own_line(
+    batch: dict[str, Any],
+) -> None:
+    report = batch["rows"]["unsafe"]["scaled"]
+    assert report["verdict"] == "unsafe", report
+    assert report["kind"] == "oob_read" and report["kernel"] == "relu_kernel"
+    assert report["buffer"] == "x_ptr"
+    lines = (FIXTURES / "answer_unsafe.py").read_text().splitlines()
+    assert lines[report["line"] - 1].strip() == report["source"] == "x = tl.load(x_ptr + offs)"
+    assert report["file"] == "answer_unsafe.py"
+    assert "96 element(s) past the end" in report["message"]
+
+
+@needs_sandbox
+def test_pytorch_doing_the_work_is_no_kernel(batch: dict[str, Any]) -> None:
+    report = batch["rows"]["no_kernel"]["scaled"]
+    assert report["verdict"] == "no_kernel", report
+    assert report["launches"] == 0 and report["torch_ops"] == {"relu": 5}
+
+
+@needs_sandbox
+def test_the_batch_prints_a_line_per_answer_and_the_counts(batch: dict[str, Any]) -> None:
+    done = batch["done"]
+    assert done.returncode == 0, done.stderr
+    out = done.stdout.splitlines()
+    assert out[0].startswith("ok: verified: 5 trial(s)")
+    assert out[-1] == "scaled pass, 4 answer(s): verified 1, wrong 1, unsafe 1, no_kernel 1"
+
+
+@needs_sandbox
+def test_one_pair_prints_the_fault_and_exits_1(capsys: pytest.CaptureFixture[str]) -> None:
+    code = judge.main([str(TASK), str(FIXTURES / "answer_unsafe.py")])
+    assert code == 1
+    line = capsys.readouterr().out.strip()
+    assert line == (
+        "unsafe: out-of-bounds read in kernel `relu_kernel` (`x_ptr`), "
+        "answer_unsafe.py:16: x = tl.load(x_ptr + offs)  [real sizes]"
+    )
+
+
+@needs_sandbox
+def test_one_pair_as_json_through_the_package_entry_point(tmp_path: Path) -> None:
+    """From another directory, as an installed package is run: the sandboxed process imports
+    the same `ttsem` the command was started from."""
+    done = subprocess.run(
+        [sys.executable, "-m", "ttsem", "judge", str(TASK), str(FIXTURES / "answer_ok.py")]
+        + ["--json", "--out", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    row = json.loads(done.stdout)
+    assert row["scaled"]["verdict"] == "verified" and row["rule"] == "kernelbench"
+    assert (tmp_path / "answer_ok.scaled.json").exists()
+
+
+def test_without_bwrap_the_judge_refuses_to_run_anything(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(judge.shutil, "which", lambda name: None)
+    started: list[Any] = []
+    monkeypatch.setattr(judge, "judge_one", lambda *a, **k: started.append(a))
+    assert judge.main([str(TASK), str(FIXTURES / "answer_ok.py")]) == 2
+    err = capsys.readouterr().err
+    assert "bwrap is not on PATH" in err and "--no-sandbox" in err
+    assert not started
+
+
+def test_no_sandbox_warns_before_anything_runs(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing is executed here: the pass is replaced, and only how it was called is checked."""
+    calls: list[dict[str, Any]] = []
+
+    def fake(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append({"args": args, **kwargs})
+        return {"verdict": "verified", "trials": []}
+
+    monkeypatch.setattr(judge, "judge_one", fake)
+    assert judge.main([str(TASK), str(FIXTURES / "answer_ok.py"), "--no-sandbox"]) == 0
+    assert "about to run unsandboxed" in capsys.readouterr().err
+    assert [call["args"][-1] for call in calls] == [False]  # sandbox=False, one pass
+
+
+def test_each_kind_of_verdict_reads_as_one_line() -> None:
+    assert judge.describe({"verdict": "too_slow", "seconds": 600}) == (
+        "too_slow: no verdict within 600 s"
+    )
+    error = {"verdict": "error", "stage": "load", "message": "NameError: x", "where": "a.py:3"}
+    assert judge.describe(error) == "error (load): NameError: x at a.py:3"
+    unjudged = {"verdict": "not_judged", "why": "unsupported", "message": "tt.foo"}
+    assert judge.describe(unjudged) == "not_judged (unsupported): tt.foo"
+    failed = {"index": 2, "config": "BLOCK: 64", "max_abs_diff": float("nan"), "ref_nan": False}
+    config = {"verdict": "wrong", "trials": [{"pass": True}], "configs": {"failed": failed}}
+    assert judge.describe(config) == (
+        "wrong under autotune config 2 (BLOCK: 64): max abs diff nan "
+        "(NaN: the output holds memory nobody wrote)"
+    )
+    shape = {"verdict": "wrong", "trials": [{"pass": False, "seed": 7, "shape": [[4], [2]]}]}
+    assert (
+        judge.describe(shape)
+        == "wrong in trial 1 (seed 7): output shape [2], the reference's is [4]"
+    )
+
+
+def test_scaling_divides_every_size_by_one_power_of_two_and_keeps_the_lines() -> None:
+    pytest.importorskip("torch")
+    source = TASK.read_text().replace("batch_size = 4\n", "batch_size = 4096\n")
+    values, note = judge_shapes.scaled(source)
+    assert note["footprint_full"] == 4096 * 1000 and note["factor"] == 8
+    assert values == {"batch_size": 512, "dim": 125}  # like 1000, not a multiple of 16
+    assert note["footprint"] == 512 * 125 <= judge_shapes.BUDGET
+    small = judge_shapes.rewrite(source, values)
+    assert small.count("\n") == source.count("\n")
+    assert "batch_size = 512\n" in small and "dim = 125\n" in small

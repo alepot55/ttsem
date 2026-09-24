@@ -18,6 +18,13 @@ The package is a library first; every entry point below is a module you run with
       Races in the kernels torch.compile generates (pytorch#197829, #198033), found by
       running Inductor's Triton code under the semantics. Needs torch; no GPU.
 
+  python -m ttsem judge TASK.py ANSWER.py [--json] [--rule kernelbench|v3]
+  python -m ttsem judge --manifest M.jsonl --out DIR [--jobs N]
+      A KernelBench answer written with Triton, judged by KernelBench's own correctness
+      rule with every launch executed by the semantics: verified, wrong, unsafe (with the
+      kernel's line), no_kernel (PyTorch does the work), error, too_slow or not_judged.
+      Each answer runs in its own bwrap sandbox. Needs torch and Triton; no GPU.
+
   python -m ttsem.validate PROGRAM.py [--device cpu|cuda] [--json OUT]
       Compile PROGRAM.py's first launch with the dump on and run every pass's input
       through the semantics. Names the first pass whose output the semantics reads
@@ -63,6 +70,10 @@ def main(argv: list[str] | None = None) -> int:
         from ttsem.demo import main as demo_main
 
         return demo_main(argv[1:])
+    if argv and argv[0] == "judge":
+        from ttsem.judge import main as judge_main
+
+        return judge_main(argv[1:])
     if argv:
         sys.stderr.write(f"unknown command {argv[0]!r}\n\n")
         sys.stderr.write(USAGE)
