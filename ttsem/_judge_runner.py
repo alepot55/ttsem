@@ -99,13 +99,27 @@ def first_line(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {text[0] if text else ''}"[:300]
 
 
-def blame(exc: BaseException) -> tuple[bool, traceback.FrameSummary]:
+def in_answer(frame: traceback.FrameSummary, own: set[Path]) -> bool:
+    """Whether `frame` runs the answer's own code: its file, or its copy at the scaled sizes."""
+    return Path(frame.filename).resolve() in own
+
+
+def answer_frame(exc: BaseException, own: set[Path]) -> traceback.FrameSummary | None:
+    """The innermost frame of `exc`'s traceback that runs the answer's own code."""
+    found = [f for f in traceback.extract_tb(exc.__traceback__) if in_answer(f, own)]
+    return found[-1] if found else None
+
+
+def blame(exc: BaseException, own: set[Path]) -> tuple[bool, traceback.FrameSummary]:
     """(is it the semantics' own failure, the frame that raised). A torch call of the answer
-    passes through our function modes, and a launch with missing arguments fails in Triton's
-    binder called from the harness: neither is a failure of the tool."""
+    passes through our function modes, a launch with missing arguments fails in Triton's binder
+    called from the harness, and a grid the launcher would refuse fails in the harness's copy of
+    its checks (`harness.check_launch_grid`): none of them is a failure of the tool. For the
+    last two the frame is the answer's launch (`own`: its files), not the check's own line."""
     frames = traceback.extract_tb(exc.__traceback__)
-    if "dynamic_func()" in str(exc) or (frames[-1].line or "").startswith("len(grid)"):
-        return False, frames[-1]  # the launcher's own checks, run by the harness in its place
+    if "dynamic_func()" in str(exc) or frames[-1].name == "check_launch_grid":
+        # the launcher's own checks, run by the harness in its place
+        return False, answer_frame(exc, own) or frames[-1]
     for frame in reversed(frames):
         if frame.name != "__torch_function__":
             path = Path(frame.filename).resolve()
@@ -434,6 +448,14 @@ def main() -> int:
     args = ap.parse_args()
     cap_memory()
     report: dict[str, Any] = {"answer": args.answer.name, "scale": args.scale, "launches": 0}
+    own = {args.answer.resolve(), scaled_copy(args.out).resolve()}  # the answer's own code
+
+    def where(frame: traceback.FrameSummary) -> str:
+        """A frame as `file:line`: the scaled copy has the answer's line numbers, and is named
+        after the answer."""
+        name = args.answer.name if in_answer(frame, own) else Path(frame.filename).name
+        return f"{name}:{frame.lineno}"
+
     start = time.time()
     try:
         judge(args, report)
@@ -456,7 +478,7 @@ def main() -> int:
     except MemoryError:
         report.update(verdict="not_judged", why="memory", message="over the run's memory cap")
     except BaseException as exc:  # noqa: BLE001  the answer may raise anything
-        inside, where = blame(exc)
+        inside, frame = blame(exc, own)
         stage = report.get("stage", "")
         if "can't allocate memory" in str(exc):  # torch's CPU allocator, under the same cap
             report.update(verdict="not_judged", why="memory")
@@ -470,7 +492,7 @@ def main() -> int:
         report.update(
             message=first_line(exc),
             detail=" | ".join(lines[-2:])[:300],  # a compilation error says what went wrong last
-            where=f"{Path(where.filename).name}:{where.lineno}",
+            where=where(frame),
         )
     if TUNERS:  # whatever the verdict: under which config it was reached, and what was skipped
         report["autotune"] = tuned()

@@ -35,6 +35,7 @@ import collections
 import dataclasses
 import importlib.util
 import json
+import operator
 import os
 import pickle
 import subprocess
@@ -902,6 +903,26 @@ def _capture_cpu(program_path: Path, cc: int) -> list[LaunchRecord]:
     return records
 
 
+def check_launch_grid(grid: Any) -> None:
+    """Raise what Triton 3.8's launcher raises for a grid it cannot launch. `JITFunction.run`
+    takes `len(grid)` (`kernel[n](...)` with a bare int is a TypeError there) and `grid[0]` (an
+    empty grid is an IndexError), and hands three entries (1 for those missing) to the C
+    launcher, which parses each with the `i` format: an entry that is not an integer (a tuple or
+    a float, as in `grid = lambda meta: ((n,),)`) is a TypeError there, one outside a C `int` an
+    OverflowError. The runner of the judge blames an exception raised here on the answer, by
+    this function's name."""
+    size = len(grid)
+    dims = (grid[0], grid[1] if size > 1 else 1, grid[2] if size > 2 else 1)
+    for dim in dims:  # CPython's `i` format: `PyLong_AsLong`, then the range of an int
+        value = operator.index(dim)
+        if not -(1 << 63) <= value < (1 << 63):
+            raise OverflowError("Python int too large to convert to C long")
+        if value > (1 << 31) - 1:
+            raise OverflowError("signed integer is greater than maximum")
+        if value < -(1 << 31):
+            raise OverflowError("signed integer is less than minimum")
+
+
 @dataclasses.dataclass
 class Recorded:
     record: LaunchRecord
@@ -922,7 +943,7 @@ def record_launch(
     bound = _bind_names(fn.arg_names, args, kwargs, _param_defaults(fn))
     if callable(grid):
         grid = grid(bound)
-    len(grid)  # as the launcher does: `kernel[n](...)` with a bare int is a TypeError there too
+    check_launch_grid(grid)
     leaves = [(leaf, v) for name, value in bound.items() for leaf, v in _flat_args(name, value)]
     tensors = {leaf: v for leaf, v in leaves if _is_tensor_like(v)}
     tensors.update({leaf: v.base for leaf, v in leaves if _is_descriptor(v)})

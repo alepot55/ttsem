@@ -196,3 +196,64 @@ def test_scaling_divides_every_size_by_one_power_of_two_and_keeps_the_lines() ->
     small = judge_shapes.rewrite(source, values)
     assert small.count("\n") == source.count("\n")
     assert "batch_size = 512\n" in small and "dim = 125\n" in small
+
+
+@pytest.fixture(scope="module")
+def edges(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """The answers where the judge once blamed the wrong party, judged once as a manifest."""
+    here = tmp_path_factory.mktemp("edges")
+    manifest = here / "manifest.jsonl"
+    pairs = {
+        "nested_grid": "task_relu.py",
+    }
+    lines = [
+        json.dumps(
+            {
+                "id": name,
+                "task": str(FIXTURES / task),
+                "answer": str(FIXTURES / f"answer_{name}.py"),
+            }
+        )
+        for name, task in pairs.items()
+    ]
+    manifest.write_text("\n".join(lines) + "\n")
+    out = here / "out"
+    done = subprocess.run(
+        [sys.executable, "-m", "ttsem", "judge", "--manifest", str(manifest), "--out", str(out)],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    rows = [json.loads(line) for line in (out / "rows.jsonl").read_text().splitlines()]
+    return {row["id"]: row["scaled"] for row in rows}
+
+
+@needs_sandbox
+def test_a_grid_the_launcher_refuses_is_an_error_of_the_answer(edges: dict[str, Any]) -> None:
+    report = edges["nested_grid"]
+    assert report["verdict"] == "error" and "why" not in report, report
+    assert report["message"] == "TypeError: 'tuple' object cannot be interpreted as an integer"
+    assert report["where"] == "answer_nested_grid.py:27"  # the launch, not the check's own line
+
+
+def test_the_grid_checks_are_the_launchers() -> None:
+    """`JITFunction.run` indexes the grid, the C launcher parses three entries as C ints."""
+    pytest.importorskip("triton")
+    from ttsem import harness
+
+    harness.check_launch_grid((1,))
+    harness.check_launch_grid((2**31 - 1, 1, -(2**31), "not an entry the launcher reads"))
+    with pytest.raises(TypeError):
+        harness.check_launch_grid(4)
+    with pytest.raises(IndexError):
+        harness.check_launch_grid(())
+    with pytest.raises(TypeError, match="'float' object cannot be interpreted as an integer"):
+        harness.check_launch_grid((1, 2.0))
+    with pytest.raises(OverflowError, match="^signed integer is greater than maximum$"):
+        harness.check_launch_grid((2**31,))
+    with pytest.raises(OverflowError, match="^signed integer is less than minimum$"):
+        harness.check_launch_grid((1, 1, -(2**31) - 1))
+    with pytest.raises(OverflowError, match="^Python int too large to convert to C long$"):
+        harness.check_launch_grid((2**64,))
