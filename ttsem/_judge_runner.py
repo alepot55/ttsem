@@ -45,6 +45,8 @@ from typing import Any
 
 import torch
 from torch.overrides import TorchFunctionMode
+from triton.compiler.errors import CompileTimeAssertionFailure
+from triton.runtime.errors import OutOfResources, PTXASError
 
 from ttsem import judge_shapes as shapes
 from ttsem import sanitize
@@ -242,7 +244,8 @@ def judge(args: argparse.Namespace, report: dict[str, Any]) -> None:
             passed = all(t["pass"] for t in trials) and len(trials) == len(seeds)
             if passed and TUNERS:
                 report["stage"] = "configs"
-                report["configs"] = sweep_configs(reference, candidate, get_inputs, seeds, args)
+                report["configs"] = {"tuners": len(TUNERS), "checked": 0}
+                sweep_configs(reference, candidate, get_inputs, seeds, args, report["configs"])
         report["launches"] = state.launches
         report["races_unchecked"] = state.races_unchecked
         report["gpu"] = args.gpu if args.gpu in GPUS else "unknown"
@@ -337,26 +340,57 @@ def tuned() -> list[dict[str, Any]]:
     return rows
 
 
+# What Triton's own autotuner takes to mean that a config cannot run on the GPU, and skips
+# (3.8.0, `Autotuner._bench`)
+CONFIG_ERRORS = (OutOfResources, CompileTimeAssertionFailure, PTXASError)
+
+
+def not_applicable(index: int, config: Any, exc: BaseException) -> dict[str, Any]:
+    """A config the autotuner skips, as the sweep lists it: the reason, and for shared memory
+    Triton's count and the limit, for a compile error what went wrong last."""
+    entry: dict[str, Any] = {"index": index, "config": str(config)}
+    if isinstance(exc, OutOfResources):  # the only resource the session checks
+        entry.update(reason="shared_memory", shared=exc.required, limit=exc.limit)
+    else:
+        lines = [ln.strip() for ln in str(exc).strip().splitlines() if ln.strip()]
+        entry.update(
+            reason="ptxas" if isinstance(exc, PTXASError) else "compile",
+            message=first_line(exc),
+            detail=" | ".join(lines[-2:])[:300],
+        )
+    return entry
+
+
 def sweep_configs(
-    reference: Any, candidate: Any, get_inputs: Any, seeds: list[int], args: argparse.Namespace
-) -> dict[str, Any]:
+    reference: Any,
+    candidate: Any,
+    get_inputs: Any,
+    seeds: list[int],
+    args: argparse.Namespace,
+    done: dict[str, Any],
+) -> None:
     """The trials ran with each autotuner's first config that fits the GPU (here every config
     times the same, so the first wins); a GPU's autotuner picks the fastest, which depends on the
     card. So every other config is forced in turn, on the first trial's inputs, and compared
     under the same rule: an answer is only correct if it is correct under the config the
-    autotuner may pick. A config whose kernel needs more shared memory than the GPU has cannot
-    be picked there (the launch raises `OutOfResources`, which the autotuner skips): it is not
-    run, and is listed as not applicable, with Triton's count and the limit."""
-    from triton.runtime.errors import OutOfResources
+    autotuner may pick. A config the autotuner skips cannot be picked (`CONFIG_ERRORS`: its
+    kernel needs more shared memory than the GPU has, or does not compile): it is listed as not
+    applicable, with the reason (and, for shared memory, Triton's count and the limit). Whether
+    a config compiles is judged for sm_90a, the target every launch here is compiled for,
+    whatever `--gpu` says: only the shared-memory limit is the GPU's.
 
+    The outcome goes into `done` (the report's `configs`) as it comes: while a config is
+    forced, `forcing` names it, so a fault or an error that ends the run under it says which.
+    Only a sweep that ends puts back the autotuners' state, so that the report's `autotune` says
+    what the trials ran with; after a fault it names the config forced."""
     precision = "keep" if args.rule == "v3" else args.precision
     torch.manual_seed(seeds[0])
     inputs = [cast(x, precision) for x in get_inputs()]
     torch.manual_seed(seeds[0])
     want = reference(*inputs)
-    most = max(len(t.configs) for t in TUNERS)
     trial = [list(t.cache.values()) for t in TUNERS]  # the configs the trials ran with
-    done: dict[str, Any] = {"tuners": len(TUNERS), "checked": 0}
+    saved = [(dict(t.cache), getattr(t, "best_config", None)) for t in TUNERS]
+    most = max(len(t.configs) for t in TUNERS)
     for index in range(most):
         picks = [t.configs[min(index, len(t.configs) - 1)] for t in TUNERS]
         if all(all(c == pick for c in ran) for pick, ran in zip(picks, trial, strict=True)):
@@ -365,28 +399,27 @@ def sweep_configs(
             for key in list(tuner.cache):
                 tuner.cache[key] = pick
         torch.manual_seed(seeds[0])
+        done["forcing"] = {"index": index, "config": str(picks[0])}
         try:
             got = candidate(*inputs)
-        except OutOfResources as exc:
-            done.setdefault("not_applicable", []).append(
-                {
-                    "index": index,
-                    "config": str(picks[0]),
-                    "shared": exc.required,
-                    "limit": exc.limit,
-                }
-            )
+        except CONFIG_ERRORS as exc:
+            del done["forcing"]
+            done.setdefault("not_applicable", []).append(not_applicable(index, picks[0], exc))
             continue
+        del done["forcing"]
         row = compare(want, got, inputs, args)
         done["checked"] += 1
         if not row["pass"]:
             done["failed"] = {
                 "index": index,
-                "config": str(TUNERS[0].configs[min(index, len(TUNERS[0].configs) - 1)]),
+                "config": str(picks[0]),
                 **{k: v for k, v in row.items() if k != "pass"},
             }
             break
-    return done
+    for tuner, (cache, best) in zip(TUNERS, saved, strict=True):
+        tuner.cache.clear()
+        tuner.cache.update(cache)
+        tuner.best_config = best
 
 
 V3_SEEDS = [42, 123, 456, 789, 1337]

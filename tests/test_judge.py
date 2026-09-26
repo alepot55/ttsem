@@ -9,8 +9,10 @@ where the sandbox cannot run.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -206,6 +208,8 @@ def edges(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     pairs = {
         "nested_grid": "task_relu.py",
         "no_config_fits": "task_matmul.py",
+        "config_asserts": "task_relu.py",
+        "config_faults": "task_relu.py",
     }
     lines = [
         json.dumps(
@@ -276,3 +280,47 @@ def test_no_autotune_config_that_fits_the_gpu_is_an_error_of_the_answer(
         "it falls back to needs 262,144 B of shared memory, over the H100 (the default GPU)'s "
         "232,448 B (Triton 3.8.0's count)"
     )
+
+
+@needs_sandbox
+def test_a_config_that_does_not_compile_is_not_applicable_as_the_autotuner_skips_it(
+    edges: dict[str, Any],
+) -> None:
+    report = edges["config_asserts"]
+    assert report["verdict"] == "verified", report
+    skipped = report["configs"]["not_applicable"]
+    assert [(c["index"], c["reason"]) for c in skipped] == [(0, "compile")]
+    assert "static_assert(BLOCK <= 1024)" in skipped[0]["detail"]
+    assert "forcing" not in report["configs"]
+    # what the trials ran with, not the config the sweep forced last
+    assert report["autotune"][0]["ran"].startswith("BLOCK: 256,")
+
+
+@needs_sandbox
+def test_a_fault_under_a_config_the_sweep_forces_names_that_config(
+    edges: dict[str, Any],
+) -> None:
+    report = edges["config_faults"]
+    assert report["verdict"] == "unsafe", report
+    assert all(t["pass"] for t in report["trials"])  # the first config is right
+    assert report["kind"] == "oob_read" and report["kernel"] == "gather_relu_kernel"
+    assert report["source"] == "x = tl.load(x_ptr + idx, mask=mask)"
+    assert report["configs"]["forcing"] == {
+        "index": 1,
+        "config": report["autotune"][0]["ran"],
+    }
+    assert report["autotune"][0]["ran"].startswith("BLOCK: 128,")  # the config that faulted
+    assert " under autotune config 1 (BLOCK: 128, " in judge.describe(report)
+
+
+def test_the_configs_skipped_are_those_the_installed_autotuner_skips() -> None:
+    pytest.importorskip("torch")
+    pytest.importorskip("triton")
+    from triton.runtime.autotuner import Autotuner
+
+    from ttsem import _judge_runner as runner
+
+    caught = re.search(r"except \(([^)]*)\) as", inspect.getsource(Autotuner._bench))
+    assert caught is not None
+    names = {name.strip() for name in caught.group(1).split(",")}
+    assert names == {e.__name__ for e in runner.CONFIG_ERRORS}

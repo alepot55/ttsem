@@ -23,6 +23,10 @@ One verdict per pass:
 - too_slow: the timeout expired
 - not_judged: the tool cannot say (an op ttsem does not model, its own error, the memory cap)
 
+`--gpu` sets only the shared-memory limit: every launch is compiled for sm_90a, so whether an
+autotune config compiles (the autotuner skips one that raises `CompileTimeAssertionFailure` or
+`PTXASError`) is decided for that target, whatever the GPU.
+
 The `scaled` pass always runs (with `--scale auto`): every size constant of the task is divided
 by one power of two until its largest tensor holds at most 2**17 elements (`judge_shapes`). The
 `full` pass runs too when the task's largest tensor at its real shape has at most `--full-max`
@@ -213,12 +217,16 @@ def describe(report: dict[str, Any]) -> str:
         if report.get("not_copied"):  # the v3 harness copies weights by name: these stayed its own
             text += f"; weights not copied by name: {', '.join(report['not_copied'][:4])}"
         return text
+    # a fault or an error while the sweep forced a config: which one
+    forcing = configs.get("forcing")
+    under = f" under autotune config {forcing['index']} ({forcing['config']})" if forcing else ""
     if verdict == "unsafe":
         kind = KINDS.get(str(report.get("kind")), str(report.get("kind")))
         where = f"{report.get('file') or report.get('answer')}:{report.get('line')}"
         buffer = f" (`{report['buffer']}`)" if report.get("buffer") else ""
         source = f": {report['source']}" if report.get("source") else ""
-        return f"unsafe: {kind} in kernel `{report.get('kernel')}`{buffer}, {where}{source}"
+        kernel = f"kernel `{report.get('kernel')}`{buffer}"
+        return f"unsafe: {kind} in {kernel}{under}, {where}{source}"
     if verdict == "no_kernel":
         ops = report.get("torch_ops") or {}
         text = "no_kernel: the forward launches no Triton kernel"
@@ -235,7 +243,7 @@ def describe(report: dict[str, Any]) -> str:
         text += f": {report['message']}"
     if report.get("where"):
         text += f" at {report['where']}"
-    return text
+    return text + under
 
 
 def lines_of(row: dict[str, Any]) -> list[str]:
