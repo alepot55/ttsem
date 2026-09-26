@@ -41,6 +41,7 @@ import pickle
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -1066,13 +1067,63 @@ def _source_class(fn: JITFunction) -> Any:
     return getattr(fn, "ASTSource", None) or ASTSource
 
 
-def dump_for_launch(record: LaunchRecord, target: GPUTarget) -> str:
+def env_dump_limit() -> int:
+    """How much of one compile's `MLIR_ENABLE_DUMP` trace the sanitizer's session keeps, in
+    bytes (`TTSEM_DUMP_MB`, default 256). A small kernel's trace is 15 to 25 MB; a kernel with
+    megabytes of PTX can print gigabytes of LLVM-dialect modules, which would fill whatever
+    holds them and make the outcome depend on the machine."""
+    return int(float(os.environ.get("TTSEM_DUMP_MB", "256")) * (1 << 20))
+
+
+class DumpTooLarge(RuntimeError):
+    """The `MLIR_ENABLE_DUMP` trace of one compile was longer than the bytes kept of it.
+    `partial` holds its first `limit` bytes (the last module in it may be cut)."""
+
+    def __init__(self, kernel: str, limit: int, partial: str, detail: str = "") -> None:
+        super().__init__(
+            f"the MLIR_ENABLE_DUMP trace of compiling `{kernel}` is longer than the {limit:,} "
+            f"bytes kept of it{detail}"
+        )
+        self.kernel, self.limit, self.partial = kernel, limit, partial
+
+
+class _Drain(threading.Thread):
+    """Reads the pipe a compile writes its fd 2 into, to the end, so that the compile never
+    blocks on a full pipe or sees a write fail: keeps the first `limit` bytes (every byte with
+    None) and counts the rest. A thread of this process is enough: Triton's pass manager, which
+    prints the trace, runs with the GIL released (3.8.0, `PassManager.run` in
+    `python/src/ir.cc`, `py::gil_scoped_release`)."""
+
+    def __init__(self, fd: int, limit: int | None) -> None:
+        super().__init__(name="ttsem-dump", daemon=True)
+        self.fd, self.limit = fd, limit
+        self.kept = bytearray()
+        self.seen = 0
+        self.error: BaseException | None = None
+
+    def run(self) -> None:
+        try:
+            while chunk := os.read(self.fd, 1 << 20):
+                self.seen += len(chunk)
+                room = len(chunk) if self.limit is None else self.limit - len(self.kept)
+                if room > 0 and self.error is None:
+                    try:
+                        self.kept += chunk[:room]
+                    except MemoryError as exc:  # read on all the same: the compile must end
+                        self.error = exc
+        finally:
+            os.close(self.fd)
+
+
+def dump_for_launch(record: LaunchRecord, target: GPUTarget, limit: int | None = None) -> str:
     """The ``MLIR_ENABLE_DUMP`` trace of compiling ``record``'s launch, in the generic form:
     every pass's module, which :func:`validate.split_dump` cuts into stages.
 
-    The compile runs in this process with the cache bypassed, its stderr caught at the file
-    descriptor (the dumps come from C++), and the wheel's printer switched to the generic form
-    for the rest of the process (see :func:`mlir.enable_generic_printing`)."""
+    The compile runs in this process with the cache bypassed, its fd 2 (the dumps come from
+    C++) pointed at a pipe that a thread of this process reads, and the wheel's printer switched
+    to the generic form for the rest of the process (see :func:`mlir.enable_generic_printing`).
+    The whole trace is returned; with ``limit``, only its first ``limit`` bytes are kept, and a
+    longer trace raises :class:`DumpTooLarge` with them."""
     if mlir is None:
         raise RuntimeError("mlir.py is not available yet")
     try:
@@ -1080,32 +1131,47 @@ def dump_for_launch(record: LaunchRecord, target: GPUTarget) -> str:
     except RuntimeError:
         pass  # a source build hides the symbol: the dump comes pretty, `to_generic` converts it
     saved = {k: os.environ.get(k) for k in ("MLIR_ENABLE_DUMP", "TRITON_ALWAYS_COMPILE")}
-    os.environ["MLIR_ENABLE_DUMP"] = "1"
-    os.environ["TRITON_ALWAYS_COMPILE"] = "1"
     fd_err = 2  # the C++ side writes to the process's fd 2, whatever sys.stderr is wrapped in
     try:
         sys.stderr.flush()
     except Exception:
         pass
-    keep = os.dup(fd_err)
-    with tempfile.TemporaryFile(mode="w+b") as sink:
-        os.dup2(sink.fileno(), fd_err)
+    read_end, write_end = os.pipe()
+    drain = _Drain(read_end, limit)
+    try:
+        drain.start()  # from here the thread closes the read end
+    except BaseException:
+        os.close(read_end)
+        os.close(write_end)
+        raise
+    keep = None
+    try:
+        keep = os.dup(fd_err)
+        os.dup2(write_end, fd_err)
+        os.environ["MLIR_ENABLE_DUMP"] = "1"
+        os.environ["TRITON_ALWAYS_COMPILE"] = "1"
+        _compile_asm(record.fn, record.args, record.kwargs, target)
+    finally:
         try:
-            _compile_asm(record.fn, record.args, record.kwargs, target)
-        finally:
-            try:
-                sys.stderr.flush()
-            except Exception:
-                pass
+            sys.stderr.flush()
+        except Exception:
+            pass
+        if keep is not None:
             os.dup2(keep, fd_err)
             os.close(keep)
-            for k, v in saved.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
-        sink.seek(0)
-        return sink.read().decode("utf-8", errors="replace")
+        os.close(write_end)  # fd 2 restored, this is the pipe's last write end: the thread ends
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        drain.join()
+    if drain.error is not None:
+        raise drain.error
+    text = drain.kept.decode("utf-8", errors="replace")
+    if limit is not None and drain.seen > limit:
+        raise DumpTooLarge(record.fn_name, limit, text)
+    return text
 
 
 def ir_for_launch(
@@ -1113,8 +1179,12 @@ def ir_for_launch(
     stage: str,
     target: GPUTarget,
     triton_opt: str | None = None,
+    dump_limit: int | None = None,
 ) -> str:
-    """The generic-form IR of ``record``'s launch, ``stage`` in ``{"ttir", "ttgir"}``."""
+    """The generic-form IR of ``record``'s launch, ``stage`` in ``{"ttir", "ttgir"}``. Where
+    the stage is read off the ``MLIR_ENABLE_DUMP`` trace, ``dump_limit`` bounds the bytes of it
+    kept (all of them by default); a stage the part kept does not hold whole raises
+    :class:`DumpTooLarge`."""
     if stage not in ("ttir", "ttgir"):
         raise ValueError(f"unsupported stage {stage!r}")
     if mlir is None:
@@ -1131,16 +1201,28 @@ def ir_for_launch(
     # `triton-opt` to convert it. The `MLIR_ENABLE_DUMP` trace does honour the generic switch,
     # so the same stage is read off the dump: the last module before the LLVM conversion for
     # `ttgir`, the last one without a TritonGPU encoding for `ttir`.
+    # A trace over the limit still answers when the part kept holds the whole stage: its last
+    # module (possibly cut) is dropped, and a module of a later stage must follow the stage's
+    # own last one (the lowering to LLVM prints the longest modules, well after them).
     from ttsem import validate  # local: validate imports this module
 
-    stages = validate.split_dump(dump_for_launch(record, target))
+    try:
+        dump, over = dump_for_launch(record, target, dump_limit), None
+    except DumpTooLarge as exc:
+        dump, over = exc.partial, exc
+    stages = [text for _, text in validate.split_dump(dump)]
+    if over is not None:
+        stages = stages[:-1]
     if stage == "ttgir":
-        texts = [text for _, text in stages if "llvm.func" not in text]
+        kept = [i for i, text in enumerate(stages) if "llvm.func" not in text]
     else:
-        texts = [text for _, text in stages if "#ttg." not in text and " ttg." not in text]
-    if not texts:
+        kept = [i for i, text in enumerate(stages) if "#ttg." not in text and " ttg." not in text]
+    if over is not None and (not kept or kept[-1] == len(stages) - 1):
+        detail = f", and the part kept does not hold the whole {stage} stage"
+        raise DumpTooLarge(over.kernel, over.limit, over.partial, detail)
+    if not kept:
         raise mlir.NotGeneric(f"no {stage} stage in the dump of {record.fn_name}")
-    return mlir.to_generic(texts[-1], None)
+    return mlir.to_generic(stages[kept[-1]], None)
 
 
 def _frontend_target() -> GPUTarget:

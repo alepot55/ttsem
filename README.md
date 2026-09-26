@@ -131,7 +131,10 @@ filesystem, no network); without `bwrap` the judge refuses to run unless given `
 falls back to needs more shared memory than the GPU (`--gpu`, an H100 by default) has, by Triton
 3.8.0's count. The count moves between Triton versions, so this verdict can disagree with a label
 produced under another Triton. Launches outside an autotuner are left unchecked against the limit,
-by choice of scope.
+by choice of scope, and whether a config compiles is decided for sm_90a whatever `--gpu` says.
+Where a launch's TTIR is read off its compile's IR trace, the sanitizer keeps at most
+`TTSEM_DUMP_MB` (default 256) of the trace; a launch whose TTIR is not whole in that part is
+`not_judged` (`dump_limit`).
 
 ## How it was built
 

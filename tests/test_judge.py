@@ -1,13 +1,16 @@
 """`judge`: KernelBench answers judged without a GPU, each in its own sandboxed process.
 
-The four answers under `fixtures/judge/` are the four outcomes a model-written kernel most often
-has: right, wrong by value, right by value but reading past the end of its input, and no kernel
-at all. They run through the judge's own `bwrap` sandbox like any answer, so those tests skip
-where the sandbox cannot run.
+The first four answers under `fixtures/judge/` are the four outcomes a model-written kernel most
+often has: right, wrong by value, right by value but reading past the end of its input, and no
+kernel at all; the others are the cases where the judge once blamed the wrong party (no autotune
+config that fits the GPU, a config the autotuner skips, a fault under a config the sweep forces,
+a grid the launcher refuses, an IR trace too long to keep). They run through the judge's own
+`bwrap` sandbox like any answer, so those tests skip where the sandbox cannot run.
 """
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import inspect
 import json
@@ -324,3 +327,144 @@ def test_the_configs_skipped_are_those_the_installed_autotuner_skips() -> None:
     assert caught is not None
     names = {name.strip() for name in caught.group(1).split(",")}
     assert names == {e.__name__ for e in runner.CONFIG_ERRORS}
+
+
+needs_semantics = pytest.mark.skipif(
+    importlib.util.find_spec("torch") is None or importlib.util.find_spec("triton") is None,
+    reason="needs torch and Triton",
+)
+
+
+IR_OF_THE_FIXTURE = """
+import hashlib, importlib.util, sys
+import torch
+from ttsem import harness, sanitize
+spec = importlib.util.spec_from_file_location("answer_ok", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+x, out = torch.randn(1000), torch.empty(1000)
+target = harness.target_for("cpu", harness.DEFAULT_CC)
+with sanitize.session():
+    record = harness.record_launch(
+        module.relu_kernel, (x, out, 1000), {"BLOCK": 256}, (4,), lambda *a, **k: None, "x"
+    ).record
+    if sys.argv[2] == "dump":  # the public call keeps every byte, whatever TTSEM_DUMP_MB says
+        print(len(harness.dump_for_launch(record, target)))
+    else:  # the process's first compile: its TTIR is read off the dump, as the session does
+        try:
+            ir = harness.ir_for_launch(record, "ttir", target, dump_limit=harness.env_dump_limit())
+            print(hashlib.sha256(ir.encode()).hexdigest())
+        except harness.DumpTooLarge as over:
+            print("DumpTooLarge", len(over.partial), over)
+"""
+
+
+@needs_semantics
+def test_an_ir_trace_is_kept_up_to_its_limit(tmp_path: Path) -> None:
+    """The fixture's own kernel, compiled in a fresh process with a fresh Triton cache each time
+    (the dump is read only while the wheel's printer is not yet generic, and a cached compile
+    keeps the generic text). A trace over the limit still gives the stage it is read for when the
+    part kept holds all of it; otherwise the tool says so."""
+
+    def run(mode: str, megabytes: float | None = None) -> str:
+        cache = tmp_path / f"cache{len(list(tmp_path.iterdir()))}"
+        env = {**os.environ, "PYTHONPATH": str(ROOT), "TRITON_CACHE_DIR": str(cache)}
+        env.pop("TTSEM_DUMP_MB", None)
+        if megabytes is not None:
+            env["TTSEM_DUMP_MB"] = str(megabytes)
+        argv = [sys.executable, "-c", IR_OF_THE_FIXTURE, str(FIXTURES / "answer_ok.py"), mode]
+        done = subprocess.run(argv, capture_output=True, text=True, env=env, check=False)
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip().splitlines()[-1]
+
+    whole = int(run("dump"))
+    assert int(run("dump", 4096 / (1 << 20))) == whole
+    ttir = run("ttir")
+    assert run("ttir", whole / 2 / (1 << 20)) == ttir  # the TTIR is in the first half
+    over = run("ttir", 4096 / (1 << 20))
+    assert over.startswith("DumpTooLarge 4096 the MLIR_ENABLE_DUMP trace of compiling `relu")
+    assert over.endswith("kept of it, and the part kept does not hold the whole ttir stage")
+
+
+@needs_sandbox
+def test_an_ir_trace_over_the_limit_is_not_judged_whatever_the_machine(tmp_path: Path) -> None:
+    done = subprocess.run(
+        [sys.executable, "-m", "ttsem", "judge", str(TASK), str(FIXTURES / "answer_ok.py")]
+        + ["--json", "--out", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={**os.environ, "TTSEM_DUMP_MB": "0.001"},
+        check=False,
+    )
+    report = json.loads(done.stdout)["scaled"]
+    assert report["verdict"] == "not_judged" and report["why"] == "dump_limit", report
+    assert report["message"].endswith("(TTSEM_DUMP_MB sets it)")
+
+
+RAISES = """
+def forward(exc):
+    raise exc
+"""
+
+
+def raise_here(exc: BaseException) -> None:
+    raise exc
+
+
+LIMITS = {  # what the runner takes for a limit of the machine or of the tool
+    "disk": lambda sanitize: OSError(errno.ENOSPC, "No space left on device"),
+    "memory": lambda sanitize: MemoryError(),
+    "torch": lambda sanitize: RuntimeError("DefaultCPUAllocator: can't allocate memory"),
+    "tool": lambda sanitize: sanitize.Unjudged("unsupported", "tt.foo", ["tt.foo"]),
+}
+
+
+@pytest.mark.parametrize(
+    ("limit", "by_answer", "verdict"),
+    [
+        ("disk", False, "not_judged (disk)"),
+        ("disk", True, "error (forward)"),
+        ("memory", False, "not_judged (memory)"),
+        ("memory", True, "error (forward)"),
+        ("torch", False, "not_judged (memory)"),
+        ("torch", True, "error (forward)"),
+        ("tool", False, "not_judged (unsupported)"),
+        ("tool", True, "error (forward)"),
+    ],
+)
+def test_a_limit_of_the_machine_is_the_answers_error_when_it_raises_it_itself(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    limit: str,
+    by_answer: bool,
+    verdict: str,
+) -> None:
+    """The runner's verdict for what escapes the run, in this process: `judge` is replaced, and
+    the "answer" is a two-line file of this test's own that raises what it is given."""
+    pytest.importorskip("torch")
+    pytest.importorskip("triton")
+    from ttsem import _judge_runner as runner
+    from ttsem import sanitize
+
+    exc = LIMITS[limit](sanitize)
+    answer = tmp_path / "answer.py"
+    answer.write_text(RAISES)
+    spec = importlib.util.spec_from_file_location("raises", answer)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def fake_judge(args: Any, report: dict[str, Any]) -> None:
+        report["stage"] = "forward"
+        (module.forward if by_answer else raise_here)(exc)
+
+    monkeypatch.setattr(runner, "judge", fake_judge)
+    monkeypatch.setattr(runner, "cap_memory", lambda: None)
+    out = tmp_path / "answer.scaled.json"
+    monkeypatch.setattr(sys, "argv", ["runner", str(TASK), str(answer), str(out)])
+    assert runner.main() == 0
+    report = json.loads(out.read_text())
+    assert judge.describe(report).startswith(verdict), report
+    if by_answer:
+        assert report["where"] == "answer.py:3"

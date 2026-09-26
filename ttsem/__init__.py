@@ -41,6 +41,7 @@ __version__ = "0.1.0"
 
 # The names below pull in `triton`, so they are resolved on first use rather than at import.
 _LAZY = {
+    "DumpTooLarge": ("ttsem.harness", "DumpTooLarge"),
     "LaunchRecord": ("ttsem.harness", "LaunchRecord"),
     "capture_launches": ("ttsem.harness", "capture_launches"),
     "compare": ("ttsem.harness", "compare"),
@@ -59,6 +60,7 @@ _LAZY = {
 
 if TYPE_CHECKING:  # so that type checkers and editors see the same API
     from ttsem.harness import (
+        DumpTooLarge,
         LaunchRecord,
         capture_launches,
         compare,
@@ -96,6 +98,7 @@ def __dir__() -> list[str]:
 
 __all__ = [
     "Block",
+    "DumpTooLarge",
     "Interp",
     "LaunchRecord",
     "LayoutInterp",

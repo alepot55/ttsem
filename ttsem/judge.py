@@ -19,9 +19,14 @@ One verdict per pass:
 - unsafe: out-of-bounds access, race between program instances, or use of memory nobody wrote,
   with the kernel and its source line
 - no_kernel: the answer launches no Triton kernel (PyTorch does the work: a known reward hack)
-- error: the answer does not import, build or run
+- error: the answer does not import, build or run (`shared_memory`: every config of one of its
+  autotuners was skipped, and the one it falls back to needs more shared memory than the GPU
+  has, by Triton 3.8.0's count, which can disagree with labels produced under another Triton; a
+  launch outside an autotuner is not checked against the limit)
 - too_slow: the timeout expired
-- not_judged: the tool cannot say (an op ttsem does not model, its own error, the memory cap)
+- not_judged: the tool cannot say (an op ttsem does not model, its own error, the memory cap,
+  a full /tmp, a compile's IR trace whose TTIR is not in the part kept, `TTSEM_DUMP_MB`,
+  default 256)
 
 `--gpu` sets only the shared-memory limit: every launch is compiled for sm_90a, so whether an
 autotune config compiles (the autotuner skips one that raises `CompileTimeAssertionFailure` or

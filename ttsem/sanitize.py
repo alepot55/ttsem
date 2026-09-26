@@ -592,10 +592,14 @@ def session(
     """While open, every Triton launch of this process is executed by the semantics on the CPU
     tensors it was given and written back into them. A launch that faults raises
     :class:`KernelFault` out of the launching call. With ``cuda_is_cpu`` every request for a
-    CUDA device gets the CPU, so code written for a GPU runs as it is."""
+    CUDA device gets the CPU, so code written for a GPU runs as it is. Where a launch's TTIR is
+    read off its compile's IR trace, at most ``TTSEM_DUMP_MB`` (default 256) of the trace is
+    kept, and a launch whose TTIR is not whole in that part raises :class:`Unjudged`
+    (``dump_limit``)."""
     harness._install_fake_driver(cc)
     restore_bench = _no_benchmarks()
     target = harness.target_for("cpu", cc)
+    dump_limit = harness.env_dump_limit()  # a compile's IR trace, where the TTIR is read off it
     state = Session()
     orig_run = JITFunction.run
 
@@ -610,7 +614,10 @@ def session(
         record = recorded.record
         _check_shared(state, record)  # a kernel the GPU could not launch is not a launch
         state.launches += 1
-        ir_text = harness.ir_for_launch(record, "ttir", target)
+        try:
+            ir_text = harness.ir_for_launch(record, "ttir", target, dump_limit=dump_limit)
+        except harness.DumpTooLarge as over:  # a limit of the tool's, whatever the answer
+            raise Unjudged("dump_limit", f"{over} (TTSEM_DUMP_MB sets it)", []) from None
         try:
             many = int(np.prod([int(g) for g in record.grid])) > 1
             execution = harness.execute(record, ir_text, raise_faults=True, trace_access=many)

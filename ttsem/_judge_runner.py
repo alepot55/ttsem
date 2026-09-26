@@ -25,13 +25,17 @@ and 1337, outputs must be finite, and `max|diff| < atol + rtol * max|ref|` with 
 (two runs bitwise equal) is not repeated: under the semantics every run is deterministic, and a
 race between program instances is reported as such.
 
-Verdicts: verified | wrong | unsafe | no_kernel | error, and, when the tool cannot judge,
-not_judged (an op ttsem does not model, an internal error, the memory cap, a broken task).
+Verdicts: verified | wrong | unsafe | no_kernel | error (with `why: shared_memory` when every
+config of an autotuner was skipped and the one it falls back to needs more shared memory than the
+GPU has, by Triton 3.8.0's count), and, when the tool cannot judge, not_judged (an op ttsem does
+not model, an internal error, the memory cap, a full /tmp, an IR trace over `TTSEM_DUMP_MB`, a
+broken task).
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import importlib.util
 import json
 import os
@@ -110,6 +114,13 @@ def answer_frame(exc: BaseException, own: set[Path]) -> traceback.FrameSummary |
     """The innermost frame of `exc`'s traceback that runs the answer's own code."""
     found = [f for f in traceback.extract_tb(exc.__traceback__) if in_answer(f, own)]
     return found[-1] if found else None
+
+
+def raised_by_answer(exc: BaseException, own: set[Path]) -> bool:
+    """Whether the answer's own code raised `exc` (its innermost frame is the answer's): what it
+    raises itself, a full disk or a MemoryError, must not pass for a limit of the machine."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    return bool(frames) and in_answer(frames[-1], own)
 
 
 def blame(exc: BaseException, own: set[Path]) -> tuple[bool, traceback.FrameSummary]:
@@ -497,6 +508,31 @@ def main() -> int:
         name = args.answer.name if in_answer(frame, own) else Path(frame.filename).name
         return f"{name}:{frame.lineno}"
 
+    def failed(exc: BaseException) -> None:
+        """An exception of the answer's, the task's or the tool's: a full disk or the memory
+        cap is a limit of the machine unless the answer's own code raised it."""
+        inside, frame = blame(exc, own)
+        stage = report.get("stage", "")
+        limit = not raised_by_answer(exc, own)
+        if limit and "can't allocate memory" in str(exc):  # torch's CPU allocator, same cap
+            report.update(verdict="not_judged", why="memory")
+        elif limit and isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
+            # the sandbox's /tmp is a tmpfs of half the machine's RAM: what fills it says
+            # something about the machine, not about the answer
+            report.update(verdict="not_judged", why="disk")
+        elif inside:
+            report.update(verdict="not_judged", why="tool_error")
+        elif stage in ("task", "reference"):
+            report.update(verdict="not_judged", why="task_error")
+        else:
+            report.update(verdict="error")
+        lines = [ln.strip() for ln in str(exc).strip().splitlines() if ln.strip()]
+        report.update(
+            message=first_line(exc),
+            detail=" | ".join(lines[-2:])[:300],  # a compilation error says what went wrong last
+            where=where(frame),
+        )
+
     start = time.time()
     try:
         judge(args, report)
@@ -514,8 +550,6 @@ def main() -> int:
             source=fault.source_text,
             message=sanitize.message(fault)[:600],
         )
-    except sanitize.Unjudged as stop:
-        report.update(verdict="not_judged", why=stop.verdict, message=stop.detail[:300])
     except sanitize.SharedOverLimit as exc:
         # every config of an autotuner skipped, then its launch with the config it falls back
         # to needs more shared memory than the GPU has: on the GPU, with this Triton, it fails
@@ -536,25 +570,18 @@ def main() -> int:
         frame = answer_frame(exc, own)
         if frame is not None:
             report["where"] = where(frame)
-    except MemoryError:
-        report.update(verdict="not_judged", why="memory", message="over the run's memory cap")
-    except BaseException as exc:  # noqa: BLE001  the answer may raise anything
-        inside, frame = blame(exc, own)
-        stage = report.get("stage", "")
-        if "can't allocate memory" in str(exc):  # torch's CPU allocator, under the same cap
-            report.update(verdict="not_judged", why="memory")
-        elif inside:
-            report.update(verdict="not_judged", why="tool_error")
-        elif stage in ("task", "reference"):
-            report.update(verdict="not_judged", why="task_error")
+    except sanitize.Unjudged as stop:
+        if raised_by_answer(stop, own):  # the tool's own exception, raised by the answer
+            failed(stop)
         else:
-            report.update(verdict="error")
-        lines = [ln.strip() for ln in str(exc).strip().splitlines() if ln.strip()]
-        report.update(
-            message=first_line(exc),
-            detail=" | ".join(lines[-2:])[:300],  # a compilation error says what went wrong last
-            where=where(frame),
-        )
+            report.update(verdict="not_judged", why=stop.verdict, message=stop.detail[:300])
+    except MemoryError as exc:
+        if raised_by_answer(exc, own):
+            failed(exc)
+        else:
+            report.update(verdict="not_judged", why="memory", message="over the run's memory cap")
+    except BaseException as exc:  # noqa: BLE001  the answer may raise anything
+        failed(exc)
     if TUNERS:  # whatever the verdict: under which config it was reached, and what was skipped
         report["autotune"] = tuned()
     report["seconds"] = round(time.time() - start, 1)
