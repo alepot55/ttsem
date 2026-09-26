@@ -282,7 +282,15 @@ def watch_launches(state: Any, gpu: tuple[int, int]) -> None:
     hence a float sum's rounding, varies from run to run on a GPU), for the rest of the process.
     While an autotuner runs, a configuration whose kernel needs more shared memory than `gpu`
     has raises `OutOfResources` instead of running (`sanitize.Session.shared_limit`): its own
-    benchmarking then skips it, as on the device, and `sweep_configs` marks it not applicable."""
+    benchmarking then skips it, as on the device, and `sweep_configs` marks it not applicable.
+    When it skips every config, its launch with the one it falls back to raises the same, and
+    the answer's verdict is `error` (`shared_memory`), as that launch would fail on the device.
+
+    The count is Triton 3.8.0's, and it moves between versions (a KernelBench-v3 conv that ran
+    on a B200 needs 393,232 B by 3.8.0's count, over the B200's 232,448): an `error`
+    (`shared_memory`) can disagree with a label produced under another Triton. A launch outside
+    an autotuner is left unchecked, by choice of scope: the limit is applied only where it
+    decides which config the device runs."""
     from triton.runtime.autotuner import Autotuner
     from triton.runtime.jit import JITFunction
 
@@ -475,6 +483,26 @@ def main() -> int:
         )
     except sanitize.Unjudged as stop:
         report.update(verdict="not_judged", why=stop.verdict, message=stop.detail[:300])
+    except sanitize.SharedOverLimit as exc:
+        # every config of an autotuner skipped, then its launch with the config it falls back
+        # to needs more shared memory than the GPU has: on the GPU, with this Triton, it fails
+        import triton
+
+        gpu = args.gpu if args.gpu in GPUS else "H100 (the default GPU)"
+        report.update(
+            verdict="error",
+            why="shared_memory",
+            message=(
+                f"every autotune config of `{exc.kernel}` was skipped, and the one it falls back "
+                f"to needs {exc.required:,} B of shared memory, over the {gpu}'s {exc.limit:,} B "
+                f"(Triton {triton.__version__}'s count)"
+            ),
+            shared=exc.required,
+            limit=exc.limit,
+        )
+        frame = answer_frame(exc, own)
+        if frame is not None:
+            report["where"] = where(frame)
     except MemoryError:
         report.update(verdict="not_judged", why="memory", message="over the run's memory cap")
     except BaseException as exc:  # noqa: BLE001  the answer may raise anything

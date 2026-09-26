@@ -127,6 +127,12 @@ instances, or memory nobody wrote, at the answer's own line), `no_kernel` (PyTor
 judges a batch. Each answer is model-written code and runs in its own `bwrap` sandbox (read-only
 filesystem, no network); without `bwrap` the judge refuses to run unless given `--no-sandbox`.
 
+`error` with `why: shared_memory` means every config of an autotuner was skipped and the one it
+falls back to needs more shared memory than the GPU (`--gpu`, an H100 by default) has, by Triton
+3.8.0's count. The count moves between Triton versions, so this verdict can disagree with a label
+produced under another Triton. Launches outside an autotuner are left unchecked against the limit,
+by choice of scope.
+
 ## How it was built
 
 Built by Alessandro Potenza with Claude Code (Anthropic's coding agent) as the engineering agent

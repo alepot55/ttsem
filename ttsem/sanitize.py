@@ -33,6 +33,7 @@ import numpy as np
 from ttsem import pidraces
 from ttsem import values
 from ttsem.memory import MemoryFault
+from triton.runtime.errors import OutOfResources
 from triton.runtime.jit import JITFunction
 
 
@@ -79,6 +80,20 @@ class Unjudged(Exception):
     def __init__(self, verdict: str, detail: str, unsupported: list[str]) -> None:
         super().__init__(detail)
         self.verdict, self.detail, self.unsupported = verdict, detail, unsupported
+
+
+class SharedOverLimit(OutOfResources):
+    """Triton's `OutOfResources`, raised by the session for a launch whose kernel needs more
+    shared memory than `Session.shared_limit` allows (an autotuner catches it and skips the
+    config, as on the device). It names the kernel, and the compute capability it was counted
+    for."""
+
+    def __init__(self, required: int, limit: int, kernel: str, cc: int) -> None:
+        super().__init__(required, limit, "shared memory")
+        self.kernel, self.cc = kernel, cc
+
+    def __reduce__(self) -> Any:
+        return (type(self), (self.required, self.limit, self.kernel, self.cc))
 
 
 def _op_of(exc: BaseException) -> str:
@@ -554,13 +569,12 @@ class Session:
 
 
 def _check_shared(state: Session, record: harness.LaunchRecord) -> None:
-    """Raise `OutOfResources` when `record`'s kernel needs more shared memory than
-    `state.shared_limit` allows, by Triton's own count for that GPU (`harness.shared_memory`).
-    A kernel that does not compile for that GPU is let through and counted."""
+    """Raise `OutOfResources` (:class:`SharedOverLimit`) when `record`'s kernel needs more shared
+    memory than `state.shared_limit` allows, by Triton's own count for that GPU
+    (`harness.shared_memory`). A kernel that does not compile for that GPU is let through and
+    counted."""
     if state.shared_limit is None:
         return
-    from triton.runtime.errors import OutOfResources
-
     cc, limit = state.shared_limit
     try:
         need = harness.shared_memory(record, harness.target_for("cpu", cc))
@@ -568,7 +582,7 @@ def _check_shared(state: Session, record: harness.LaunchRecord) -> None:
         state.shared_unknown += 1
         return
     if need > limit:
-        raise OutOfResources(need, limit, "shared memory")
+        raise SharedOverLimit(need, limit, record.fn_name, cc)
 
 
 @contextlib.contextmanager

@@ -205,6 +205,7 @@ def edges(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     manifest = here / "manifest.jsonl"
     pairs = {
         "nested_grid": "task_relu.py",
+        "no_config_fits": "task_matmul.py",
     }
     lines = [
         json.dumps(
@@ -257,3 +258,21 @@ def test_the_grid_checks_are_the_launchers() -> None:
         harness.check_launch_grid((1, 1, -(2**31) - 1))
     with pytest.raises(OverflowError, match="^Python int too large to convert to C long$"):
         harness.check_launch_grid((2**64,))
+
+
+@needs_sandbox
+def test_no_autotune_config_that_fits_the_gpu_is_an_error_of_the_answer(
+    edges: dict[str, Any],
+) -> None:
+    """Every config is skipped, as on an H100 (the default GPU), and the launch with the one the
+    autotuner falls back to fails there: the answer's error, not the tool's."""
+    report = edges["no_config_fits"]
+    assert report["verdict"] == "error" and report["why"] == "shared_memory", report
+    assert report["shared"] == 262144 and report["limit"] == 232448
+    assert report["where"] == "answer_no_config_fits.py:41"
+    assert len(report["autotune"][0]["skipped"]) == 2
+    assert judge.describe(report).startswith(
+        "error (shared_memory): every autotune config of `matmul_kernel` was skipped, and the one "
+        "it falls back to needs 262,144 B of shared memory, over the H100 (the default GPU)'s "
+        "232,448 B (Triton 3.8.0's count)"
+    )
