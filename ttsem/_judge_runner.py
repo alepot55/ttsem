@@ -29,7 +29,8 @@ Verdicts: verified | wrong | unsafe | no_kernel | error (with `why: shared_memor
 config of an autotuner was skipped and the one it falls back to needs more shared memory than the
 GPU has, by Triton 3.8.0's count), and, when the tool cannot judge, not_judged (an op ttsem does
 not model, an internal error, the memory cap, a full /tmp, an IR trace over `TTSEM_DUMP_MB`, a
-broken task).
+broken task). The report records the rule, the precision and the GPU it was judged under
+(`settings`).
 """
 
 from __future__ import annotations
@@ -500,6 +501,8 @@ def main() -> int:
     args = ap.parse_args()
     cap_memory()
     report: dict[str, Any] = {"answer": args.answer.name, "scale": args.scale, "launches": 0}
+    # what the verdict was reached under: a rerun with other settings judges again
+    report["settings"] = {"rule": args.rule, "precision": args.precision, "gpu": args.gpu}
     own = {args.answer.resolve(), scaled_copy(args.out).resolve()}  # the answer's own code
 
     def where(frame: traceback.FrameSummary) -> str:

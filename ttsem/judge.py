@@ -3,6 +3,7 @@
     python -m ttsem judge TASK.py ANSWER.py [--json] [--timeout S] [--scale auto|none]
                           [--rule kernelbench|v3] [--precision fp32|keep] [--gpu NAME] [--out DIR]
     python -m ttsem judge --manifest M.jsonl --out DIR [--jobs N] [--timeout S] [--full-max N]
+                          [--rule ...] [--precision ...] [--gpu ...]  (for lines without them)
 
 A task is a KernelBench problem file (`Model`, `get_inputs`, `get_init_inputs`); an answer is the
 file that defines `ModelNew` (or, in the KernelBench-v3 release, a replacement `Model`). Each
@@ -41,8 +42,12 @@ elements and its reference model's parameters at most 32 times that, and always 
 One pair prints one line per pass that ran (usually one) and exits 0 only if every pass says
 `verified`. A manifest line is a JSON object with `id`, `task`, `answer` (relative paths are
 taken from the manifest's directory), optionally `rule`, `precision` and `gpu`, and any labels
-to carry along; the reports go to OUT/<id>.<pass>.json (a rerun reads them back), one row per
-answer to OUT/rows.jsonl, and the counts per verdict to the terminal.
+to carry along; `--rule`, `--precision` and `--gpu` given with `--manifest` apply to the lines
+that do not set that field, or set it to null or "" (KernelBench's defaults otherwise). An id is
+judged once: a later line with an id already seen is dropped, with a warning, if it names the
+same task, answer and settings, and is an error otherwise. The reports go to
+OUT/<id>.<pass>.json (a rerun reads back those judged under the same rule, precision and GPU),
+one row per answer to OUT/rows.jsonl, and the counts per verdict to the terminal.
 """
 
 from __future__ import annotations
@@ -118,13 +123,18 @@ def judge_one(
     report: Path,
     timeout: int,
     scale: str = "auto",
-    extra: list[str] | None = None,
+    settings: dict[str, str] | None = None,
     sandbox: bool = True,
 ) -> dict[str, Any]:
-    """One answer, in its own process, with a timeout. The report is kept: a rerun reads it
-    back."""
+    """One answer, in its own process, with a timeout, under `settings` (`rule`, `precision`,
+    `gpu`; `DEFAULTS` for those missing). The report is kept: a rerun reads it back, unless it
+    was judged under other settings."""
+    settings = {**DEFAULTS, **(settings or {})}
     if report.exists():
-        return dict(json.loads(report.read_text()))
+        kept = dict(json.loads(report.read_text()))
+        if kept.get("settings") == settings:
+            return kept
+        report.unlink()  # judged under another rule, precision or GPU: judged again
     out = report.parent.resolve()
     cache = out / ".cache"
     cache.mkdir(parents=True, exist_ok=True)
@@ -132,8 +142,10 @@ def judge_one(
     cmd = sandbox_prefix(out, cache, keep) if sandbox else []
     cmd += [
         sys.executable, "-m", RUNNER, str(task.resolve()), str(answer.resolve()),
-        str(report.resolve()), "--scale", scale, *(extra or []),
+        str(report.resolve()), "--scale", scale,
     ]  # fmt: skip
+    for key, value in settings.items():
+        cmd += [f"--{key}", value]
     path = os.pathsep.join(p for p in (str(ROOT), os.environ.get("PYTHONPATH", "")) if p)
     env = {
         **os.environ,
@@ -148,10 +160,10 @@ def judge_one(
         if not report.exists():
             tail = (done.stderr or "").strip().splitlines()[-1:] or [""]
             died = {"answer": answer.name, "verdict": "error", "why": "crash", "message": tail[0]}
-            report.write_text(json.dumps(died, indent=1))
+            report.write_text(json.dumps({**died, "settings": settings}, indent=1))
     except subprocess.TimeoutExpired:
         slow = {"answer": answer.name, "verdict": "too_slow", "seconds": timeout}
-        report.write_text(json.dumps(slow, indent=1))
+        report.write_text(json.dumps({**slow, "settings": settings}, indent=1))
     return dict(json.loads(report.read_text()))
 
 
@@ -160,16 +172,10 @@ def judge_item(
 ) -> dict[str, Any]:
     """The scaled pass, and the full pass where the rule above calls for it."""
     task, answer = Path(item["task"]), Path(item["answer"])
-    extra = [
-        "--precision",
-        item.get("precision", "fp32"),
-        "--rule",
-        item.get("rule", "kernelbench"),
-        "--gpu",
-        item.get("gpu", ""),  # its shared-memory limit bounds the autotune configs judged
-    ]
+    # the GPU's shared-memory limit bounds the configs judged
+    settings = {key: item[key] for key in DEFAULTS}
     small = out / f"{item['id']}.scaled.json"
-    scaled = judge_one(task, answer, small, timeout, "auto", extra, sandbox)
+    scaled = judge_one(task, answer, small, timeout, "auto", settings, sandbox)
     row = {**item, "scaled": scaled}
     note = scaled.get("scaling", {})
     footprint = note.get("footprint_full")
@@ -177,7 +183,7 @@ def judge_item(
     if scaled["verdict"] == "no_kernel" and note.get("factor", 1) > 1:
         # PyTorch alone is quick at any size, and an answer that launches its kernel only at the
         # benchmark's own shape (`if x.shape[1] != 256: return torch.sum(...)`) shows it there
-        row["full"] = judge_one(task, answer, full, timeout, "none", extra, sandbox)
+        row["full"] = judge_one(task, answer, full, timeout, "none", settings, sandbox)
     elif (
         full_max
         and footprint is not None
@@ -186,7 +192,7 @@ def judge_item(
         # parameters cost memory more than time: a looser bound for them
         and note.get("params_full", 0) <= 32 * full_max
     ):
-        row["full"] = judge_one(task, answer, full, timeout, "none", extra, sandbox)
+        row["full"] = judge_one(task, answer, full, timeout, "none", settings, sandbox)
     return row
 
 
@@ -294,9 +300,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, help="where the reports go (a temporary one otherwise)")
     ap.add_argument("--json", action="store_true", help="print the verdict record as JSON")
     ap.add_argument("--scale", choices=("auto", "none"), default="auto")
-    ap.add_argument("--rule", choices=("kernelbench", "v3"), default="kernelbench")
-    ap.add_argument("--precision", choices=("fp32", "keep"), default="fp32")
-    ap.add_argument("--gpu", default="", help="the dataset's GPU (H100, B200, RTX3090, ...)")
+    # no default here: with --manifest, a flag given applies to the lines that do not set it
+    ap.add_argument("--rule", choices=("kernelbench", "v3"), help="(kernelbench)")
+    ap.add_argument("--precision", choices=("fp32", "keep"), help="(fp32)")
+    ap.add_argument("--gpu", help="the dataset's GPU (H100, B200, RTX3090, ...)")
     ap.add_argument("--timeout", type=int, default=None, help="seconds per pass (600; 300 batch)")
     ap.add_argument("--full-max", type=int, default=1 << 20)
     ap.add_argument("--jobs", type=int, default=2, help="answers judged at once (batch)")
@@ -329,14 +336,16 @@ def main(argv: list[str] | None = None) -> int:
     return single(args, sandbox)
 
 
+# what a pair, or a manifest line, is judged under when neither the line nor a flag says
+DEFAULTS = {"rule": "kernelbench", "precision": "fp32", "gpu": ""}
+
+
 def single(args: argparse.Namespace, sandbox: bool) -> int:
     item = {
         "id": args.answer.stem,
         "task": str(args.task),
         "answer": str(args.answer),
-        "rule": args.rule,
-        "precision": args.precision,
-        "gpu": args.gpu,
+        **{key: getattr(args, key) or value for key, value in DEFAULTS.items()},
     }
     timeout = args.timeout or 600
     with contextlib.ExitStack() as stack:
@@ -347,9 +356,9 @@ def single(args: argparse.Namespace, sandbox: bool) -> int:
         if args.scale == "auto":
             row = judge_item(item, out, timeout, args.full_max, sandbox)
         else:
-            extra = ["--precision", args.precision, "--rule", args.rule, "--gpu", args.gpu]
+            settings = {key: item[key] for key in DEFAULTS}
             report = out / f"{item['id']}.full.json"
-            full = judge_one(args.task, args.answer, report, timeout, "none", extra, sandbox)
+            full = judge_one(args.task, args.answer, report, timeout, "none", settings, sandbox)
             row = {**item, "full": full}
     if args.json:
         print(json.dumps(row, indent=1))
@@ -359,8 +368,49 @@ def single(args: argparse.Namespace, sandbox: bool) -> int:
     return 0 if all(v == "verified" for v in passes) else 1
 
 
+def differences(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
+    """The fields that decide a verdict (the task, the answer, the settings) on which two
+    manifest lines differ."""
+    paths = [key for key in ("task", "answer") if Path(a[key]).resolve() != Path(b[key]).resolve()]
+    return paths + [key for key in DEFAULTS if a.get(key) != b.get(key)]
+
+
+def unique(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The manifest's lines with one per id, the first: a repeated id would be counted twice and,
+    with --jobs above 1, judged twice at once into the same report. A repeat of the same task,
+    answer and settings is dropped with a warning; an id that names anything else twice raises
+    ValueError, since only one of the two would be judged."""
+    seen: dict[str, tuple[int, dict[str, Any]]] = {}
+    kept = []
+    for line, item in enumerate(items, 1):
+        key = str(item["id"])
+        if key not in seen:
+            seen[key] = (line, item)
+            kept.append(item)
+            continue
+        first, was = seen[key]
+        differ = differences(was, item)
+        if differ:
+            raise ValueError(
+                f"id {key!r} on line {line} was already on line {first}, with another "
+                f"{' and '.join(differ)}: give each answer its own id"
+            )
+        sys.stderr.write(
+            f"ttsem judge: warning: id {key!r} on line {line} repeats line {first}: judged once\n"
+        )
+    return kept
+
+
 def batch(args: argparse.Namespace, sandbox: bool) -> int:
     items = load_manifest(args.manifest)
+    for item in items:  # a flag given applies where the line does not say (or says null or "")
+        for key, value in DEFAULTS.items():
+            item[key] = item.get(key) or getattr(args, key) or value
+    try:
+        items = unique(items)
+    except ValueError as exc:
+        sys.stderr.write(f"ttsem judge: {exc}\n")
+        return 2
     if args.limit:
         items = items[: args.limit]
     out: Path = args.out

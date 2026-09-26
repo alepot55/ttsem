@@ -468,3 +468,118 @@ def test_a_limit_of_the_machine_is_the_answers_error_when_it_raises_it_itself(
     assert judge.describe(report).startswith(verdict), report
     if by_answer:
         assert report["where"] == "answer.py:3"
+    assert report["settings"] == {"rule": "kernelbench", "precision": "fp32", "gpu": ""}
+
+
+def fake_batch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, lines: list[dict[str, Any]], *flags: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """A batch whose passes are replaced: nothing is executed, only how each was called is kept.
+    Returns (the calls, the rows written)."""
+    manifest = tmp_path / "m.jsonl"
+    manifest.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    calls: list[dict[str, Any]] = []
+
+    def fake(task: Path, answer: Path, report: Path, *rest: Any) -> dict[str, Any]:
+        calls.append({"report": report.name, **rest[2]})  # (timeout, scale, settings, sandbox)
+        return {"verdict": "verified", "trials": []}
+
+    monkeypatch.setattr(judge, "judge_one", fake)
+    out = tmp_path / "out"
+    argv = ["--manifest", str(manifest), "--out", str(out), "--no-sandbox", *flags]
+    assert judge.main(argv) == 0
+    rows = [json.loads(line) for line in (out / "rows.jsonl").read_text().splitlines()]
+    return calls, rows
+
+
+def test_batch_flags_apply_to_the_lines_that_do_not_set_them(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    lines = [
+        {"id": "a", "task": "t.py", "answer": "a.py", "rule": "kernelbench", "gpu": "RTX3090"},
+        {"id": "b", "task": "t.py", "answer": "b.py"},
+        {"id": "c", "task": "t.py", "answer": "c.py", "rule": None, "gpu": "", "precision": None},
+    ]
+    calls, rows = fake_batch(
+        monkeypatch, tmp_path, lines, "--rule", "v3", "--gpu", "B200", "--precision", "keep"
+    )
+    by = {call["report"]: call for call in calls}
+    assert by["a.scaled.json"] == {
+        "report": "a.scaled.json", "precision": "keep", "rule": "kernelbench", "gpu": "RTX3090"
+    }  # fmt: skip
+    flags = {"precision": "keep", "rule": "v3", "gpu": "B200"}
+    assert by["b.scaled.json"] == {"report": "b.scaled.json", **flags}
+    assert by["c.scaled.json"] == {"report": "c.scaled.json", **flags}  # null and "": not set
+    assert rows[1]["rule"] == "v3" and rows[1]["gpu"] == "B200"  # the row says what was used
+    calls, _ = fake_batch(monkeypatch, tmp_path, lines[1:])
+    assert [{k: v for k, v in call.items() if k != "report"} for call in calls] == [
+        {"rule": "kernelbench", "precision": "fp32", "gpu": ""}
+    ] * 2
+
+
+def test_a_repeated_id_is_judged_and_counted_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lines = [
+        {"id": "a", "task": "t.py", "answer": "a.py", "label": "first"},
+        {"id": "b", "task": "t.py", "answer": "b.py"},
+        {"id": "a", "task": "./t.py", "answer": "a.py", "rule": "kernelbench", "label": "again"},
+    ]
+    calls, rows = fake_batch(monkeypatch, tmp_path, lines, "--jobs", "2")
+    assert sorted(call["report"] for call in calls) == ["a.scaled.json", "b.scaled.json"]
+    assert [row["id"] for row in rows] == ["a", "b"]
+    assert rows[0]["label"] == "first"  # the first line wins
+    captured = capsys.readouterr()
+    assert "id 'a' on line 3 repeats line 1: judged once" in captured.err
+    assert captured.out.splitlines()[-1] == "scaled pass, 2 answer(s): verified 2"
+
+
+def test_an_id_that_names_two_answers_is_an_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest = tmp_path / "m.jsonl"
+    lines = [
+        {"id": "a", "task": "t.py", "answer": "a.py"},
+        {"id": "a", "task": "t.py", "answer": "other.py", "gpu": "B200"},
+    ]
+    manifest.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    monkeypatch.setattr(judge, "judge_one", lambda *a, **k: pytest.fail("nothing is judged"))
+    argv = ["--manifest", str(manifest), "--out", str(tmp_path / "out"), "--no-sandbox"]
+    assert judge.main(argv) == 2
+    assert capsys.readouterr().err.endswith(
+        "id 'a' on line 2 was already on line 1, with another answer and gpu: "
+        "give each answer its own id\n"
+    )
+
+
+def test_a_report_is_read_back_only_under_the_settings_it_was_judged_under(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Nothing is executed: the runner's process is replaced by one that writes a report."""
+    report = tmp_path / "a.scaled.json"
+    first = {"rule": "kernelbench", "precision": "fp32", "gpu": ""}
+    report.write_text(json.dumps({"verdict": "wrong", "settings": first}))
+    ran: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        ran.append(cmd)
+        flags = dict(zip(cmd[-6::2], cmd[-5::2], strict=True))
+        settings = {key.removeprefix("--"): value for key, value in flags.items()}
+        report.write_text(json.dumps({"verdict": "verified", "settings": settings}))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(judge.subprocess, "run", fake_run)
+    answer = FIXTURES / "answer_ok.py"
+    again = judge.judge_one(TASK, answer, report, 60, "auto", first, sandbox=False)
+    assert again["verdict"] == "wrong" and not ran  # read back
+    v3 = {**first, "rule": "v3"}
+    assert judge.judge_one(TASK, answer, report, 60, "auto", v3, sandbox=False) == {
+        "verdict": "verified",
+        "settings": v3,
+    }
+    assert len(ran) == 1  # judged again
+    report.write_text(json.dumps({"verdict": "wrong"}))  # a report from before `settings`
+    assert judge.judge_one(TASK, answer, report, 60, "auto", v3, sandbox=False)["verdict"] == (
+        "verified"
+    )
+    assert len(ran) == 2
