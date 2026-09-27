@@ -232,7 +232,8 @@ def _race_fault(
             buffer, element = name, int((race.address - base) // arr.itemsize)
     sides = sorted((race.first, race.second), key=lambda side: side[1] == "r")  # a writer first
     (pid_a, kind_a, op_a), (pid_b, kind_b, op_b) = sides
-    words = {"r": "loads", "w": "stores to", "a": "atomically updates"}
+    # a silent store (`s`) leaves the bytes it found, but another instance may leave others
+    words = {"r": "loads", "w": "stores to", "s": "stores to", "a": "atomically updates"}
     other = _source_of(op_b, ir_text)
     other_where = f"{Path(other[0]).name}:{other[1]}: {other[2]}" if other[1] else op_b[:120]
     detail = (

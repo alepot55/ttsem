@@ -377,3 +377,24 @@ def test_a_kernel_that_writes_back_rows_it_did_not_change_does_not_race_with_the
         with pytest.raises(sanitize.KernelFault) as stop:
             every_row_plus_the_next[(8,)](x, 64, 8, BLOCK=8)
         assert stop.value.fault.kind == "race"
+
+
+def test_a_race_whose_first_store_leaves_the_bytes_it_found_is_reported() -> None:
+    """Instance 0 stores 0.0 where 0.0 already is (a silent store), instance 1 stores 1.0 there:
+    what the element holds in the end depends on the order, and the fault names both stores.
+    TritonBench's `kv_cache_filling` reference writes its scales this way."""
+    import torch
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def pid_to_first(out_ptr):
+        tl.store(out_ptr, tl.program_id(0).to(tl.float32))
+
+    with sanitize.session():
+        out = torch.zeros(4, dtype=torch.float32, device="cuda")
+        with pytest.raises(sanitize.KernelFault) as stop:
+            pid_to_first[(2,)](out)
+    assert stop.value.fault.kind == "race"
+    text = sanitize.message(stop.value.fault)
+    assert "(0, 0, 0) stores to it, (1, 0, 0) stores to it" in text
