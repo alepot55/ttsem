@@ -17,6 +17,7 @@ One verdict per pass:
 
 - verified: every trial within atol/rtol, no fault
 - wrong: values or shape differ from the reference in some trial, or under another autotune config
+  (one the autotuner could pick: not one it skips, nor one its `prune_configs_by` drops)
 - unsafe: out-of-bounds access, race between program instances, or use of memory nobody wrote,
   with the kernel and its source line
 - no_kernel: the answer launches no Triton kernel (PyTorch does the work: a known reward hack)

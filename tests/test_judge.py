@@ -3,8 +3,8 @@
 The first four answers under `fixtures/judge/` are the four outcomes a model-written kernel most
 often has: right, wrong by value, right by value but reading past the end of its input, and no
 kernel at all; the others are the cases where the judge once blamed the wrong party (no autotune
-config that fits the GPU, a config the autotuner skips, a fault under a config the sweep forces,
-a grid the launcher refuses, an IR trace too long to keep). They run through the judge's own
+config that fits the GPU, a config the autotuner skips or prunes, a fault under a config the
+sweep forces, a grid the launcher refuses, an IR trace too long to keep). They run through the judge's own
 `bwrap` sandbox like any answer, so those tests skip where the sandbox cannot run.
 """
 
@@ -213,6 +213,7 @@ def edges(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         "no_config_fits": "task_matmul.py",
         "config_asserts": "task_relu.py",
         "config_faults": "task_relu.py",
+        "config_pruned": "task_relu.py",
     }
     lines = [
         json.dumps(
@@ -314,6 +315,19 @@ def test_a_fault_under_a_config_the_sweep_forces_names_that_config(
     }
     assert report["autotune"][0]["ran"].startswith("BLOCK: 128,")  # the config that faulted
     assert " under autotune config 1 (BLOCK: 128, " in judge.describe(report)
+
+
+@needs_sandbox
+def test_a_config_the_autotuners_pruning_drops_is_not_applicable(edges: dict[str, Any]) -> None:
+    """Forced, the third config would leave each row's tail at zero: the pruning is what keeps
+    the autotuner from ever running it, so it is not the answer's error."""
+    report = edges["config_pruned"]
+    assert report["verdict"] == "verified", report
+    skipped = report["configs"]["not_applicable"]
+    assert [(c["index"], c["reason"]) for c in skipped] == [(1, "pruned"), (2, "pruned")]
+    assert skipped[1]["config"].startswith("BLOCK: 512,")
+    assert report["configs"]["checked"] == 0
+    assert report["autotune"][0]["ran"].startswith("BLOCK: 1024,")
 
 
 def test_the_configs_skipped_are_those_the_installed_autotuner_skips() -> None:

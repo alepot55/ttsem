@@ -133,6 +133,8 @@ falls back to needs more shared memory than the GPU (`--gpu`, an H100 by default
 3.8.0's count. The count moves between Triton versions, so this verdict can disagree with a label
 produced under another Triton. Launches outside an autotuner are left unchecked against the limit,
 by choice of scope, and whether a config compiles is decided for sm_90a whatever `--gpu` says.
+The other autotune configs are forced in turn after the trials, except those the autotuner itself
+would never run: one it skips, or one its `prune_configs_by` drops (`not_applicable`, `pruned`).
 Where a launch's TTIR is read off its compile's IR trace, the sanitizer keeps at most
 `TTSEM_DUMP_MB` (default 256) of the trace; a launch whose TTIR is not whole in that part is
 `not_judged` (`dump_limit`).

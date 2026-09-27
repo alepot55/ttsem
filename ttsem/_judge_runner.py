@@ -274,6 +274,10 @@ def judge(args: argparse.Namespace, report: dict[str, Any]) -> None:
 
 
 TUNERS: list[Any] = []  # every autotuner the answer ran, in the order it first ran
+# per autotuner (by id) and per key it tuned: the configs its `prune_configs` kept for that key
+# (`prune_configs_by`: `early_config_prune`, then `perf_model` with `top_k`), the only ones it
+# benchmarks, hence the only ones it can pick
+KEPT: dict[int, dict[Any, list[Any]]] = {}
 ATOMIC_KERNELS: set[str] = set()  # launched kernels whose source updates memory atomically
 
 # The GPUs the datasets name: (compute capability, the most shared memory one block may use,
@@ -309,23 +313,34 @@ def watch_launches(state: Any, gpu: tuple[int, int]) -> None:
     from triton.runtime.autotuner import Autotuner
     from triton.runtime.jit import JITFunction
 
-    tuner_run, jit_run = Autotuner.run, JITFunction.run
+    tuner_run, jit_run, tuner_prune = Autotuner.run, JITFunction.run, Autotuner.prune_configs
+
+    def prune(self: Any, kwargs: Any) -> Any:
+        kept = tuner_prune(self, kwargs)
+        self.ttsem_last_kept = list(kept)
+        return kept
 
     def run_tuner(self: Any, *args: Any, **kwargs: Any) -> Any:
         if self not in TUNERS:
             TUNERS.append(self)
         saved, state.shared_limit = state.shared_limit, gpu
+        cached = set(self.cache)
         try:
             return tuner_run(self, *args, **kwargs)
         finally:
             state.shared_limit = saved
+            # a key the autotuner tuned in this call: the configs its pruning kept for it
+            kept = self.__dict__.pop("ttsem_last_kept", None)
+            if kept is not None:
+                for key in set(self.cache) - cached:
+                    KEPT.setdefault(id(self), {})[key] = kept
 
     def run_jit(self: Any, *args: Any, **kwargs: Any) -> Any:
         if "atomic_" in (getattr(self, "src", "") or ""):
             ATOMIC_KERNELS.add(getattr(self, "__name__", "?"))
         return jit_run(self, *args, **kwargs)
 
-    Autotuner.run, JITFunction.run = run_tuner, run_jit
+    Autotuner.run, JITFunction.run, Autotuner.prune_configs = run_tuner, run_jit, prune
 
 
 def tuned() -> list[dict[str, Any]]:
@@ -373,6 +388,15 @@ def not_applicable(index: int, config: Any, exc: BaseException) -> dict[str, Any
     return entry
 
 
+def candidates(tuner: Any) -> list[Any]:
+    """The configs the sweep forces for `tuner`, in order: its own, then any config its pruning
+    kept that is none of them (an `early_config_prune` may return configs of its own)."""
+    found = list(tuner.configs)
+    for kept in KEPT.get(id(tuner), {}).values():
+        found += [c for c in kept if all(c != f for f in found)]
+    return found
+
+
 def sweep_configs(
     reference: Any,
     candidate: Any,
@@ -387,9 +411,12 @@ def sweep_configs(
     under the same rule: an answer is only correct if it is correct under the config the
     autotuner may pick. A config the autotuner skips cannot be picked (`CONFIG_ERRORS`: its
     kernel needs more shared memory than the GPU has, or does not compile): it is listed as not
-    applicable, with the reason (and, for shared memory, Triton's count and the limit). Whether
-    a config compiles is judged for sm_90a, the target every launch here is compiled for,
-    whatever `--gpu` says: only the shared-memory limit is the GPU's.
+    applicable, with the reason (and, for shared memory, Triton's count and the limit). Nor can
+    a config its `prune_configs_by` drops before benchmarking (`KEPT`, for each key it tuned):
+    for that key the trial's config stays, and a config dropped wherever it was not already
+    judged is listed as not applicable, reason `pruned`, with the configs dropped of every
+    autotuner. Whether a config compiles is judged for sm_90a, the target every launch here is
+    compiled for, whatever `--gpu` says: only the shared-memory limit is the GPU's.
 
     The outcome goes into `done` (the report's `configs`) as it comes: while a config is
     forced, `forcing` names it, so a fault or an error that ends the run under it says which.
@@ -400,16 +427,32 @@ def sweep_configs(
     inputs = [cast(x, precision) for x in get_inputs()]
     torch.manual_seed(seeds[0])
     want = reference(*inputs)
-    trial = [list(t.cache.values()) for t in TUNERS]  # the configs the trials ran with
     saved = [(dict(t.cache), getattr(t, "best_config", None)) for t in TUNERS]
-    most = max(len(t.configs) for t in TUNERS)
+    configs = [candidates(t) for t in TUNERS]
+    most = max(len(c) for c in configs)
     for index in range(most):
-        picks = [t.configs[min(index, len(t.configs) - 1)] for t in TUNERS]
-        if all(all(c == pick for c in ran) for pick, ran in zip(picks, trial, strict=True)):
-            continue  # what the trials already judged
-        for tuner, pick in zip(TUNERS, picks, strict=True):
-            for key in list(tuner.cache):
-                tuner.cache[key] = pick
+        picks = [c[min(index, len(c) - 1)] for c in configs]
+        forced, pruned = [], []
+        for tuner, pick, (trial, _) in zip(TUNERS, picks, saved, strict=True):
+            kept = KEPT.get(id(tuner), {})
+            assign, dropped_here = {}, False
+            for key, ran in trial.items():  # where the pruning dropped it, the trial's config
+                dropped = key in kept and all(c != pick for c in kept[key])
+                dropped_here |= dropped
+                assign[key] = ran if dropped else pick
+            if dropped_here:
+                pruned.append(str(pick))
+            forced.append(assign)
+        if all(
+            all(assign[k] == trial[k] for k in trial)
+            for assign, (trial, _) in zip(forced, saved, strict=True)
+        ):
+            if pruned:  # the autotuner never benchmarks it, so never picks it
+                entry = {"index": index, "config": "; ".join(pruned), "reason": "pruned"}
+                done.setdefault("not_applicable", []).append(entry)
+            continue  # otherwise what the trials already judged
+        for tuner, assign in zip(TUNERS, forced, strict=True):
+            tuner.cache.update(assign)
         torch.manual_seed(seeds[0])
         done["forcing"] = {"index": index, "config": str(picks[0])}
         try:
