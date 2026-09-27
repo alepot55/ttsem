@@ -79,6 +79,19 @@ def test_poisoned_memory_does_not_disturb_a_program_that_writes_before_it_reads(
     assert report.verdict == "ok" and "SCRIPT_OK 999000.0" in capsys.readouterr().out
 
 
+def test_memory_from_torch_empty_that_requires_grad_is_poisoned_too() -> None:
+    """`torch.empty_like(x, requires_grad=True)` is a leaf that requires grad, which an in-place
+    fill refuses; the poison is not an operation of the program, so autograd does not see it.
+    TritonBench-T's `ones_like` and `logspace` answers allocate their output this way."""
+    import torch
+
+    with sanitize.session():
+        x = torch.zeros(4, device="cuda")
+        out = torch.empty_like(x, requires_grad=True)
+    assert out.is_leaf and out.requires_grad
+    assert torch.isnan(out.detach()).all()
+
+
 def test_the_source_line_is_found_through_named_and_aliased_locations(tmp_path: Path) -> None:
     src = tmp_path / "k.py"
     src.write_text("first\ntl.store(p, x)\n")

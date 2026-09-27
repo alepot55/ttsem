@@ -321,11 +321,13 @@ def _cuda_is_cpu() -> Any:
             return tensor
         second = os.environ.get("TTSEM_POISON") == "second"
         if tensor.dtype.is_floating_point or tensor.dtype.is_complex:
-            tensor.fill_(-12345.0 if second else float("nan"))
+            value: Any = -12345.0 if second else float("nan")
         elif tensor.dtype == torch.bool:
-            tensor.fill_(not second)
+            value = not second
         else:
-            tensor.fill_(torch.iinfo(tensor.dtype).max - (0x3C if second else 0x5A))
+            value = torch.iinfo(tensor.dtype).max - (0x3C if second else 0x5A)
+        with torch.no_grad():  # not the program's operation: a leaf that requires grad takes it
+            tensor.fill_(value)
         return tensor
 
     class CudaIsCpu(TorchFunctionMode):
