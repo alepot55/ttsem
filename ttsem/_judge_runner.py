@@ -127,10 +127,12 @@ def blame(exc: BaseException, own: set[Path]) -> tuple[bool, traceback.FrameSumm
     """(is it the semantics' own failure, the frame that raised). A torch call of the answer
     passes through our function modes, a launch with missing arguments fails in Triton's binder
     called from the harness, and a grid the launcher would refuse fails in the harness's copy of
-    its checks (`harness.check_launch_grid`): none of them is a failure of the tool. For the
-    last two the frame is the answer's launch (`own`: its files), not the check's own line."""
+    its checks (`harness.check_launch_grid`, where a tensor entry's `__index__` passes through
+    our function modes too): none of them is a failure of the tool. For the last two the frame
+    is the answer's launch (`own`: its files), not the check's own line."""
     frames = traceback.extract_tb(exc.__traceback__)
-    if "dynamic_func()" in str(exc) or frames[-1].name == "check_launch_grid":
+    inner = [f for f in frames if f.name != "__torch_function__"]
+    if "dynamic_func()" in str(exc) or (inner and inner[-1].name == "check_launch_grid"):
         # the launcher's own checks, run by the harness in its place
         return False, answer_frame(exc, own) or frames[-1]
     for frame in reversed(frames):

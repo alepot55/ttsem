@@ -268,6 +268,32 @@ def test_the_grid_checks_are_the_launchers() -> None:
         harness.check_launch_grid((2**64,))
 
 
+def test_a_tensor_in_the_grid_is_an_error_of_the_answer() -> None:
+    """A tensor where the grid wants an int (an answer that takes a tensor for its program
+    count): the launcher's int parse goes through the tensor's `__index__`, which the sanitizer's
+    function mode sees first, so the innermost frame is that mode's, not the grid check's."""
+    pytest.importorskip("triton")
+    import torch
+    import triton
+    import triton.language as tl
+
+    from ttsem import sanitize
+    from ttsem._judge_runner import blame
+
+    @triton.jit
+    def copy(src, dst, n, BLOCK: tl.constexpr):
+        i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        tl.store(dst + i, tl.load(src + i, i < n), i < n)
+
+    with sanitize.session():
+        x = torch.arange(8, dtype=torch.float32, device="cuda")
+        with pytest.raises(TypeError, match="only integer tensors") as caught:
+            copy[(x, 1, 1)](x, x, 8, BLOCK=8)
+    inside, frame = blame(caught.value, {Path(__file__).resolve()})
+    assert not inside
+    assert frame.name == "test_a_tensor_in_the_grid_is_an_error_of_the_answer"
+
+
 @needs_sandbox
 def test_no_autotune_config_that_fits_the_gpu_is_an_error_of_the_answer(
     edges: dict[str, Any],
