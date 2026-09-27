@@ -4,7 +4,7 @@ The first four answers under `fixtures/judge/` are the four outcomes a model-wri
 often has: right, wrong by value, right by value but reading past the end of its input, and no
 kernel at all; the others are the cases where the judge once blamed the wrong party (no autotune
 config that fits the GPU, a config the autotuner skips or prunes, a fault under a config the
-sweep forces, a grid the launcher refuses, an IR trace too long to keep). They run through the judge's own
+sweep forces, a grid the launcher refuses). They run through the judge's own
 `bwrap` sandbox like any answer, so those tests skip where the sandbox cannot run.
 """
 
@@ -352,68 +352,66 @@ needs_semantics = pytest.mark.skipif(
 IR_OF_THE_FIXTURE = """
 import hashlib, importlib.util, sys
 import torch
-from ttsem import harness, sanitize
+from ttsem import harness, mlir, sanitize, validate
 spec = importlib.util.spec_from_file_location("answer_ok", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 x, out = torch.randn(1000), torch.empty(1000)
 target = harness.target_for("cpu", harness.DEFAULT_CC)
+limit = int(sys.argv[3]) if len(sys.argv) > 3 else None
 with sanitize.session():
     record = harness.record_launch(
         module.relu_kernel, (x, out, 1000), {"BLOCK": 256}, (4,), lambda *a, **k: None, "x"
     ).record
-    if sys.argv[2] == "dump":  # the public call keeps every byte, whatever TTSEM_DUMP_MB says
-        print(len(harness.dump_for_launch(record, target)))
-    else:  # the process's first compile: its TTIR is read off the dump, as the session does
-        try:
-            ir = harness.ir_for_launch(record, "ttir", target, dump_limit=harness.env_dump_limit())
+    try:
+        if sys.argv[2] == "dump":
+            print(len(harness.dump_for_launch(record, target, limit)))
+        elif sys.argv[2] == "ttgir":  # the process's first compile: read off the trace
+            ir = harness.ir_for_launch(record, "ttgir", target, dump_limit=limit)
             print(hashlib.sha256(ir.encode()).hexdigest())
-        except harness.DumpTooLarge as over:
-            print("DumpTooLarge", len(over.partial), over)
+        else:  # the process's first compile, as the session reads it: no trace at all
+            dump_for_launch = harness.dump_for_launch
+            harness.dump_for_launch = None
+            ir = harness.ir_for_launch(record, "ttir", target)
+            harness.dump_for_launch = dump_for_launch
+            # the module the whole trace shows last before the TritonGPU conversion
+            modules = [text for _, text in validate.split_dump(dump_for_launch(record, target))]
+            ttir = [m for m in modules if "#ttg." not in m and " ttg." not in m][-1]
+            print("same" if mlir.to_generic(ttir, None) == ir else "differs")
+    except harness.DumpTooLarge as over:
+        print("DumpTooLarge", len(over.partial), over)
 """
 
 
 @needs_semantics
-def test_an_ir_trace_is_kept_up_to_its_limit(tmp_path: Path) -> None:
+def test_the_ttir_is_the_traces_own_and_an_ir_trace_is_kept_up_to_its_limit(
+    tmp_path: Path,
+) -> None:
     """The fixture's own kernel, compiled in a fresh process with a fresh Triton cache each time
-    (the dump is read only while the wheel's printer is not yet generic, and a cached compile
-    keeps the generic text). A trace over the limit still gives the stage it is read for when the
-    part kept holds all of it; otherwise the tool says so."""
+    (the wheel prints pretty IR until the printer is switched to the generic form, and a cached
+    compile keeps the text it was made with). The TTIR comes from a compile that stops at the
+    ttir stage, and is the module the whole trace shows before the TritonGPU conversion. A trace
+    over the limit still gives the ttgir stage when the part kept holds all of it; otherwise the
+    tool says so."""
 
-    def run(mode: str, megabytes: float | None = None) -> str:
+    def run(mode: str, limit: int | None = None) -> str:
         cache = tmp_path / f"cache{len(list(tmp_path.iterdir()))}"
         env = {**os.environ, "PYTHONPATH": str(ROOT), "TRITON_CACHE_DIR": str(cache)}
-        env.pop("TTSEM_DUMP_MB", None)
-        if megabytes is not None:
-            env["TTSEM_DUMP_MB"] = str(megabytes)
         argv = [sys.executable, "-c", IR_OF_THE_FIXTURE, str(FIXTURES / "answer_ok.py"), mode]
+        argv += [] if limit is None else [str(limit)]
         done = subprocess.run(argv, capture_output=True, text=True, env=env, check=False)
         assert done.returncode == 0, done.stderr
         return done.stdout.strip().splitlines()[-1]
 
+    assert run("ttir") == "same"
     whole = int(run("dump"))
-    assert int(run("dump", 4096 / (1 << 20))) == whole
-    ttir = run("ttir")
-    assert run("ttir", whole / 2 / (1 << 20)) == ttir  # the TTIR is in the first half
-    over = run("ttir", 4096 / (1 << 20))
+    over = run("dump", 4096)
     assert over.startswith("DumpTooLarge 4096 the MLIR_ENABLE_DUMP trace of compiling `relu")
-    assert over.endswith("kept of it, and the part kept does not hold the whole ttir stage")
-
-
-@needs_sandbox
-def test_an_ir_trace_over_the_limit_is_not_judged_whatever_the_machine(tmp_path: Path) -> None:
-    done = subprocess.run(
-        [sys.executable, "-m", "ttsem", "judge", str(TASK), str(FIXTURES / "answer_ok.py")]
-        + ["--json", "--out", str(tmp_path)],
-        capture_output=True,
-        text=True,
-        cwd=ROOT,
-        env={**os.environ, "TTSEM_DUMP_MB": "0.001"},
-        check=False,
-    )
-    report = json.loads(done.stdout)["scaled"]
-    assert report["verdict"] == "not_judged" and report["why"] == "dump_limit", report
-    assert report["message"].endswith("(TTSEM_DUMP_MB sets it)")
+    ttgir = run("ttgir")
+    assert run("ttgir", whole - 1) == ttgir  # the ttgir stage is well before the trace's end
+    over = run("ttgir", 4096)
+    assert over.startswith("DumpTooLarge 4096 the MLIR_ENABLE_DUMP trace of compiling `relu")
+    assert over.endswith("kept of it, and the part kept does not hold the whole ttgir stage")
 
 
 RAISES = """

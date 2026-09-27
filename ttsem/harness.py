@@ -1042,6 +1042,39 @@ def _compile_asm(
     return dict(compiled.asm)
 
 
+def _stage_text(record: LaunchRecord, stage: str, target: GPUTarget) -> str:
+    """The module of ``record``'s compile after ``stage``, printed, from a compile that runs the
+    stages up to that one and no further (no LLVM, no PTX, no cache): what ``triton.compile``
+    (3.8.0) holds at that point, with the same options, dialects and stage functions."""
+    from triton._C.libtriton import ir as triton_ir
+
+    options, signature, constexprs, attrs = _specialize(
+        record.fn, record.args, record.kwargs, target
+    )
+    src = _source_class(record.fn)(
+        fn=record.fn, signature=signature, constexprs=constexprs, attrs=attrs
+    )
+    backend = make_backend(target)
+    options = backend.parse_options(dict(options.__dict__, **src.parse_options()))
+    stages: dict[str, Any] = {}
+    backend.add_stages(stages, options, src.language)
+    names = list(stages)
+    if stage not in names or names.index(stage) < names.index(src.ext):
+        # a Gluon kernel starts at ttgir: it has no ttir stage
+        raise mlir.NotGeneric(f"no {stage} stage in the compile of {record.fn_name}")
+    context = triton_ir.context()
+    triton_ir.load_dialects(context)
+    backend.load_dialects(context)
+    module = src.make_ir(
+        target, options, backend.get_codegen_implementation(options), backend.get_module_map(),
+        context,
+    )  # fmt: skip
+    metadata: dict[str, Any] = {"target": target, **options.__dict__}
+    for name in names[names.index(src.ext) : names.index(stage) + 1]:
+        module = stages[name](module, metadata)
+    return str(module)
+
+
 def shared_memory(record: LaunchRecord, target: GPUTarget) -> int:
     """Bytes of shared memory the kernel of ``record``'s launch needs on ``target``: Triton's own
     number (``metadata.shared``, from the allocation pass), the one its runtime compares with the
@@ -1065,14 +1098,6 @@ def _source_class(fn: JITFunction) -> Any:
 
         return GluonASTSource
     return getattr(fn, "ASTSource", None) or ASTSource
-
-
-def env_dump_limit() -> int:
-    """How much of one compile's `MLIR_ENABLE_DUMP` trace the sanitizer's session keeps, in
-    bytes (`TTSEM_DUMP_MB`, default 256). A small kernel's trace is 15 to 25 MB; a kernel with
-    megabytes of PTX can print gigabytes of LLVM-dialect modules, which would fill whatever
-    holds them and make the outcome depend on the machine."""
-    return int(float(os.environ.get("TTSEM_DUMP_MB", "256")) * (1 << 20))
 
 
 class DumpTooLarge(RuntimeError):
@@ -1182,9 +1207,9 @@ def ir_for_launch(
     dump_limit: int | None = None,
 ) -> str:
     """The generic-form IR of ``record``'s launch, ``stage`` in ``{"ttir", "ttgir"}``. Where
-    the stage is read off the ``MLIR_ENABLE_DUMP`` trace, ``dump_limit`` bounds the bytes of it
-    kept (all of them by default); a stage the part kept does not hold whole raises
-    :class:`DumpTooLarge`."""
+    the ttgir stage is read off the ``MLIR_ENABLE_DUMP`` trace, ``dump_limit`` bounds the bytes
+    of it kept (all of them by default); a stage the part kept does not hold whole raises
+    :class:`DumpTooLarge`. The ttir stage is never read off a trace."""
     if stage not in ("ttir", "ttgir"):
         raise ValueError(f"unsupported stage {stage!r}")
     if mlir is None:
@@ -1197,10 +1222,20 @@ def ir_for_launch(
     except mlir.NotGeneric:
         if triton_opt:
             raise
-    # A wheel: `compiled.asm[...]` comes pretty whatever the printer flags say, and there is no
-    # `triton-opt` to convert it. The `MLIR_ENABLE_DUMP` trace does honour the generic switch,
-    # so the same stage is read off the dump: the last module before the LLVM conversion for
-    # `ttgir`, the last one without a TritonGPU encoding for `ttir`.
+    # A wheel: `compiled.asm[...]` comes pretty (a compile made, or cached, before the printer
+    # was switched to the generic form), and there is no `triton-opt` to convert it. With the
+    # switch on, the module a compile holds prints generic. For `ttir` that is the module after
+    # the ttir stage, from a compile that stops there: the full trace below prints every pass of
+    # the lowering to LLVM too, gigabytes for a kernel with megabytes of PTX.
+    try:
+        mlir.enable_generic_printing()
+    except RuntimeError:
+        pass  # a source build hides the symbol: the module prints pretty, as the dump would
+    if stage == "ttir":
+        return mlir.to_generic(_stage_text(record, stage, target), None)
+    # `ttgir` is the module the LLVM conversion starts from, which the llir stage's first passes
+    # (allocation, `scf` to `cf`) have already changed: it is read off the `MLIR_ENABLE_DUMP`
+    # trace, which does honour the generic switch, as the last module before that conversion.
     # A trace over the limit still answers when the part kept holds the whole stage: its last
     # module (possibly cut) is dropped, and a module of a later stage must follow the stage's
     # own last one (the lowering to LLVM prints the longest modules, well after them).
@@ -1213,10 +1248,7 @@ def ir_for_launch(
     stages = [text for _, text in validate.split_dump(dump)]
     if over is not None:
         stages = stages[:-1]
-    if stage == "ttgir":
-        kept = [i for i, text in enumerate(stages) if "llvm.func" not in text]
-    else:
-        kept = [i for i, text in enumerate(stages) if "#ttg." not in text and " ttg." not in text]
+    kept = [i for i, text in enumerate(stages) if "llvm.func" not in text]
     if over is not None and (not kept or kept[-1] == len(stages) - 1):
         detail = f", and the part kept does not hold the whole {stage} stage"
         raise DumpTooLarge(over.kernel, over.limit, over.partial, detail)

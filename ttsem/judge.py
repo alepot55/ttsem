@@ -27,8 +27,7 @@ One verdict per pass:
   launch outside an autotuner is not checked against the limit)
 - too_slow: the timeout expired
 - not_judged: the tool cannot say (an op ttsem does not model, its own error, the memory cap,
-  a full /tmp, a compile's IR trace whose TTIR is not in the part kept, `TTSEM_DUMP_MB`,
-  default 256)
+  a full /tmp)
 
 `--gpu` sets only the shared-memory limit: every launch is compiled for sm_90a, so whether an
 autotune config compiles (the autotuner skips one that raises `CompileTimeAssertionFailure` or

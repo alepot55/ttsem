@@ -28,9 +28,8 @@ race between program instances is reported as such.
 Verdicts: verified | wrong | unsafe | no_kernel | error (with `why: shared_memory` when every
 config of an autotuner was skipped and the one it falls back to needs more shared memory than the
 GPU has, by Triton 3.8.0's count), and, when the tool cannot judge, not_judged (an op ttsem does
-not model, an internal error, the memory cap, a full /tmp, an IR trace over `TTSEM_DUMP_MB`, a
-broken task). The report records the rule, the precision and the GPU it was judged under
-(`settings`).
+not model, an internal error, the memory cap, a full /tmp, a broken task). The report records the
+rule, the precision and the GPU it was judged under (`settings`).
 """
 
 from __future__ import annotations
