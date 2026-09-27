@@ -142,8 +142,10 @@ def judge_one(
     cache.mkdir(parents=True, exist_ok=True)
     keep = [task, answer, ROOT, Path(sys.prefix), Path(sys.base_prefix)]
     cmd = sandbox_prefix(out, cache, keep) if sandbox else []
+    # -P: the working directory, OUT, stays off the path, so a module an answer leaves there is
+    # not what a later run imports as ttsem
     cmd += [
-        sys.executable, "-m", RUNNER, str(task.resolve()), str(answer.resolve()),
+        sys.executable, "-P", "-m", RUNNER, str(task.resolve()), str(answer.resolve()),
         str(report.resolve()), "--scale", scale,
     ]  # fmt: skip
     for key, value in settings.items():
