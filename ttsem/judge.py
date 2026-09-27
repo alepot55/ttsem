@@ -4,6 +4,8 @@
                           [--rule kernelbench|v3] [--precision fp32|keep] [--gpu NAME] [--out DIR]
     python -m ttsem judge --manifest M.jsonl --out DIR [--jobs N] [--timeout S] [--full-max N]
                           [--rule ...] [--precision ...] [--gpu ...]  (for lines without them)
+    python -m ttsem judge --tritonbench TASK.py ANSWER.py | --manifest M.jsonl --out DIR
+                          (a TritonBench answer: ``ttsem.judge_tritonbench``)
 
 A task is a KernelBench problem file (`Model`, `get_inputs`, `get_init_inputs`); an answer is the
 file that defines `ModelNew` (or, in the KernelBench-v3 release, a replacement `Model`). Each
@@ -292,20 +294,25 @@ def load_manifest(manifest: Path) -> list[dict[str, Any]]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="python -m ttsem judge",
-        description="A KernelBench answer written with Triton, judged without a GPU.",
+        description="A KernelBench or TritonBench answer in Triton, judged without a GPU.",
     )
     ap.add_argument("task", type=Path, nargs="?", help="the KernelBench problem file")
     ap.add_argument("answer", type=Path, nargs="?", help="the file that defines ModelNew")
+    ap.add_argument(
+        "--tritonbench",
+        action="store_true",
+        help="TASK.py is a TritonBench task (reference, separator, test), ANSWER.py its answer",
+    )
     ap.add_argument("--manifest", type=Path, help="judge every answer of this JSONL file")
     ap.add_argument("--out", type=Path, help="where the reports go (a temporary one otherwise)")
     ap.add_argument("--json", action="store_true", help="print the verdict record as JSON")
-    ap.add_argument("--scale", choices=("auto", "none"), default="auto")
+    ap.add_argument("--scale", choices=("auto", "none"), help="(auto)")
     # no default here: with --manifest, a flag given applies to the lines that do not set it
     ap.add_argument("--rule", choices=("kernelbench", "v3"), help="(kernelbench)")
     ap.add_argument("--precision", choices=("fp32", "keep"), help="(fp32)")
     ap.add_argument("--gpu", help="the dataset's GPU (H100, B200, RTX3090, ...)")
     ap.add_argument("--timeout", type=int, default=None, help="seconds per pass (600; 300 batch)")
-    ap.add_argument("--full-max", type=int, default=1 << 20)
+    ap.add_argument("--full-max", type=int, help="(2**20)")
     ap.add_argument("--jobs", type=int, default=2, help="answers judged at once (batch)")
     ap.add_argument("--limit", type=int, default=0, help="the first N answers only (batch)")
     ap.add_argument(
@@ -320,6 +327,12 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--manifest needs --out DIR")
     if args.manifest is not None and args.json:
         ap.error("--json is for one pair; a batch writes its records to OUT/rows.jsonl")
+    if args.tritonbench:
+        given = [
+            f"--{k.replace('_', '-')}" for k in KERNELBENCH_ONLY if getattr(args, k) is not None
+        ]
+        if given:
+            ap.error(f"{', '.join(given)}: KernelBench only, not with --tritonbench")
     sandbox = not args.no_sandbox
     if sandbox:
         problem = sandbox_problem()
@@ -331,6 +344,14 @@ def main(argv: list[str] | None = None) -> int:
             "ttsem judge: warning: --no-sandbox: model-written code is about to run unsandboxed, "
             "with your permissions\n"
         )
+    if args.tritonbench:
+        from ttsem import judge_tritonbench as tritonbench
+
+        if args.manifest is not None:
+            return tritonbench.batch(args, sandbox)
+        return tritonbench.single(args, sandbox)
+    args.scale = args.scale or "auto"
+    args.full_max = (1 << 20) if args.full_max is None else args.full_max
     if args.manifest is not None:
         return batch(args, sandbox)
     return single(args, sandbox)
@@ -338,6 +359,9 @@ def main(argv: list[str] | None = None) -> int:
 
 # what a pair, or a manifest line, is judged under when neither the line nor a flag says
 DEFAULTS = {"rule": "kernelbench", "precision": "fp32", "gpu": ""}
+# the flags that mean nothing to a TritonBench answer (its test sets the shapes, the dtypes and
+# the tolerance is TritonBench's)
+KERNELBENCH_ONLY = ("scale", "rule", "precision", "gpu", "full_max")
 
 
 def single(args: argparse.Namespace, sandbox: bool) -> int:

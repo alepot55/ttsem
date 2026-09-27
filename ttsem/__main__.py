@@ -24,6 +24,7 @@ The package is a library first; every entry point below is a module you run with
       rule with every launch executed by the semantics: verified, wrong, unsafe (with the
       kernel's line), no_kernel (PyTorch does the work), error, too_slow or not_judged.
       Each answer runs in its own bwrap sandbox. Needs torch and Triton; no GPU.
+      With --tritonbench, a TritonBench answer against its task's reference, by value.
 
   python -m ttsem.validate PROGRAM.py [--device cpu|cuda] [--json OUT]
       Compile PROGRAM.py's first launch with the dump on and run every pass's input

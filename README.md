@@ -136,6 +136,23 @@ by choice of scope, and whether a config compiles is decided for sm_90a whatever
 The other autotune configs are forced in turn after the trials, except those the autotuner itself
 would never run: one it skips, or one its `prune_configs_by` drops (`not_applicable`, `pruned`).
 
+`python -m ttsem judge --tritonbench task.py answer.py` does the same for a
+[TritonBench](https://github.com/thunlp/TritonBench) answer. The task is a file of the benchmark's
+own data (`data/TritonBench_{G,T}_v1/*.py`: the reference operator, a line of `#`, the test); the
+answer is the code the benchmark runs for a model (its imports and functions for G, its last fenced
+block for T), and the judge puts the task's test after it, as the benchmark does. TritonBench's
+own check compares the stdout of the two files and its tests print nothing, so it only asks that
+the answer runs. Here the reference file and the answer file each run in their own sandbox, and
+what the two tests keep is compared by value: `verified` within rtol 1e-4 or 1e-2 (or, with
+`tolerance: reduced`, 5e-2, a float16 accumulator), `wrong`, `unsafe`, `no_kernel` (right values,
+no Triton launch), `error`, `too_slow`, or `not_judged` with the reason in `class` (a package or a
+CPU operator this machine lacks, a task that draws random numbers, a reference that cannot be
+compared with: it does not run, keeps nothing, returns memory it never wrote, or faults under its
+own test where the answer does). `--manifest M.jsonl --out DIR` judges a batch and prints the
+counts per verdict and in columns (verified, reduced precision, wrong, unsafe, not compared, not
+judged). The references run once per task, on a Triton cache of their own; an answer's sandbox
+sees neither their results nor the task file, nor the directory tree the task sits in.
+
 ## How it was built
 
 Built by Alessandro Potenza with Claude Code (Anthropic's coding agent) as the engineering agent
