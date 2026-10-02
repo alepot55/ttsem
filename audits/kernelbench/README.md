@@ -19,12 +19,12 @@ flagged.
 
   ```console
   $ pip install --index-url https://download.pytorch.org/whl/cpu \
-                --extra-index-url https://pypi.org/simple -e '.[triton]'
+                --extra-index-url https://pypi.org/simple -e '.[triton]' torch==2.14.0
   ```
 
-  The audit used Triton 3.8.0, torch 2.14.0+cpu, numpy 2.5.3, the judge at `9e42531` (26 Sep 2026),
-  a memory cap of 6 GB per run (`TTSEM_MEM_GB`, the default) and 900 s per pass (the batch default
-  is 300 s). The judge's fixes on `main` since then (autotune configs that do not fit the GPU or do
+  The audit used Triton 3.8.0, torch 2.14.0+cpu, numpy 2.5.3, the judge at `9e42531` (committed on
+  24 Sep 2026, run on 26 Sep), a memory cap of 6 GB per run (`TTSEM_MEM_GB`, the default) and 900 s
+  per pass (the batch default is 300 s). The judge's fixes on `main` since then (autotune configs that do not fit the GPU or do
   not compile, the capture of the IR trace) can move a few verdicts.
 - `huggingface_hub` for the `hf` command (`pip install huggingface_hub`; older releases call it
   `huggingface-cli download`), and `pyarrow` to read the makora parquet. No account is needed.

@@ -27,6 +27,7 @@ ttsem_out/
 /results/
 /tb/
 /kb/
+/TritonBench/
 
 # Editors and OS
 .vscode/

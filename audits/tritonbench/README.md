@@ -3,8 +3,8 @@
 Every answer [TritonBench](https://github.com/thunlp/TritonBench) publishes for the models of its
 paper (`LLM_generated/`: 7,752 answers, models of 2024-25) is run as the benchmark runs it and judged
 by value with the public judge, `python -m ttsem judge --tritonbench`, on a CPU. TritonBench's own
-check compares the stdout of the answer's file with the reference's, and its tests print nothing, so
-it asks only that the file runs. Here the answer file and the reference file each run in their own
+check compares the stdout of the answer's file with the reference's, and 342 of its 350 tests print
+nothing, so for those it asks only that the file runs. Here the answer file and the reference file each run in their own
 `bwrap` sandbox, every Triton launch is executed by ttsem, and what the two tests keep is compared by
 value. The README's numbers come from these commands. Nothing of the benchmark is in this
 repository: not its data, not its answers, not a list of the answers flagged.
@@ -17,7 +17,7 @@ repository: not its data, not its answers, not a list of the answers flagged.
 
   ```console
   $ pip install --index-url https://download.pytorch.org/whl/cpu \
-                --extra-index-url https://pypi.org/simple -e '.[triton]'
+                --extra-index-url https://pypi.org/simple -e '.[triton]' torch==2.14.0
   ```
 
   The published numbers were made with Triton 3.8.0, torch 2.14.0+cpu, numpy 2.5.3, the judge as it

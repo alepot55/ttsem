@@ -5,15 +5,18 @@ every compiler pass, it names the first pass that changed what a kernel computes
 
 ## What it found
 
-State on 2 Oct 2026; **ours** is a fix by the author. ttsem sees the first three as races in code
-`torch.compile` emits at shapes where the GPU is right; the rest came from the fuzzers and test runs
-built around it, or from reading code ([LEDGER.md](https://github.com/alepot55/ttsem/blob/main/LEDGER.md) says which).
+State on 2 Oct 2026 (the copy of this page on PyPI keeps the state of its release;
+[LEDGER.md](https://github.com/alepot55/ttsem/blob/main/LEDGER.md) on GitHub is kept current);
+**ours** is a fix by the author. ttsem sees the first three as races in code `torch.compile` emits
+at shapes where the GPU is right; the rest came from the fuzzers and test runs built around it, or
+from reading code (LEDGER.md says which).
 
 | bug | state |
 |---|---|
 | PyTorch [#197829](https://github.com/pytorch/pytorch/issues/197829): `x[1:] = x[:-1].clone()` drops the clone, silent wrong values | **fixed** 22 Sep, [#198010](https://github.com/pytorch/pytorch/pull/198010) (ours) |
 | PyTorch [#198031](https://github.com/pytorch/pytorch/issues/198031): `y = x.clone(); op(y, x)` becomes `op(x, x)` | open |
-| PyTorch [#198033](https://github.com/pytorch/pytorch/issues/198033): `torch._foreach_add_([x], [x.flip(0)])` reads `x` while writing it; the same check covers `x.copy_(view of x + 1)` | **fixed** 1 Oct, [#198549](https://github.com/pytorch/pytorch/pull/198549) (ours) |
+| PyTorch [#198033](https://github.com/pytorch/pytorch/issues/198033): `torch._foreach_add_([x], [x.flip(0)])` reads `x` while writing it | **fixed** 1 Oct, [#198549](https://github.com/pytorch/pytorch/pull/198549) (ours) |
+| PyTorch, reported with its fix: `x.copy_((x.transpose(0, 1) + 1.0).reshape(x.shape))` inlines a computation that reads `x` elsewhere into the copy that writes it, wrong values | open, fix [#198242](https://github.com/pytorch/pytorch/pull/198242) (ours) |
 | PyTorch [#198270](https://github.com/pytorch/pytorch/issues/198270): `x.index_put_(...)`, then `x.add_(x.flip(0))`, wrong values | **fixed** 29 Sep, [#198325](https://github.com/pytorch/pytorch/pull/198325) (ours) |
 | PyTorch [#198280](https://github.com/pytorch/pytorch/issues/198280): `x.copy_(x.transpose(-1, -2) * 1.0)` wrong on CUDA, a regression | open, fix [#198328](https://github.com/pytorch/pytorch/pull/198328) (ours) |
 | PyTorch [#198332](https://github.com/pytorch/pytorch/issues/198332): `copy_strided`'s lowering; under `dynamic=True` a CPU kernel writes past its output | open |
@@ -95,7 +98,8 @@ $ python -m ttsem.sanitize pytest tests/ -q      # a suite written for device="c
 $ python -m ttsem.validate kernel.py             # the first pass that changes the answer
 ```
 
-Without a clone: `pip install 'ttsem[triton] @ git+https://github.com/alepot55/ttsem'`.
+Without a clone: `pip install 'ttsem[triton]'` installs the latest release from PyPI, and
+`pip install 'ttsem[triton] @ git+https://github.com/alepot55/ttsem'` the current `main`.
 
 A fault fails its test at the kernel's line ("writes 24 element(s) past the end of the tensor passed
 as `out_ptr`", `tests/fixtures/agents/suite_no_mask.py` at `n = 1000`). In CI:
@@ -183,7 +187,8 @@ does not model stop as `unsupported`; inline PTX and multi-CTA clusters are out 
 | [docs/OVERVIEW.md](https://github.com/alepot55/ttsem/blob/main/docs/OVERVIEW.md) | calibration against the device, how the three levels work, the limits |
 | [docs/SEMANTICS.md](https://github.com/alepot55/ttsem/blob/main/docs/SEMANTICS.md) | what each op is defined to mean, the float policy, and the device deviations |
 | [docs/DESIGN.md](https://github.com/alepot55/ttsem/blob/main/docs/DESIGN.md) | the three levels, the interfaces between them, and why they are drawn there |
-| [docs/RESULTS.md](https://github.com/alepot55/ttsem/blob/main/docs/RESULTS.md) | the corpora, the counts, and the calibration behind every number quoted above |
+| [docs/RESULTS.md](https://github.com/alepot55/ttsem/blob/main/docs/RESULTS.md) | the corpora, the counts, and the calibration of the semantics against the device |
+| [audits/](https://github.com/alepot55/ttsem/tree/main/audits) | the commands that redo the TritonBench and KernelBench audits from a clone |
 | [CONTRIBUTING.md](https://github.com/alepot55/ttsem/blob/main/CONTRIBUTING.md) | how a new op, a new check or a new witness gets in |
 
 A report on the semantics, the validator and what they found is in preparation; until then, cite
