@@ -5,29 +5,30 @@ every compiler pass, it names the first pass that changed what a kernel computes
 
 ## What it found
 
-State on 25 Sep 2026; **ours** is a fix by the author. ttsem sees the first three as races in code
+State on 2 Oct 2026; **ours** is a fix by the author. ttsem sees the first three as races in code
 `torch.compile` emits at shapes where the GPU is right; the rest came from the fuzzers and test runs
-built around it, or from reading code ([LEDGER.md](LEDGER.md) says which).
+built around it, or from reading code ([LEDGER.md](https://github.com/alepot55/ttsem/blob/main/LEDGER.md) says which).
 
 | bug | state |
 |---|---|
 | PyTorch [#197829](https://github.com/pytorch/pytorch/issues/197829): `x[1:] = x[:-1].clone()` drops the clone, silent wrong values | **fixed** 22 Sep, [#198010](https://github.com/pytorch/pytorch/pull/198010) (ours) |
-| PyTorch [#198031](https://github.com/pytorch/pytorch/issues/198031): `y = x.clone(); op(y, x)` becomes `op(x, x)` | open, fix [#198260](https://github.com/pytorch/pytorch/pull/198260) (ours) |
+| PyTorch [#198031](https://github.com/pytorch/pytorch/issues/198031): `y = x.clone(); op(y, x)` becomes `op(x, x)` | open |
 | PyTorch [#198033](https://github.com/pytorch/pytorch/issues/198033): `torch._foreach_add_([x], [x.flip(0)])` reads `x` while writing it; the same check covers `x.copy_(view of x + 1)` | **fixed** 1 Oct, [#198549](https://github.com/pytorch/pytorch/pull/198549) (ours) |
 | PyTorch [#198270](https://github.com/pytorch/pytorch/issues/198270): `x.index_put_(...)`, then `x.add_(x.flip(0))`, wrong values | **fixed** 29 Sep, [#198325](https://github.com/pytorch/pytorch/pull/198325) (ours) |
 | PyTorch [#198280](https://github.com/pytorch/pytorch/issues/198280): `x.copy_(x.transpose(-1, -2) * 1.0)` wrong on CUDA, a regression | open, fix [#198328](https://github.com/pytorch/pytorch/pull/198328) (ours) |
-| PyTorch [#198332](https://github.com/pytorch/pytorch/issues/198332): `copy_strided`'s lowering; under `dynamic=True` a CPU kernel writes past its output | open, fix [#198335](https://github.com/pytorch/pytorch/pull/198335) (ours) |
-| PyTorch [#198343](https://github.com/pytorch/pytorch/issues/198343): `lerp` with a weight >= 0.5 takes `end`'s strides, so `x.lerp_(end_t, 0.75); x.view(-1)` fails to compile, a regression | open, fix [#198348](https://github.com/pytorch/pytorch/pull/198348) (ours) |
+| PyTorch [#198332](https://github.com/pytorch/pytorch/issues/198332): `copy_strided`'s lowering; under `dynamic=True` a CPU kernel writes past its output | open |
+| PyTorch [#198343](https://github.com/pytorch/pytorch/issues/198343): `lerp` with a weight >= 0.5 takes `end`'s strides, so `x.lerp_(end_t, 0.75); x.view(-1)` fails to compile, a regression | open |
 | PyTorch [#198364](https://github.com/pytorch/pytorch/issues/198364): `copysign`, `floor_divide`, `div` floor, `addr(beta=0)`, `put` return other strides than eager, and a later `view` fails to compile | open |
 | PyTorch [#198533](https://github.com/pytorch/pytorch/issues/198533): `y.index_put_((mask,), v)` with a mask reading `y` through a transposed view reads the update's own output, a regression | **fixed** 1 Oct, [#198549](https://github.com/pytorch/pytorch/pull/198549) (ours) |
-| PyTorch [#198545](https://github.com/pytorch/pytorch/issues/198545): on CUDA, `iinfo.min // b` with `b < 0` has the wrong sign | open |
+| PyTorch [#198545](https://github.com/pytorch/pytorch/issues/198545): on CUDA, `iinfo.min // b` with `b < 0` has the wrong sign | open, fix [#198598](https://github.com/pytorch/pytorch/pull/198598) (ours) |
 | PyTorch [#198553](https://github.com/pytorch/pytorch/issues/198553): on CUDA, a fused mask whose modular index has a negative base gives wrong values | open |
-| PyTorch [#198555](https://github.com/pytorch/pytorch/issues/198555): the generated C++ negates integers with signed overflow; on `iinfo.min` an argmax goes wrong and a SIGFPE kills the process | open |
+| PyTorch [#198555](https://github.com/pytorch/pytorch/issues/198555): the generated C++ negates integers with signed overflow; on `iinfo.min` an argmax goes wrong and a SIGFPE kills the process | open, fix [#198601](https://github.com/pytorch/pytorch/pull/198601) (ours) |
 | PyTorch [#198609](https://github.com/pytorch/pytorch/issues/198609): AOTAutograd returns an input mutated in the graph at the wrong output slot, so another mutated input gets its value (`w.mul_(2); x.add_(1); return x` leaves `w` equal to `x`) | **fixed** 29 Sep, [#198622](https://github.com/pytorch/pytorch/pull/198622) (ours) |
 | Triton [#11519](https://github.com/triton-lang/triton/issues/11519), [#11612](https://github.com/triton-lang/triton/issues/11612): `fuse-nested-loops` miscompile (the demo below) and crash | **fixed**, not by us |
-| Triton [#11601](https://github.com/triton-lang/triton/issues/11601), [#11614](https://github.com/triton-lang/triton/issues/11614): the same pass with `flatten=True` reads memory the source never reads; an unpredicated reduce store (3.8.0 regression) | open, fixes [#11692](https://github.com/triton-lang/triton/pull/11692) (ours), [#11630](https://github.com/triton-lang/triton/pull/11630) |
+| Triton [#11601](https://github.com/triton-lang/triton/issues/11601): the same pass with `flatten=True` reads memory the source never reads | open, fix [#11692](https://github.com/triton-lang/triton/pull/11692) (ours) |
+| Triton [#11614](https://github.com/triton-lang/triton/issues/11614): an unpredicated reduce store (3.8.0 regression) | **fixed** 2 Oct, [#12045](https://github.com/triton-lang/triton/pull/12045), not by us |
 | Triton [#11730](https://github.com/triton-lang/triton/issues/11730), [#11733](https://github.com/triton-lang/triton/issues/11733): 3.8.0 on sm_120, a missing exit barrier and a wrong mxfp4 `dot_scaled` | open, backports [#11731](https://github.com/triton-lang/triton/pull/11731), [#11734](https://github.com/triton-lang/triton/pull/11734) (ours) |
-| Triton [#11751](https://github.com/triton-lang/triton/pull/11751), [#11752](https://github.com/triton-lang/triton/pull/11752), [#11738](https://github.com/triton-lang/triton/pull/11738): interpreter tf32 rounding, an IR round trip, a test writing past its buffer | **merged** (ours) |
+| Triton [#11751](https://github.com/triton-lang/triton/pull/11751), [#11752](https://github.com/triton-lang/triton/pull/11752), [#11738](https://github.com/triton-lang/triton/pull/11738), [#11862](https://github.com/triton-lang/triton/pull/11862): interpreter tf32 rounding, an IR round trip, a test writing past its buffer, the TMA scatter path taken on sm_12x | **merged** (ours) |
 | LLVM [#221532](https://github.com/llvm/llvm-project/pull/221532), [#222127](https://github.com/llvm/llvm-project/pull/222127): MLIR GPU to NVVM, an all-reduce stored from every lane, a missing lowering | open (ours) |
 
 On torch 2.14, over five families of generated in-place programs (3,292), an RTX 4070 gets 856 wrong,
@@ -36,11 +37,15 @@ GPU (plus 90 flags the device does not confirm there). With the fixes loaded, th
 rerun so far (2,092 programs) give 0 wrong and 0 flagged.
 
 **TritonBench, rejudged.** Its check compares printed output, and 342 of its 350 tests print
-nothing. Judged by value, 241 of the 758 published answers (models of 2024-25) that run and can be
-judged are wrong or unsafe (32%), all accepted by the benchmark; an RTX 4070 agrees with ttsem on
-7,224 of the 7,240 answers both decide (99.8%). A negative result: fed ttsem's verdict for three
-rounds, AutoTriton-8B repaired 0 of the 31 answers a run-only check had wrongly accepted (46% of 67).
-These harnesses are not in this package yet: their numbers are reported, not reproducible from a clone.
+nothing. Judged by value with `python -m ttsem judge --tritonbench`, 245 of the 767 published
+answers (models of 2024-25) that run and can be judged return wrong values (147) or are unsafe (98),
+32%; an RTX 4070 agrees with ttsem on 7,264 of the 7,280 answers both decide (99.8%). The commands
+that redo it from a clone are in
+[audits/tritonbench](https://github.com/alepot55/ttsem/blob/main/audits/tritonbench/README.md), and those
+that judge two public sets of KernelBench answers the same way in
+[audits/kernelbench](https://github.com/alepot55/ttsem/blob/main/audits/kernelbench/README.md). A negative
+result: fed ttsem's verdict for three rounds, AutoTriton-8B repaired 0 of the 31 answers a run-only
+check had wrongly accepted (46% of 67); that experiment's harness is not in this repository.
 
 ## What it is
 
@@ -50,7 +55,7 @@ These harnesses are not in this package yet: their numbers are reported, not rep
 - A test runner for suites written for `device="cuda"`, unmodified, on a machine with no GPU.
 - Calibrated, not proved: of 14,235 launches of Triton's `test_core.py`, 12,548 are bit-exact with
   the device, 1,484 within a written float policy, 173 documented device deviations, 30 unsupported
-  or undefined ([docs/RESULTS.md](docs/RESULTS.md), [docs/OVERVIEW.md](docs/OVERVIEW.md)).
+  or undefined ([docs/RESULTS.md](https://github.com/alepot55/ttsem/blob/main/docs/RESULTS.md), [docs/OVERVIEW.md](https://github.com/alepot55/ttsem/blob/main/docs/OVERVIEW.md)).
 
 ## Two demos
 
@@ -102,8 +107,10 @@ as `out_ptr`", `tests/fixtures/agents/suite_no_mask.py` at `n = 1000`). In CI:
     args: tests/kernels -q           # pytest arguments
 ```
 
-For coding agents: [docs/AGENTS.md](docs/AGENTS.md), and a skill for Claude Code and other agents
-that load skills, [skills/triton-verify/SKILL.md](skills/triton-verify/SKILL.md). For `torch.compile`,
+For coding agents: [docs/AGENTS.md](https://github.com/alepot55/ttsem/blob/main/docs/AGENTS.md), and a skill
+for Claude Code and other agents that load skills,
+[skills/triton-verify/SKILL.md](https://github.com/alepot55/ttsem/blob/main/skills/triton-verify/SKILL.md). For
+`torch.compile`,
 judge the source `torch._inductor.utils.run_and_get_code` returns, on any CPU:
 
 ```python
@@ -166,18 +173,18 @@ right values and safe memory, not for a file that runs.
 
 **Limits**: an interpreter, so large tensors take seconds to minutes and there is no timing; ops it
 does not model stop as `unsupported`; inline PTX and multi-CTA clusters are out of scope
-([docs/OVERVIEW.md](docs/OVERVIEW.md), [docs/SEMANTICS.md](docs/SEMANTICS.md)).
+([docs/OVERVIEW.md](https://github.com/alepot55/ttsem/blob/main/docs/OVERVIEW.md), [docs/SEMANTICS.md](https://github.com/alepot55/ttsem/blob/main/docs/SEMANTICS.md)).
 
 ## Reading further
 
 | file | what is in it |
 |---|---|
-| [LEDGER.md](LEDGER.md) | every upstream defect, with its reproducer, its dates and its fix |
-| [docs/OVERVIEW.md](docs/OVERVIEW.md) | calibration against the device, how the three levels work, the limits |
-| [docs/SEMANTICS.md](docs/SEMANTICS.md) | what each op is defined to mean, the float policy, and the device deviations |
-| [docs/DESIGN.md](docs/DESIGN.md) | the three levels, the interfaces between them, and why they are drawn there |
-| [docs/RESULTS.md](docs/RESULTS.md) | the corpora, the counts, and the calibration behind every number quoted above |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | how a new op, a new check or a new witness gets in |
+| [LEDGER.md](https://github.com/alepot55/ttsem/blob/main/LEDGER.md) | every upstream defect, with its reproducer, its dates and its fix |
+| [docs/OVERVIEW.md](https://github.com/alepot55/ttsem/blob/main/docs/OVERVIEW.md) | calibration against the device, how the three levels work, the limits |
+| [docs/SEMANTICS.md](https://github.com/alepot55/ttsem/blob/main/docs/SEMANTICS.md) | what each op is defined to mean, the float policy, and the device deviations |
+| [docs/DESIGN.md](https://github.com/alepot55/ttsem/blob/main/docs/DESIGN.md) | the three levels, the interfaces between them, and why they are drawn there |
+| [docs/RESULTS.md](https://github.com/alepot55/ttsem/blob/main/docs/RESULTS.md) | the corpora, the counts, and the calibration behind every number quoted above |
+| [CONTRIBUTING.md](https://github.com/alepot55/ttsem/blob/main/CONTRIBUTING.md) | how a new op, a new check or a new witness gets in |
 
 A report on the semantics, the validator and what they found is in preparation; until then, cite
 this repository by URL and commit. MIT licence, see `LICENSE`.
