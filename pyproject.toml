@@ -46,6 +46,7 @@ include = [
     "ttsem",
     "tests",
     "examples",
+    "audits",
     "docs",
     "README.md",
     "CONTRIBUTING.md",

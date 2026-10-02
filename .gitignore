@@ -25,6 +25,8 @@ ttsem_out/
 *.jsonl
 /out/
 /results/
+/tb/
+/kb/
 
 # Editors and OS
 .vscode/
