@@ -398,9 +398,11 @@ def test_an_answer_does_not_see_the_tree_its_task_or_out_sits_in(tmp_path: Path)
     got = tb.answer_sandbox(home / "relu.py", tmp_path)
     start = got.index("--ro-bind")
     assert got[start : start + 3] == ["--ro-bind", "/dev/null", str(home / "relu.py")]
-    # a task inside this package's tree: the tree up to the package
+    # a task inside this package's tree: the tree up to the package (OUT's own tree, where
+    # TMPDIR is outside /tmp, is hidden next to it)
     if not ROOT.is_relative_to("/tmp"):
-        assert tb.answer_sandbox(TASK, tmp_path)[:2] == ["--tmpfs", str(ROOT / "tests")]
+        got = tb.answer_sandbox(TASK, tmp_path)
+        assert str(ROOT / "tests") in [got[i + 1] for i, arg in enumerate(got) if arg == "--tmpfs"]
 
 
 def test_a_numpy_scalar_is_kept_as_a_value() -> None:
