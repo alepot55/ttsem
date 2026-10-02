@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import socket
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -242,7 +245,35 @@ def test_the_device_control_shows_an_answer_no_secret_of_the_caller(
     out.mkdir()
     got = device.run_file(script, out / "leak.device.json", out, 120, out / ".cache", [])
     assert got["run"] == "ok", got
-    planted.check(out)
+    seen = planted.check(out)
+    assert seen["environ"][device.SANDBOXED] == "1"  # set inside, for the runner
+
+
+@needs_device_sandbox
+@pytest.mark.parametrize("variable", [False, True], ids=["without_the_variable", "with_it"])
+def test_the_device_runner_refuses_to_run_a_file_outside_the_sandbox(
+    tmp_path: Path, variable: bool
+) -> None:
+    """Started by hand, without the variable only `device.py`'s sandbox sets, or with it but the
+    host's network in sight: the file is not run."""
+    if variable and {name for _, name in socket.if_nameindex()} <= {"lo"}:
+        pytest.skip("no network interface but loopback here: the host looks like the sandbox")
+    script = tmp_path / "answer.py"
+    script.write_text("open('ran', 'w').close()\n")
+    env = {key: value for key, value in os.environ.items() if key != "TTSEM_DEVICE_SANDBOX"}
+    if variable:
+        env["TTSEM_DEVICE_SANDBOX"] = "1"
+    runner = AUDITS / "tritonbench" / "device_runner.py"
+    done = subprocess.run(
+        [sys.executable, "-P", str(runner), str(script), "out.json", "out.npz"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+        check=False,
+    )
+    assert done.returncode == 2 and "only inside device.py's bwrap sandbox" in done.stderr
+    assert not (tmp_path / "ran").exists() and not (tmp_path / "out.json").exists()
 
 
 # --- KernelBench ---------------------------------------------------------------------------------

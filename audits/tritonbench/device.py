@@ -45,6 +45,8 @@ DEVICE_ENV = (
     "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "LD_LIBRARY_PATH", "CUDA_HOME",
     "TRITON_PTXAS_PATH", "TRITON_LIBCUDA_PATH",
 )  # fmt: skip
+# set only inside the sandbox: `device_runner.py` refuses to run without it
+SANDBOXED = "TTSEM_DEVICE_SANDBOX"
 NOT_RUN: dict[str, Any] = {"run": "not_run"}
 
 
@@ -71,7 +73,7 @@ def run_file(
     # none of the caller's environment but the judge's and the GPU's few variables: an answer
     # could copy a token from it into its report; ttsem stays off the path, as in the benchmark
     passed = {key: os.environ[key] for key in DEVICE_ENV if key in os.environ}
-    env = judge.run_env(cache, True, passed)
+    env = judge.run_env(cache, True, {**passed, SANDBOXED: "1"})
     env.pop("PYTHONPATH")
     if os.environ.get("PYTHONPATH"):
         env["PYTHONPATH"] = os.environ["PYTHONPATH"]

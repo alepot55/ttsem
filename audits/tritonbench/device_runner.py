@@ -3,12 +3,14 @@
     python -P audits/tritonbench/device_runner.py FILE.py OUT.json OUT.npz
 
 Run by `device.py`, inside the judge's `bwrap` sandbox with the GPU's device nodes let in, never
-outside it. Nothing of ttsem runs here: the file is executed as `python FILE.py` would (seed 0
-first) on the real driver, and what its test kept (`result_gold` in TritonBench-G, `test_results`
-in TritonBench-T) is written in the format of ``ttsem._tritonbench_runner`` (structure in OUT.json,
-tensors in OUT.npz, bfloat16 and float16 widened to float32), so that
-``ttsem.judge_tritonbench.decide`` reads both sides the same way. Kernel launches are counted as the
-semantics counts them (`JITFunction.run`, warm-ups left out).
+outside it: started by hand, without the variable `device.py` sets only inside the sandbox
+(`TTSEM_DEVICE_SANDBOX`) or with a network interface besides loopback in sight, it refuses to run
+the file (`sandboxed`). Nothing of ttsem runs here: the file is executed as `python FILE.py` would
+(seed 0 first) on the real driver, and what its test kept (`result_gold` in TritonBench-G,
+`test_results` in TritonBench-T) is written in the format of ``ttsem._tritonbench_runner``
+(structure in OUT.json, tensors in OUT.npz, bfloat16 and float16 widened to float32), so that
+``ttsem.judge_tritonbench.decide`` reads both sides the same way. Kernel launches are counted as
+the semantics counts them (`JITFunction.run`, warm-ups left out).
 
 `run` in OUT.json: ok | call_error (the file raised).
 """
@@ -17,7 +19,9 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import runpy
+import socket
 import sys
 import time
 from pathlib import Path
@@ -25,6 +29,10 @@ from typing import Any
 
 import numpy as np
 import torch
+
+# set by `device.py` inside the sandbox, and nowhere else (the sandbox starts from an empty
+# environment): the file under test is model-written code
+SANDBOXED = "TTSEM_DEVICE_SANDBOX"
 
 
 def plain(value: Any, arrays: list[np.ndarray]) -> Any:
@@ -97,7 +105,25 @@ def count_launches() -> list[int]:
     return count
 
 
+def sandboxed() -> bool:
+    """Whether this process is in `device.py`'s sandbox: the variable it sets there, and no network
+    interface but loopback (the sandbox's network namespace is its own)."""
+    if os.environ.get(SANDBOXED) != "1":
+        return False
+    try:
+        names = {name for _, name in socket.if_nameindex()}
+    except OSError:
+        return False
+    return names <= {"lo"}
+
+
 def main() -> int:
+    if not sandboxed():
+        sys.stderr.write(
+            "device_runner.py: model-written code runs only inside device.py's bwrap sandbox: "
+            "run device.py\n"
+        )
+        return 2
     script, out_json, out_npz = (Path(a) for a in sys.argv[1:4])
     report: dict[str, Any] = {"file": script.name, "run": "ok", "launches": 0}
     launches = count_launches()
