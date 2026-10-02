@@ -98,8 +98,7 @@ $ python -m ttsem.sanitize pytest tests/ -q      # a suite written for device="c
 $ python -m ttsem.validate kernel.py             # the first pass that changes the answer
 ```
 
-Without a clone: `pip install 'ttsem[triton]'` installs the latest release from PyPI, and
-`pip install 'ttsem[triton] @ git+https://github.com/alepot55/ttsem'` the current `main`.
+Without a clone: `pip install 'ttsem[triton] @ git+https://github.com/alepot55/ttsem'`.
 
 A fault fails its test at the kernel's line ("writes 24 element(s) past the end of the tensor passed
 as `out_ptr`", `tests/fixtures/agents/suite_no_mask.py` at `n = 1000`). In CI:
