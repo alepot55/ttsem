@@ -1,20 +1,24 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "ttsem"
-version = "0.1.0"
+dynamic = ["version"]
 description = "An executable semantics of Triton's TTIR and TTGIR, with a per-pass validator"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Alessandro Potenza" }]
 keywords = ["triton", "mlir", "compiler", "semantics", "gpu", "interpreter"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Compilers",
     "Topic :: Software Development :: Testing",
@@ -31,6 +35,10 @@ test = ["pytest", "pytest-xdist"]
 Homepage = "https://github.com/alepot55/ttsem"
 Source = "https://github.com/alepot55/ttsem"
 Issues = "https://github.com/alepot55/ttsem/issues"
+
+# one version, the package's own: `ttsem.__version__`, which `python -m ttsem` prints
+[tool.hatch.version]
+path = "ttsem/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ttsem"]

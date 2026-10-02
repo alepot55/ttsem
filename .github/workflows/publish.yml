@@ -1,0 +1,68 @@
+name: publish
+
+# A version tag (v0.1.0, v0.1.1, ...) builds the sdist and the wheel, checks them, and uploads them
+# to PyPI by trusted publishing: PyPI trusts this workflow of this repository in the environment
+# `pypi`, so no token is stored anywhere. The tag must name the version ttsem/__init__.py declares.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build and check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: The tag is the package's version
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' ttsem/__init__.py)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "the tag is $GITHUB_REF_NAME, ttsem/__init__.py says $version"
+            exit 1
+          fi
+
+      - name: Build and check the metadata
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check --strict dist/*
+
+      # the wheel alone, numpy its only dependency, away from the checkout: the recorded demo
+      # travels inside it
+      - name: The wheel runs the demo
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel"
+          "$RUNNER_TEMP/wheel/bin/pip" install dist/*.whl
+          cd "$RUNNER_TEMP" && "$RUNNER_TEMP/wheel/bin/python" -m ttsem demo
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  pypi:
+    name: upload to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/ttsem/
+    permissions:
+      id-token: write  # the OIDC token PyPI exchanges for a short-lived upload token
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
