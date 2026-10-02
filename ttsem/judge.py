@@ -10,10 +10,11 @@
 A task is a KernelBench problem file (`Model`, `get_inputs`, `get_init_inputs`); an answer is the
 file that defines `ModelNew` (or, in the KernelBench-v3 release, a replacement `Model`). Each
 answer runs in its own process (``ttsem._judge_runner``) under `bwrap`: read-only filesystem
-except the output directory, a private /tmp, no network, its own pid namespace, a timeout and an
-address-space cap (`TTSEM_MEM_GB`, default 6). There the reference and the answer are compared
-by KernelBench's correctness rule (or, with `--rule v3`, by the KernelBench-v3 harness's own
-rule), with every Triton launch executed by ttsem on the CPU.
+except the output directory, a private /tmp, the home directory and the host's sockets (/run)
+hidden, none of the caller's environment but what the run needs (`run_env`), no network, its own
+pid namespace, a timeout and an address-space cap (`TTSEM_MEM_GB`, default 6). There the
+reference and the answer are compared by KernelBench's correctness rule (or, with `--rule v3`, by
+the KernelBench-v3 harness's own rule), with every Triton launch executed by ttsem on the CPU.
 
 One verdict per pass:
 
@@ -57,14 +58,17 @@ from __future__ import annotations
 import argparse
 import contextlib
 import functools
+import importlib.util
 import json
 import math
 import os
 import shutil
+import site
 import subprocess
 import sys
 import tempfile
 from collections import Counter
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -83,26 +87,114 @@ KINDS = {
 
 NO_BWRAP = """\
 ttsem judge: {problem}. The answers are model-written code, and the judge runs them only
-inside a bwrap sandbox (read-only filesystem, no network, own pid namespace). Install
+inside a bwrap sandbox (read-only filesystem, home hidden, no network, own pid namespace). Install
 bubblewrap (apt install bubblewrap, dnf install bubblewrap), or pass --no-sandbox to run
 them unsandboxed, with your user's permissions, at your own risk.
 """
 
 
-def sandbox_prefix(out: Path, cache: Path, keep: list[Path] | None = None) -> list[str]:
+# What a run is given of the caller's environment, where set. Nothing else of it reaches the
+# answer, which could otherwise copy a token from it into the report the judge prints.
+PASSED_ENV = (
+    "PATH", "PYTHONPATH", "LANG", "LC_ALL", "PYTHONHASHSEED", "TTSEM_MEM_GB", "TTSEM_TRACEBACK",
+)  # fmt: skip
+# HOME inside the sandbox: an empty directory of its private /tmp
+SANDBOX_HOME = "/tmp/home"
+
+
+def run_env(
+    cache: Path, sandbox: bool = True, extra: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """The whole environment one run starts with: `PASSED_ENV` from the caller's, where set,
+    this package first on PYTHONPATH, `cache` as the Triton cache, one OpenMP thread, and
+    `extra`. In the sandbox HOME is `SANDBOX_HOME` and TMPDIR its private /tmp; without it, the
+    caller's own."""
+    env = {key: os.environ[key] for key in PASSED_ENV if key in os.environ}
+    env.setdefault("PATH", os.defpath)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(ROOT), env.get("PYTHONPATH", "")) if p)
+    env |= {"TRITON_CACHE_DIR": str(cache), "OMP_NUM_THREADS": "1"}
+    if sandbox:
+        env |= {"HOME": SANDBOX_HOME, "TMPDIR": "/tmp"}
+    else:
+        env |= {key: os.environ[key] for key in ("HOME", "TMPDIR") if key in os.environ}
+    return env | dict(extra or {})
+
+
+def private_dirs() -> list[Path]:
+    """The directories the sandbox hides under an empty tmpfs: the caller's home directory (by
+    HOME and by the password database), the XDG config, data, cache and state directories where
+    they are set apart from it, the session's runtime directory, and /run (and /var/run where it
+    is not a link to it), where the host's daemons keep their sockets: a socket on the
+    filesystem is reachable without a network (the D-Bus buses, an ssh-agent, the Docker
+    daemon, which would run anything as root). Never `/`, nor one under /tmp, which the sandbox
+    replaces anyway; one inside another is left to the outer one."""
+    names = [os.environ.get(key, "") for key in ("HOME", "XDG_RUNTIME_DIR")]
+    names += [os.environ.get(f"XDG_{key}_HOME", "") for key in ("CONFIG", "DATA", "CACHE", "STATE")]
+    names += ["/run", "/var/run"]
+    with contextlib.suppress(ImportError, KeyError, AttributeError):
+        import pwd
+
+        names.append(pwd.getpwuid(os.getuid()).pw_dir)
+    found: list[Path] = []
+    paths = {Path(name).resolve() for name in names if name and os.path.isabs(name)}
+    for path in sorted(paths, key=lambda p: (len(p.parts), str(p))):
+        if path == Path("/") or path.is_relative_to("/tmp") or not path.is_dir():
+            continue
+        if not any(path.is_relative_to(outer) for outer in found):
+            found.append(path)
+    return found
+
+
+def runtime_paths() -> list[Path]:
+    """What every run reads: this package, the Python running it, its site-packages and
+    PYTHONPATH, and where numpy, torch and Triton are installed (an editable install of one can
+    sit anywhere, a home directory included)."""
+    paths = [ROOT, Path(sys.prefix), Path(sys.base_prefix)]
+    paths += [Path(p) for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
+    paths += [Path(p) for p in site.getsitepackages()]
+    if site.ENABLE_USER_SITE:
+        paths.append(Path(site.getusersitepackages()))
+    for name in ("numpy", "torch", "triton"):
+        with contextlib.suppress(ImportError, ValueError):
+            spec = importlib.util.find_spec(name)
+            paths += [Path(p) for p in (spec.submodule_search_locations or [])] if spec else []
+    return paths
+
+
+def sandbox_prefix(
+    out: Path, cache: Path, keep: list[Path] | None = None, env: Mapping[str, str] | None = None
+) -> list[str]:
     """The `bwrap` command line every answer runs under: the filesystem read-only except OUT
-    (where the run writes its report), a private /tmp, no network, its own pid namespace. The
-    paths in `keep` that the private /tmp would hide (the task, the answer, this package, the
-    Python running it) stay visible, read-only."""
+    (where the run writes its report), a private /tmp, the caller's home and the host's sockets
+    (`private_dirs`) under an empty tmpfs, no network, its own pid namespace, and no environment
+    but `env` (`run_env`'s by default). The paths in `keep` and those every run reads
+    (`runtime_paths`: this package, the Python running it) stay visible, read-only, where /tmp
+    or a hidden directory would hide them; one that holds a hidden directory whole stays hidden.
+    An OUT that holds one is refused (ValueError): the answer would see it, and could write
+    there."""
+    out = out.resolve()
+    private = private_dirs()
+    held = [path for path in private if path.is_relative_to(out)]
+    if held:
+        raise ValueError(f"the output directory {out} holds {held[0]}: give it one of its own")
+    hidden = [Path("/tmp"), *private]
     cmd = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
-    for path in dict.fromkeys(p.resolve() for p in keep or []):
-        if path.is_relative_to("/tmp"):
+    for path in private:
+        cmd += ["--tmpfs", str(path)]
+    for path in dict.fromkeys(p.resolve() for p in [*(keep or []), *runtime_paths()]):
+        if (
+            path.exists()
+            and any(path.is_relative_to(top) for top in hidden)
+            and not any(inner.is_relative_to(path) for inner in private)
+        ):
             cmd += ["--ro-bind", str(path), str(path)]
-    return cmd + [
-        "--bind", str(out), str(out), "--unshare-net", "--unshare-pid", "--die-with-parent",
-        "--chdir", str(out), "--setenv", "TRITON_CACHE_DIR", str(cache),
-        "--setenv", "OMP_NUM_THREADS", "1", "--setenv", "TMPDIR", "/tmp",
+    cmd += [
+        "--bind", str(out), str(out), "--dir", SANDBOX_HOME, "--unshare-net", "--unshare-pid",
+        "--die-with-parent", "--chdir", str(out), "--clearenv",
     ]  # fmt: skip
+    for key, value in (run_env(cache) if env is None else env).items():
+        cmd += ["--setenv", key, value]
+    return cmd
 
 
 def sandbox_problem() -> str | None:
@@ -111,7 +203,7 @@ def sandbox_problem() -> str | None:
     if shutil.which("bwrap") is None:
         return "bwrap is not on PATH"
     probe = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
-    probe += ["--unshare-net", "--unshare-pid", "--die-with-parent", "true"]
+    probe += ["--unshare-net", "--unshare-pid", "--die-with-parent", "--clearenv", "true"]
     done = subprocess.run(probe, capture_output=True, text=True, check=False)
     if done.returncode:
         why = (done.stderr or "").strip().splitlines()[-1:] or [f"exit {done.returncode}"]
@@ -140,8 +232,9 @@ def judge_one(
     out = report.parent.resolve()
     cache = out / ".cache"
     cache.mkdir(parents=True, exist_ok=True)
-    keep = [task, answer, ROOT, Path(sys.prefix), Path(sys.base_prefix)]
-    cmd = sandbox_prefix(out, cache, keep) if sandbox else []
+    # the caller's environment stays out: an answer could copy a token from it into its report
+    env = run_env(cache, sandbox)
+    cmd = sandbox_prefix(out, cache, [task, answer], env) if sandbox else []
     # -P: the working directory, OUT, stays off the path, so a module an answer leaves there is
     # not what a later run imports as ttsem
     cmd += [
@@ -150,13 +243,6 @@ def judge_one(
     ]  # fmt: skip
     for key, value in settings.items():
         cmd += [f"--{key}", value]
-    path = os.pathsep.join(p for p in (str(ROOT), os.environ.get("PYTHONPATH", "")) if p)
-    env = {
-        **os.environ,
-        "PYTHONPATH": path,
-        "TRITON_CACHE_DIR": str(cache),
-        "OMP_NUM_THREADS": "1",
-    }
     try:
         done = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, env=env, cwd=out, check=False

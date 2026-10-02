@@ -39,6 +39,12 @@ from ttsem import judge_tritonbench as tb
 RUNNER = Path(__file__).resolve().parent / "device_runner.py"
 RECORD = "device"  # the key of a row's record, and the suffix of its file
 GPU_NODES = ("/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools")
+# what the GPU run is given of the caller's environment besides the judge's own (`judge.run_env`),
+# where set: the card it may use and where the driver and ptxas are
+DEVICE_ENV = (
+    "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "LD_LIBRARY_PATH", "CUDA_HOME",
+    "TRITON_PTXAS_PATH", "TRITON_LIBCUDA_PATH",
+)  # fmt: skip
 NOT_RUN: dict[str, Any] = {"run": "not_run"}
 
 
@@ -62,13 +68,18 @@ def run_file(
         return tb.read_report(report, script)
     out = out.resolve()
     cache.mkdir(parents=True, exist_ok=True)
-    keep = [script, Path(sys.prefix), Path(sys.base_prefix)]
-    cmd = judge.sandbox_prefix(out, cache, keep) + gpu_nodes() + extra
+    # none of the caller's environment but the judge's and the GPU's few variables: an answer
+    # could copy a token from it into its report; ttsem stays off the path, as in the benchmark
+    passed = {key: os.environ[key] for key in DEVICE_ENV if key in os.environ}
+    env = judge.run_env(cache, True, passed)
+    env.pop("PYTHONPATH")
+    if os.environ.get("PYTHONPATH"):
+        env["PYTHONPATH"] = os.environ["PYTHONPATH"]
+    cmd = judge.sandbox_prefix(out, cache, [script], env) + gpu_nodes() + extra
     cmd += ["--ro-bind", str(RUNNER), str(RUNNER)]  # whatever /tmp or `extra` hide
     npz = report.with_suffix(".npz")
     cmd += [sys.executable, "-P", str(RUNNER), str(script.resolve()), str(report.resolve())]
     cmd += [str(npz.resolve())]
-    env = {**os.environ, "TRITON_CACHE_DIR": str(cache)}
     try:
         done = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, env=env, cwd=out, check=False

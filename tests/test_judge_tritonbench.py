@@ -23,6 +23,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from conftest import Planted
 
 from ttsem import judge
 from ttsem import judge_tritonbench as tb
@@ -189,6 +190,20 @@ def test_one_pair_prints_its_verdict_and_exits_as_it_says(tmp_path: Path) -> Non
     done = run("wrong")
     assert done.returncode == 1
     assert done.stdout.startswith("wrong: the test's results differ from the reference's: ")
+
+
+@needs_sandbox
+def test_an_answer_sees_no_secret_of_the_caller(planted: Planted, tmp_path: Path) -> None:
+    """An answer that copies whatever it can reach of a secret the caller holds, in its
+    environment and in its home's config, into OUT, then is judged as any other."""
+    answer = tmp_path / "answer_leak.py"
+    answer.write_text(planted.leak() + (FIXTURES / "answer_ok.py").read_text())
+    out = tmp_path / "out"
+    out.mkdir()
+    item = {"id": "leak", "task": str(TASK), "answer": str(answer)}
+    got = tb.judge_item(item, out, 300, sandbox=True)[tb.RECORD]
+    assert got["verdict"] == "verified", got
+    planted.check(out)
 
 
 def test_kernelbench_flags_are_refused_with_tritonbench(capsys: pytest.CaptureFixture[str]) -> None:

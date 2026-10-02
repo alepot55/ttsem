@@ -15,6 +15,7 @@ import importlib.util
 import inspect
 import json
 import os
+import pwd
 import re
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import Planted
 
 from ttsem import judge, judge_shapes
 
@@ -168,6 +170,75 @@ def test_no_sandbox_warns_before_anything_runs(
     assert judge.main([str(TASK), str(FIXTURES / "answer_ok.py"), "--no-sandbox"]) == 0
     assert "about to run unsandboxed" in capsys.readouterr().err
     assert [call["args"][-1] for call in calls] == [False]  # sandbox=False, one pass
+
+
+# --- what an answer sees of the caller -----------------------------------------------------------
+
+
+def test_a_run_is_given_none_of_the_callers_environment(planted: Planted, tmp_path: Path) -> None:
+    """Built, not run: the command clears the environment and sets only `run_env`'s, whose HOME
+    and TMPDIR are the sandbox's own, and it hides the home directories and /run."""
+    cache = tmp_path / "out" / ".cache"
+    env = judge.run_env(cache)
+    # names, not values, in a failure's message: they would be the caller's own
+    assert "TTSEM_TEST_SECRET" not in set(env)
+    assert not any(planted.value in value for value in env.values())
+    assert (env["HOME"], env["TMPDIR"], env["TRITON_CACHE_DIR"]) == (
+        "/tmp/home",
+        "/tmp",
+        str(cache),
+    )
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(judge.ROOT)
+    cmd = judge.sandbox_prefix(tmp_path / "out", cache, [], env)
+    assert cmd[cmd.index("--clearenv") + 1 :] == [
+        arg for key, value in env.items() for arg in ("--setenv", key, value)
+    ]
+    hidden = {Path(cmd[i + 1]) for i, arg in enumerate(cmd) if arg == "--tmpfs"}
+    assert {Path("/tmp"), Path("/run")} <= hidden
+    real = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()  # the account's home, HOME aside
+    if real.is_dir() and real != Path("/") and not real.is_relative_to("/tmp"):
+        assert real in hidden
+    assert any(planted.home.resolve().is_relative_to(top) for top in hidden)
+    # without the sandbox, the caller's HOME and TMPDIR, and still nothing else of its own
+    bare = judge.run_env(cache, sandbox=False)
+    assert bare["HOME"] == str(planted.home) and "TTSEM_TEST_SECRET" not in set(bare)
+
+
+def test_an_output_directory_that_holds_a_hidden_one_is_refused(tmp_path: Path) -> None:
+    """OUT is bound writable over the hidden directories: one that holds the home or /run would
+    give them back to the answer."""
+    with pytest.raises(ValueError, match="holds"):
+        judge.sandbox_prefix(Path("/"), tmp_path / ".cache")
+
+
+@pytest.mark.skipif(judge.sandbox_problem() is not None, reason="needs a working bwrap")
+def test_the_sandbox_shows_an_answer_no_secret_of_the_caller(
+    planted: Planted, tmp_path: Path
+) -> None:
+    """The judge's own sandbox command, running Python that copies whatever it can reach of a
+    secret the caller holds, in its environment and in its home's config, into OUT."""
+    out = tmp_path / "out"
+    out.mkdir()
+    cmd = judge.sandbox_prefix(out, out / ".cache", [])
+    cmd += [sys.executable, "-c", planted.leak()]
+    done = subprocess.run(
+        cmd, capture_output=True, text=True, env=judge.run_env(out / ".cache"), check=False
+    )
+    assert done.returncode == 0, done.stderr
+    planted.check(out)
+
+
+@needs_sandbox
+def test_a_judged_answer_sees_no_secret_of_the_caller(planted: Planted, tmp_path: Path) -> None:
+    """The same, through a whole pass: the answer copies what it can see at import, then is
+    judged as any other."""
+    answer = tmp_path / "answer_leak.py"
+    answer.write_text(planted.leak() + (FIXTURES / "answer_ok.py").read_text())
+    out = tmp_path / "out"
+    out.mkdir()
+    got = judge.judge_one(TASK, answer, out / "leak.scaled.json", 300)
+    assert got["verdict"] == "verified", got
+    planted.check(out)
 
 
 def test_each_kind_of_verdict_reads_as_one_line() -> None:

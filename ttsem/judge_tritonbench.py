@@ -60,9 +60,7 @@ import functools
 import hashlib
 import io
 import json
-import os
 import re
-import site
 import subprocess
 import sys
 import tempfile
@@ -296,18 +294,15 @@ def run_file(
         return read_report(report, script)
     out = out.resolve()
     cache.mkdir(parents=True, exist_ok=True)
+    # the caller's environment stays out (an answer could copy a token from it into its
+    # report), and so does its TTSEM_POISON: the pattern is the run's own
+    env = judge.run_env(cache, sandbox, {"TTSEM_POISON": poison} if poison else None)
     cmd: list[str] = []
     if sandbox:
-        keep = [script, judge.ROOT, Path(sys.prefix), Path(sys.base_prefix)]
-        cmd = judge.sandbox_prefix(out, cache, keep) + list(extra)
+        cmd = judge.sandbox_prefix(out, cache, [script], env) + list(extra)
     npz = report.with_suffix(".npz")
     cmd += [sys.executable, "-P", "-m", RUNNER, str(script.resolve()), str(report.resolve())]
     cmd += [str(npz.resolve())]
-    path = os.pathsep.join(p for p in (str(judge.ROOT), os.environ.get("PYTHONPATH", "")) if p)
-    env = {**os.environ, "PYTHONPATH": path, "TRITON_CACHE_DIR": str(cache), "OMP_NUM_THREADS": "1"}
-    env.pop("TTSEM_POISON", None)
-    if poison:
-        env["TTSEM_POISON"] = poison
     try:
         done = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, env=env, cwd=out, check=False
@@ -326,10 +321,7 @@ def hidden_tree(path: Path) -> Path | None:
     task or an output sits in, hidden from an answer whole (a TritonBench checkout, the outputs
     of earlier runs next to OUT). Under /tmp there is nothing to hide: the sandbox's /tmp is its
     own."""
-    needed = [judge.ROOT, Path(sys.prefix), Path(sys.base_prefix), Path.home()]
-    needed += [Path(p) for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
-    needed += [Path(p) for p in [*site.getsitepackages(), site.getusersitepackages()]]
-    needed = [p.resolve() for p in needed]
+    needed = [p.resolve() for p in [*judge.runtime_paths(), Path.home()]]
     top = None
     for parent in path.resolve().parents:
         if parent.is_relative_to("/tmp") or any(p.is_relative_to(parent) for p in needed):

@@ -18,6 +18,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from conftest import Planted
 
 from ttsem import judge
 
@@ -225,6 +226,23 @@ def test_device_control_runs_in_the_sandbox(tmp_path: Path, monkeypatch: Any) ->
         found[name] = device.judge_item(item, out, timeout=120)[device.RECORD]["class"]
     assert found == {"right": "verified_no_kernel", "wrong": "wrong_result", "raises": "call_error"}
     assert len(list((out / "reference").glob("relu-*.device.json"))) == 1  # one reference run
+
+
+@needs_device_sandbox
+def test_the_device_control_shows_an_answer_no_secret_of_the_caller(
+    planted: Planted, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The control's sandbox, on CPU tensors: what the file copies of a secret the caller holds,
+    in its environment and in its home's config, into OUT."""
+    device = load("tritonbench/device.py")
+    monkeypatch.setattr(device, "gpu_nodes", list)
+    script = tmp_path / "leak.py"
+    script.write_text(planted.leak() + "import torch\nresult_gold = {'a': torch.ones(2)}\n")
+    out = tmp_path / "out"
+    out.mkdir()
+    got = device.run_file(script, out / "leak.device.json", out, 120, out / ".cache", [])
+    assert got["run"] == "ok", got
+    planted.check(out)
 
 
 # --- KernelBench ---------------------------------------------------------------------------------

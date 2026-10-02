@@ -3,11 +3,21 @@
 Everything here constructs the dataclasses of `ttsem.ir_types` directly. When a test says
 `op("arith.addi", ["i32", "i32"], "i32")` it is writing the same thing the generic form would
 print, minus the syntax.
+
+At the end, `planted`: a secret where a sandbox that lets the caller's environment or home
+directory through would show it to a model-written answer.
 """
 
 from __future__ import annotations
 
+import json
+import secrets
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
 import numpy as np
+import pytest
 
 from ttsem.interp import Interp
 from ttsem.ir_types import Block, Module, Op, Region, Type
@@ -116,3 +126,76 @@ def one(target: Op, args: list[object] | None = None, **kw: object) -> np.ndarra
 def buffer(memory: Memory, base: int, array: np.ndarray) -> np.ndarray:
     memory.register(base, array)
     return array
+
+
+# --- a secret where a careless sandbox would show it ---------------------------------------------
+
+LEAK = """
+import json as _json
+import os as _os
+import pathlib as _pathlib
+import pwd as _pwd
+
+
+def _read(path):
+    try:
+        return _pathlib.Path(path).read_text()
+    except OSError as exc:
+        return "unreadable: " + type(exc).__name__
+
+
+# what a model-written answer could copy into its report, written where the run may write (its
+# working directory, OUT): the whole environment, a file of the caller's home directory, whether
+# the real home's config directory is in sight, and the host's sockets under /run
+_real = _pwd.getpwuid(_os.getuid()).pw_dir
+_seen = {
+    "environ": dict(_os.environ),
+    "secret": _read(%r),
+    "home": _os.path.expanduser("~"),
+    "real_config": _os.path.exists(_os.path.join(_real, ".config")),
+    "run": sorted(_os.listdir("/run")) if _os.path.isdir("/run") else [],
+}
+_pathlib.Path("leak.json").write_text(_json.dumps(_seen))
+"""
+
+
+@dataclass
+class Planted:
+    value: str
+    home: Path
+    file: Path
+
+    def leak(self) -> str:
+        """Python an answer runs at import: it copies what it can see of the secret into
+        OUT/leak.json."""
+        return LEAK % str(self.file)
+
+    def check(self, out: Path) -> dict[str, Any]:
+        """What the answer saw, after asserting it saw none of the secret: the variable is not in
+        its environment, the file is out of its reach, HOME is not the caller's, the caller's real
+        config directory is out of sight, and /run is empty."""
+        seen: dict[str, Any] = json.loads((out / "leak.json").read_text())
+        # the names only: a failure must not print the values of the caller's environment
+        names = sorted(seen["environ"])
+        assert "TTSEM_TEST_SECRET" not in names, names
+        assert str(seen["secret"]).startswith("unreadable: "), seen["secret"]
+        leaked = self.value in json.dumps(seen)
+        assert not leaked, "the secret's value is in what the answer saw"
+        assert seen["home"] != str(self.home)
+        assert seen["real_config"] is False
+        assert seen["run"] == [], seen["run"]
+        return seen
+
+
+@pytest.fixture
+def planted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Planted:
+    """A secret in the judge's own environment (`TTSEM_TEST_SECRET`) and in a file of its home
+    directory (a fake one: HOME points at it), where a token would sit."""
+    value = "ttsem-test-" + secrets.token_hex(8)
+    home = tmp_path / "home"
+    file = home / ".config" / "ttsem-test" / "token"
+    file.parent.mkdir(parents=True)
+    file.write_text(value)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("TTSEM_TEST_SECRET", value)
+    return Planted(value, home, file)

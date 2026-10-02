@@ -14,7 +14,9 @@ flagged.
 ## What you need
 
 - Linux with `bwrap` (bubblewrap) and unprivileged user namespaces: every answer is model-written
-  code and runs only inside the sandbox (read-only filesystem, no network, its own pid namespace).
+  code and runs only inside the sandbox (read-only filesystem, your home directory and the host's
+  sockets in /run hidden, of your environment only the few variables a run needs, no network, its
+  own pid namespace).
 - Python 3.12 and a clone of this repository, installed with the Triton wheel and CPU torch:
 
   ```console

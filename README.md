@@ -138,7 +138,9 @@ instances, or memory nobody wrote, at the answer's own line), `no_kernel` (PyTor
 `error`, `too_slow` or `not_judged`; `--json` prints the whole record, `--manifest M.jsonl --out DIR`
 judges a batch (one verdict per id; `--rule`, `--precision` and `--gpu` apply to the lines that do
 not set them). Each answer is model-written code and runs in its own `bwrap` sandbox (read-only
-filesystem, no network); without `bwrap` the judge refuses to run unless given `--no-sandbox`.
+filesystem, your home directory and the host's sockets in /run hidden, of your environment only the
+few variables a run needs, no network); without `bwrap` the judge refuses to run unless given
+`--no-sandbox`.
 
 `error` with `why: shared_memory` means every config of an autotuner was skipped and the one it
 falls back to needs more shared memory than the GPU (`--gpu`, an H100 by default) has, by Triton
