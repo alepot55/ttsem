@@ -164,21 +164,23 @@ def runtime_paths() -> list[Path]:
 def sandbox_prefix(
     out: Path, cache: Path, keep: list[Path] | None = None, env: Mapping[str, str] | None = None
 ) -> list[str]:
-    """The `bwrap` command line every answer runs under: the filesystem read-only except OUT
-    (where the run writes its report), a private /tmp, the caller's home and the host's sockets
-    (`private_dirs`) under an empty tmpfs, no network, its own pid namespace, and no environment
-    but `env` (`run_env`'s by default). The paths in `keep` and those every run reads
-    (`runtime_paths`: this package, the Python running it) stay visible, read-only, where /tmp
-    or a hidden directory would hide them; one that holds a hidden directory whole stays hidden.
-    An OUT that holds one is refused (ValueError): the answer would see it, and could write
-    there."""
+    """The `bwrap` command line every answer runs under: no capabilities, the filesystem read-only
+    except OUT (where the run writes its report), a private /tmp, the caller's home and the host's
+    sockets (`private_dirs`) under an empty tmpfs, no network, its own pid namespace, and no
+    environment but `env` (`run_env`'s by default). The paths in `keep` and those every run reads
+    (`runtime_paths`: this package, the Python running it) stay visible, read-only, where /tmp or a
+    hidden directory would hide them; one that holds a hidden directory whole stays hidden. An OUT
+    that holds one is refused (ValueError): the answer would see it, and could write there."""
     out = out.resolve()
     private = private_dirs()
     held = [path for path in private if path.is_relative_to(out)]
     if held:
         raise ValueError(f"the output directory {out} holds {held[0]}: give it one of its own")
     hidden = [Path("/tmp"), *private]
-    cmd = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
+    # no capabilities: run by root, bwrap keeps them, and with CAP_SYS_ADMIN the answer could
+    # unmount the tmpfs over a hidden directory and read what is under it
+    cmd = ["bwrap", "--cap-drop", "ALL", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+    cmd += ["--tmpfs", "/tmp"]
     for path in private:
         cmd += ["--tmpfs", str(path)]
     for path in dict.fromkeys(p.resolve() for p in [*(keep or []), *runtime_paths()]):
@@ -202,7 +204,8 @@ def sandbox_problem() -> str | None:
     namespaces, as where unprivileged user namespaces are off), or None."""
     if shutil.which("bwrap") is None:
         return "bwrap is not on PATH"
-    probe = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
+    probe = ["bwrap", "--cap-drop", "ALL", "--ro-bind", "/", "/", "--dev", "/dev"]
+    probe += ["--proc", "/proc", "--tmpfs", "/tmp"]
     probe += ["--unshare-net", "--unshare-pid", "--die-with-parent", "--clearenv", "true"]
     done = subprocess.run(probe, capture_output=True, text=True, check=False)
     if done.returncode:

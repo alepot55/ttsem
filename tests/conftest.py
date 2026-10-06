@@ -131,6 +131,7 @@ def buffer(memory: Memory, base: int, array: np.ndarray) -> np.ndarray:
 # --- a secret where a careless sandbox would show it ---------------------------------------------
 
 LEAK = """
+import ctypes as _ctypes
 import json as _json
 import os as _os
 import pathlib as _pathlib
@@ -144,10 +145,18 @@ def _read(path):
         return "unreadable: " + type(exc).__name__
 
 
+# first it tries to unmount what hides them (the tmpfs over /tmp, the home directories, /run): run
+# by root, a sandbox that keeps its capabilities lets it
+_real = _pwd.getpwuid(_os.getuid()).pw_dir
+_libc = _ctypes.CDLL(None)
+for _p in [*_pathlib.Path(%r).parents, _pathlib.Path(_real), _pathlib.Path("/run")]:
+    if str(_p) != "/":
+        for _ in range(3):
+            _libc.umount2(str(_p).encode(), 2)  # MNT_DETACH; fails without CAP_SYS_ADMIN
+
 # what a model-written answer could copy into its report, written where the run may write (its
 # working directory, OUT): the whole environment, a file of the caller's home directory, whether
 # the real home's config directory is in sight, and the host's sockets under /run
-_real = _pwd.getpwuid(_os.getuid()).pw_dir
 _seen = {
     "environ": dict(_os.environ),
     "secret": _read(%r),
@@ -168,7 +177,7 @@ class Planted:
     def leak(self) -> str:
         """Python an answer runs at import: it copies what it can see of the secret into
         OUT/leak.json."""
-        return LEAK % str(self.file)
+        return LEAK % (str(self.file), str(self.file))
 
     def check(self, out: Path) -> dict[str, Any]:
         """What the answer saw, after asserting it saw none of the secret: the variable is not in
