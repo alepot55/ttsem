@@ -31,10 +31,11 @@ import numpy as np
 import pytest
 from conftest import Planted
 
-from ttsem import judge
+from ttsem import _guard, judge
 from ttsem import judge_tritonbench as tb
 from ttsem.judge_io import (
     EXIT_STOPPED,
+    Ran,
     load_npz,
     printable,
     read_untrusted,
@@ -77,6 +78,130 @@ def batch(here: Path, lines: list[tuple[str, Path, Path]], *flags: str) -> dict[
     assert done.returncode == 0, done.stderr
     found = [json.loads(line) for line in (out / "rows.jsonl").read_text().splitlines()]
     return {row["id"]: row for row in found}
+
+
+# --- the static tamper scan and the integrity snapshot -------------------------------------------
+
+
+def test_the_tamper_scan_flags_an_answer_that_reaches_into_the_judge() -> None:
+    """The forms the scan refuses, before an answer runs: importing the judge, the module table,
+    the frame walk, `ctypes`, the garbage collector, rewriting an object's code, `/proc/self/fd`,
+    and the os calls that leave the process or write a foreign fd."""
+    forbidden = judge.FORBIDDEN_MODULES
+    for source in (
+        "import ttsem.memory as M",
+        "from ttsem import sanitize",
+        "import sys\nx = sys.modules",
+        "import ctypes",
+        "import os\nos._exit(0)",
+        "import os\nos.write(3, b'x')",
+        "f.__code__ = g.__code__",
+        "setattr(obj, '__code__', c)",
+        "import gc\ngc.get_referrers(x)",
+        "import inspect\ninspect.currentframe()",
+        "frame = e.__traceback__.tb_frame.f_back.f_globals",
+        "open('/proc/self/fd/4')",
+        "import sys\nfd = sys.argv[sys.argv.index('--events') + 1]",
+    ):
+        assert _guard.tamper_scan(source, forbidden) is not None, source
+
+
+def test_the_tamper_scan_passes_ordinary_kernels_and_pytorch() -> None:
+    """Narrow enough that a real Triton answer passes: imports, torch and triton calls, os.environ
+    and os.path, a bare globals(), reading an attribute that is not being rewritten."""
+    forbidden = judge.FORBIDDEN_MODULES
+    for name in ("ok", "wrong", "unsafe", "no_kernel", "swallows", "forges", "prewrites"):
+        source = (KB / f"answer_{name}.py").read_text()
+        assert _guard.tamper_scan(source, forbidden) is None, name
+    ordinary = (
+        "import os, math\n"
+        "import torch\n"
+        "import triton\n"
+        "import triton.language as tl\n"
+        "p = os.environ.get('X')\n"
+        "d = os.path.dirname(__file__)\n"
+        "g = globals()\n"
+        "@triton.jit\n"
+        "def k(x, n, B: tl.constexpr):\n"
+        "    o = tl.program_id(0) * B + tl.arange(0, B)\n"
+        "    tl.store(x + o, tl.load(x + o, mask=o < n), mask=o < n)\n"
+    )
+    assert _guard.tamper_scan(ordinary, forbidden) is None
+
+
+def test_the_integrity_snapshot_catches_a_swapped_or_recoded_callable() -> None:
+    """A watched attribute rebound to another object, or the same function given another function's
+    code, is a breach; the untouched snapshot is not."""
+    holder: dict[str, Any] = {}
+
+    def original() -> int:
+        return 1
+
+    def replacement() -> int:
+        return 2
+
+    holder["f"] = original
+    guard = _guard.Integrity()
+    guard.watch("f", lambda: holder["f"])
+    guard.arm()
+    assert guard.breach() is None
+    holder["f"] = replacement
+    assert guard.breach() == "f"
+    # the same object, with its code object swapped
+    holder["f"] = original
+    guard.arm()
+    assert guard.breach() is None
+    original.__code__ = replacement.__code__
+    assert guard.breach() == "f"
+
+
+def test_a_ttsem_importing_answer_is_not_judged_before_it_runs(tmp_path: Path) -> None:
+    """The KernelBench judge refuses an answer that imports the checker and patches its memory
+    resolver: `not_judged`, from the scan in the parent, so the answer never runs (no sandbox
+    needed for what this shows)."""
+    got = judge.judge_one(
+        KB / "task_relu.py", KB / "answer_tampers.py", tmp_path / "a.json", 300, sandbox=False
+    )
+    assert (got["verdict"], got["why"]) == ("not_judged", "tampered"), got
+    assert "imports the judge's own module `ttsem`" in got["message"]
+
+
+def _work_with_account(tmp_path: Path, account: dict[str, Any]) -> Path:
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "run.json").write_text(json.dumps(account))
+    return work
+
+
+def test_a_report_without_the_runners_own_done_is_not_judged(tmp_path: Path) -> None:
+    """A run that wrote an account but whose token-bearing `done` never arrived (the answer left
+    by `os._exit`, having forged the report) is `not_judged` (`forged`), not read as finished.
+    A forged `done` without the token does not count."""
+    account = {"trials": [{"seed": 1, "launches": 1, "output": {"type": "x"}}], "launches": 1}
+    work = _work_with_account(tmp_path, account)
+    head = {"answer": "a.py", "scale": "auto", "launches": 0, "settings": judge.DEFAULTS}
+    reference = {"trials": [], "sweep": {}}
+    forged = Ran(0, "", [{"event": "hello", "token": "T"}, {"event": "done"}])
+    got = judge.verdict_of(head, reference, forged, work, "kernelbench", 60)
+    assert (got["verdict"], got["why"]) == ("not_judged", "forged"), got
+
+
+def test_a_forged_launch_count_is_not_judged(tmp_path: Path) -> None:
+    """When the account claims more launches than the judge counted over its own channel, the run
+    is `not_judged` (`forged`): a pure-torch answer cannot forge the count into `no_kernel`'s
+    opposite."""
+    account = {"trials": [{"seed": 1, "launches": 7, "output": {"type": "x"}}], "launches": 35}
+    work = _work_with_account(tmp_path, account)
+    head = {"answer": "a.py", "scale": "auto", "launches": 0, "settings": judge.DEFAULTS}
+    reference = {"trials": [], "sweep": {}}
+    ran = Ran(
+        0,
+        "",
+        [{"event": "hello", "token": "T"}, {"event": "done", "token": "T", "launches": 0}],
+    )
+    got = judge.verdict_of(head, reference, ran, work, "kernelbench", 60)
+    assert (got["verdict"], got["why"]) == ("not_judged", "forged"), got
+    assert "35" in got["message"] and "0" in got["message"]
 
 
 # --- the forged answers -------------------------------------------------------------------------
@@ -303,7 +428,8 @@ def test_the_channel_sends_then_leaves_without_the_answers_exit_handlers(
 ) -> None:
     """`Channel.stop` and `.finish` send their event and leave by `os._exit`, so the atexit
     handler a run registered (a forge) never runs, and its `{"event": "atexit"}` never reaches
-    the judge after the last word. The child imports this checkout's `ttsem`."""
+    the judge after the last word. The channel announces its token in a first `hello`; the child
+    imports this checkout's `ttsem`."""
     read_fd, write_fd = os.pipe()
     env = {**os.environ, "PYTHONPATH": str(ROOT), "EVENTS_FD": str(write_fd)}
     done = subprocess.run(
@@ -323,7 +449,9 @@ def test_the_channel_sends_then_leaves_without_the_answers_exit_handlers(
         os.close(read_fd)
     assert done.returncode == code, done.stderr
     events = [json.loads(line) for line in sent.split(b"\n") if line.strip()]
-    assert [e["event"] for e in events] == [last_event]  # no atexit event after it
+    assert [e["event"] for e in events] == ["hello", last_event]  # no atexit event after it
+    token = events[0]["token"]
+    assert all(e.get("token") == token for e in events)  # every event the runner's, by its token
 
 
 def test_read_untrusted_refuses_a_link_a_fifo_and_too_large(tmp_path: Path) -> None:

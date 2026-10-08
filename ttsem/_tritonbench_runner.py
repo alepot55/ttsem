@@ -10,7 +10,8 @@ operator on its test cases and keeps what it returns in a module-level variable 
 TritonBench-G, `test_results` in TritonBench-T). The file is executed as `python FILE.py` would
 (seed 0 first), inside `sanitize.session()`: every Triton launch is compiled by the real frontend
 and executed by ttsem on CPU tensors, and a launch that reads or writes out of bounds, races with
-another program instance or uses memory nobody wrote stops the run there, with the kernel's line.
+another program instance or performs an operation with an undefined result stops the run there,
+with the kernel's line (memory nobody wrote is filled with NaN instead, so it shows in the values).
 
 What the test kept is written as plain arrays: its structure (dicts, lists, scalars, strings) in
 OUT.json and its tensors in OUT.npz (bfloat16 and float16 widened to float32), which the judge
@@ -31,6 +32,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import runpy
 import sys
 import time
@@ -40,7 +42,8 @@ from typing import Any
 import numpy as np
 import torch
 
-from ttsem import sanitize
+from ttsem import _guard, harness, pidraces, sanitize
+from ttsem import memory as memory_mod
 from ttsem._judge_runner import answer_frame, blame, cap_memory, first_line, raised_by_answer
 from ttsem.judge_io import Channel
 
@@ -122,6 +125,21 @@ def main(argv: list[str] | None = None) -> int:
     torch.manual_seed(0)
     sys.argv = [str(script)]
     results: Any = None
+    from triton.runtime.jit import JITFunction
+
+    guard = _guard.checker_integrity(
+        memory=memory_mod, harness=harness, pidraces=pidraces, jitfunction=JITFunction, os_module=os
+    )
+
+    def on_launch(n: int) -> None:
+        """The count over the channel (out of a forged report's reach), and a check the file did
+        not swap the checker's own code before the semantics ran this launch."""
+        bad = guard.breach(skip=_guard.HOOK)
+        if bad is not None:
+            raise sanitize.Unjudged(
+                "tampered", f"the file changed the judge's own code ({bad})", []
+            )
+        channel.launch(n)
 
     def on_stop(stop: sanitize.KernelFault | sanitize.Unjudged) -> None:
         """A launch faulted, or cannot be judged: the judge hears it now, and the file never
@@ -140,8 +158,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if "_inductor" in script.read_text(encoding="utf-8", errors="replace"):
         sanitize.inductor_names()  # code in Inductor's style: `grid`, `_empty_strided_cuda`
-    with sanitize.session(source=str(script), on_stop=on_stop) as state:
+    with sanitize.session(source=str(script), on_stop=on_stop, on_launch=on_launch) as state:
         live["state"] = state
+        guard.arm()  # the session hook is in place; snapshot before the file runs
         try:
             scope = runpy.run_path(str(script), run_name="__main__")
             results = scope.get(results_name(script))
@@ -166,6 +185,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
         report["launches"] = state.launches
         report["races_unchecked"] = state.races_unchecked
+        # before the account is trusted: the launch hook included now, a last check the file did
+        # not swap the checker's own code without a watched launch seeing it
+        bad = guard.breach()
+        if bad is not None:
+            report.update(run="tampered", message=f"the file changed the judge's own code ({bad})")
     if report["run"] == "ok":
         arrays: list[np.ndarray] = []
         report["results"] = plain(results, arrays)

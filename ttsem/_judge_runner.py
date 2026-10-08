@@ -14,8 +14,9 @@ models' weights, five trials whose seeds are drawn from `torch.manual_seed(42)`,
 the reference first, then `ModelNew` on the same inputs, a shape check, then
 `torch.allclose(atol, rtol)`; every trial must pass. The only change: every Triton launch is
 compiled by the real frontend and executed by ttsem on CPU tensors (`sanitize.session`), which
-stops the run at an out-of-bounds access, a race between program instances or a use of memory
-nobody wrote, with the kernel's source line.
+stops the run at an out-of-bounds access, a race between program instances or an operation with
+an undefined result, with the kernel's source line (memory nobody wrote is filled with NaN
+instead, so it shows up in the values the judge compares).
 
 With `--rule v3`, the rule of the KernelBench-v3 harness instead (github.com/Infatoshi/
 KernelBench-v3, `src/eval/benchmark.py`, read on 23 Sep 2026): the two models are built one after
@@ -69,8 +70,9 @@ from torch.overrides import TorchFunctionMode
 from triton.compiler.errors import CompileTimeAssertionFailure
 from triton.runtime.errors import OutOfResources, PTXASError
 
+from ttsem import _guard, harness, pidraces, sanitize
 from ttsem import judge_shapes as shapes
-from ttsem import sanitize
+from ttsem import memory as memory_mod
 from ttsem.judge_io import Channel, compare, tensor_bytes, v3_precision
 
 PACKAGE = Path(__file__).resolve().parent
@@ -292,6 +294,26 @@ def run_answer(args: argparse.Namespace, raw: Raw, channel: Channel, own: set[Pa
         answer.write_text(answer_run, encoding="utf-8")
     precision = "keep" if args.rule == "v3" else args.precision
     live: dict[str, Any] = {}  # what the account reads at any point: the session, the op counts
+    from triton.runtime.jit import JITFunction
+
+    guard = _guard.checker_integrity(
+        memory=memory_mod,
+        harness=harness,
+        pidraces=pidraces,
+        jitfunction=JITFunction,
+        os_module=os,
+    )
+
+    def on_launch(n: int) -> None:
+        """Before the semantics run this launch: the count over the channel (where a forged
+        run.json cannot reach it), and a check that the answer did not swap the checker's own
+        code since it ran."""
+        bad = guard.breach(skip=_guard.HOOK)
+        if bad is not None:
+            raise sanitize.Unjudged(
+                "tampered", f"the answer changed the judge's own code ({bad})", []
+            )
+        channel.launch(n)
 
     def account() -> None:
         """What the run did so far, into its account."""
@@ -323,7 +345,7 @@ def run_answer(args: argparse.Namespace, raw: Raw, channel: Channel, own: set[Pa
         finally:
             channel.stop(event)
 
-    with sanitize.session(source=str(answer), on_stop=on_stop) as state:
+    with sanitize.session(source=str(answer), on_stop=on_stop, on_launch=on_launch) as state:
         live["state"] = state
         watch_launches(state, GPUS.get(args.gpu, DEFAULT_GPU))
         report["stage"] = "reference"
@@ -333,6 +355,9 @@ def run_answer(args: argparse.Namespace, raw: Raw, channel: Channel, own: set[Pa
             torch.manual_seed(args.seed)
             reference = Model(*init_inputs)
 
+        # every legitimate install (the session hook, then watch_launches' wrapper on it) is now
+        # in place: snapshot the checker's own code before the answer is imported
+        guard.arm()
         report["stage"] = "load"
         module = load_answer(answer)
         entry = "ModelNew" if hasattr(module, "ModelNew") else "Model"
@@ -385,6 +410,19 @@ def run_answer(args: argparse.Namespace, raw: Raw, channel: Channel, own: set[Pa
                 report["sweep"] = {"runs": []}
                 sweep_configs(reference, candidate, get_inputs, seeds, args, report["sweep"], raw)
         account()
+        # before the account is trusted: a last check that the checker's own code (the launch hook
+        # included now) is the code it was, so an answer that swapped it without going through a
+        # watched launch is caught rather than believed
+        bad = guard.breach()
+        if bad is not None:
+            raw.write()
+            channel.stop(
+                {
+                    "kind": "unjudged",
+                    "why": "tampered",
+                    "message": f"the answer changed the judge's own code ({bad})",
+                }
+            )
     report.pop("stage")
 
 

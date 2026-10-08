@@ -13,9 +13,14 @@ exit handlers, and write any file its sandbox lets it write. So:
   untrusted (`read_untrusted`, `load_npz`: a regular file of bounded size, no link, no pickle,
   sizes checked before anything is allocated).
 
-What this does not stop: code that patches the runner inside its own process (the launch counts
-it reports, the channel itself) can still claim launches it never made, or send a `stop` of its
-own choosing. The values it returns are still compared with a reference it cannot touch.
+What this does not stop, short of the full separation planned for the next release: code that
+patches the runner inside its own process can still, in principle, forge what it reports. Two
+stop-gaps narrow that. Every event the runner sends carries a per-run token the channel picks
+before the answer is imported (`hello` is sent first, with it), so the judge counts only the
+runner's own events and ignores an answer's forgeries on the same pipe: an answer that leaves the
+process itself (`os._exit`) without the runner's token-bearing `done` is seen as not finished, not
+as a clean run, and a launch count the runner did not confirm over the channel is not trusted. The
+values a run returns are still compared with a reference it cannot touch.
 
 Imports only the standard library and numpy at module level: the judge's process reads its runs
 with it, the runners write with it.
@@ -29,6 +34,7 @@ import json
 import math
 import os
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -42,6 +48,9 @@ import numpy as np
 
 # the exit status of a run that a fault or an unjudged launch stopped
 EXIT_STOPPED = 3
+# per-launch events beyond this many are dropped from the pipe (the authoritative count still
+# rides on the `done`/`stop` event); a launch count this large is not what a judged answer does
+LAUNCH_EVENT_CAP = 8192
 # how much of a run the judge reads back: its events, a JSON report, its arrays
 EVENTS_LIMIT = 1 << 20
 REPORT_LIMIT = 64 << 20
@@ -53,31 +62,50 @@ ARRAYS_LIMIT = 4 << 30
 class Channel:
     """The runner's end of the pipe to the judge (`--events FD`), and the way out of the process.
     Both are taken when the runner starts, before any code under test is imported, so that a
-    later `os.write = ...` or `os._exit = ...` of that code does not reach them."""
+    later `os.write = ...` or `os._exit = ...` of that code does not reach them.
+
+    A random `token`, picked here before the answer is imported, is stamped on every event and
+    announced in the first one (`hello`). The judge takes the first `hello`'s token as the
+    runner's own and ignores any later event that does not carry it, so an answer writing JSON to
+    the same pipe cannot forge a `done`, a launch count or a `stop`: it does not know the token,
+    and its own `hello` is not the first."""
 
     def __init__(self, fd: int | None) -> None:
         self.fd = fd
         self._write, self._exit = os.write, os._exit
+        self.token = secrets.token_hex(8)
+        self.launches = 0
+        self.send({"event": "hello"})  # first, before any code under test runs
 
     def send(self, event: Mapping[str, Any]) -> None:
-        """One event, as a line of JSON. The newline before it ends whatever partial line the
-        code under test may have written to the same pipe."""
+        """One event, as a line of JSON, with this run's token. The newline before it ends
+        whatever partial line the code under test may have written to the same pipe."""
         if self.fd is None:
             return
-        data = b"\n" + json.dumps(dict(event), default=str).encode() + b"\n"
+        stamped = {**dict(event), "token": self.token}
+        data = b"\n" + json.dumps(stamped, default=str).encode() + b"\n"
         with contextlib.suppress(OSError):
             while data:
                 data = data[self._write(self.fd, data) :]
 
+    def launch(self, n: int) -> None:
+        """One launch executed, with the running count kept in the checker's state (not a value
+        the answer can set): the judge cross-checks it against the count the run's account claims.
+        Beyond `LAUNCH_EVENT_CAP` events the per-launch line is dropped; the final count still
+        rides on `done`."""
+        self.launches = int(n)
+        if self.launches <= LAUNCH_EVENT_CAP:
+            self.send({"event": "launch", "n": self.launches})
+
     def finish(self, code: int = 0) -> NoReturn:
-        """`done`, then out of the process without running anything else (no exit handler, no
-        finalizer, no thread of the code under test)."""
-        self.send({"event": "done"})
+        """`done` (with the launch count the checker counted), then out of the process without
+        running anything else (no exit handler, no finalizer, no thread of the code under test)."""
+        self.send({"event": "done", "launches": self.launches})
         self.end(code)
 
     def stop(self, event: Mapping[str, Any]) -> NoReturn:
         """A `stop` event (a fault, a launch that cannot be judged), then out of the process."""
-        self.send({**event, "event": "stop"})
+        self.send({**event, "event": "stop", "launches": self.launches})
         self.end(EXIT_STOPPED)
 
     def end(self, code: int) -> NoReturn:
@@ -145,18 +173,50 @@ def tensor_of(spec: Mapping[str, Any], arrays: Mapping[str, np.ndarray], key: st
 @dataclasses.dataclass
 class Ran:
     """A sandboxed run as the judge sees it: its exit status (None: killed at the timeout), the
-    last line of its stderr, and the events it sent."""
+    last line of its stderr, and the events it sent. Only events that carry the runner's own
+    token (the first `hello`'s) count as the runner's: an answer's forgeries on the same pipe are
+    ignored. A stream with no `hello` (an older runner, or the device control) has token None, and
+    its tokenless events match, so those keep working."""
 
     code: int | None
     tail: str
     events: list[dict[str, Any]]
 
+    def token(self) -> Any:
+        """The runner's token: the first `hello`'s, or None where none was sent."""
+        return next((e.get("token") for e in self.events if e.get("event") == "hello"), None)
+
+    def _mine(self, event: dict[str, Any]) -> bool:
+        return event.get("token") == self.token()
+
     def stop(self) -> dict[str, Any] | None:
-        """The first `stop` the run sent: final, whatever came after it."""
-        return next((e for e in self.events if e.get("event") == "stop"), None)
+        """The first `stop` the runner sent (with its token): final, whatever came after it."""
+        return next((e for e in self.events if e.get("event") == "stop" and self._mine(e)), None)
 
     def done(self) -> bool:
-        return any(e.get("event") == "done" for e in self.events)
+        """Whether the runner's own `done` arrived. An answer that leaves by `os._exit`, having
+        forged a `done` without the token, does not count as finished."""
+        return any(e.get("event") == "done" and self._mine(e) for e in self.events)
+
+    def confirmed_launches(self) -> int | None:
+        """The launch count the runner itself reported over the pipe (on its `done` or `stop`, or
+        the highest per-launch tally), or None where it reported none (an older runner, or the
+        device control, which send a tokenless `done` with no count): the count the judge trusts
+        over whatever the run's account claims."""
+        tok = self.token()
+        counts = [
+            int(e["launches"])
+            for e in self.events
+            if e.get("event") in ("done", "stop")
+            and e.get("token") == tok
+            and isinstance(e.get("launches"), int)
+        ]
+        counts += [
+            int(e["n"])
+            for e in self.events
+            if e.get("event") == "launch" and e.get("token") == tok and isinstance(e.get("n"), int)
+        ]
+        return max(counts) if counts else None
 
 
 def run_sandboxed(cmd: Sequence[str], env: Mapping[str, str], cwd: Path, timeout: int) -> Ran:

@@ -155,18 +155,29 @@ def test_the_batch_prints_a_line_per_answer_and_the_columns(batch: dict[str, Any
     )
 
 
+def test_an_answer_that_imports_the_judge_is_refused_before_it_runs(tmp_path: Path) -> None:
+    """`cheats` reads its task's file through `ttsem.__file__`: importing the judge is refused by
+    the static tamper scan, so the answer is `not_judged` and never runs (no sandbox needed, the
+    scan is in the parent)."""
+    item = {"id": "cheats", "task": str(TASK), "answer": str(FIXTURES / "answer_cheats.py")}
+    got = tb.judge_item(item, tmp_path, 300, sandbox=False)[tb.RECORD]
+    assert (got["verdict"], got["class"]) == ("not_judged", "tampered"), got
+    assert "imports the judge's own module `ttsem`" in got["message"]
+    assert not list(tmp_path.rglob("planted_ttsem_imported"))  # it never ran
+
+
 @needs_sandbox
-def test_an_answer_cannot_read_its_task_nor_reach_the_runs_after_it(tmp_path: Path) -> None:
-    """`cheats` runs first: its task's file is out of its sight (so it stays wrong), and neither
-    the module it leaves in its directory nor its cache entry reaches the reference's second run
-    or the answer judged after it, which run in directories and on caches of their own."""
-    done = judge_manifest(tmp_path, ("cheats", "ok"), jobs=1)
+def test_a_planted_module_and_cache_entry_reach_no_later_run(tmp_path: Path) -> None:
+    """`plants` runs first and leaves a `ttsem` package in its directory and a file in its cache;
+    neither reaches the reference's second run or the answer judged after it, which run in
+    directories and on caches of their own. (`plants` copies its input, so it is wrong.)"""
+    done = judge_manifest(tmp_path, ("plants", "ok"), jobs=1)
     assert done.returncode == 0, done.stderr
     out, rows = tmp_path / "out", rows_of(tmp_path / "out")
-    cheats = rows["cheats"][tb.RECORD]
-    assert (cheats["verdict"], cheats["class"]) == ("wrong", "wrong_result"), cheats
+    plants = rows["plants"][tb.RECORD]
+    assert (plants["verdict"], plants["class"]) == ("wrong", "wrong_result"), plants
     assert rows["ok"][tb.RECORD]["verdict"] == "verified"
-    own = out / judge.WORK / f"cheats.{tb.RECORD}"
+    own = out / judge.WORK / f"plants.{tb.RECORD}"
     assert (own / "ttsem" / "__init__.py").exists()  # left there (its cache entry went with it)
     assert not list(out.rglob("planted_ttsem_imported"))  # no later run imported it
     assert not (out / "ttsem").exists() and not (out / ".cache").exists()

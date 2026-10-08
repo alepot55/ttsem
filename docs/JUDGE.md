@@ -10,9 +10,11 @@ Triton launch executed by ttsem. It needs the Triton extra (see the README) and,
 [KernelBench](https://github.com/ScalingIntelligence/KernelBench) answer written with Triton: the
 answer's `ModelNew` against the task's `Model`, by KernelBench's own rule (five seeded trials,
 `allclose` at 1e-2; `--rule v3` for the KernelBench-v3 harness), every Triton launch executed by
-ttsem, large tasks shrunk to sizes an interpreter runs. The verdict is `verified` (exit 0), `wrong`,
-`unsafe` (out-of-bounds access, race between program instances, or memory nobody wrote, at the
-answer's own line), `no_kernel` (PyTorch does the work), `error`, `too_slow` or `not_judged`.
+ttsem, large tasks shrunk to sizes an interpreter runs. The verdict is `verified` (exit 0), `wrong`
+(where memory nobody wrote shows up, as NaN in the values), `unsafe` (an out-of-bounds access or a
+race between program instances at the answer's own line, or an operation with an undefined result:
+a division by zero, MIN / -1, two lanes of one store writing different values), `no_kernel`
+(PyTorch does the work), `error`, `too_slow` or `not_judged`.
 `--json` prints the whole record; `--manifest M.jsonl --out DIR` judges a batch (one verdict per id;
 `--rule`, `--precision` and `--gpu` apply to the lines that do not set them).
 
@@ -76,6 +78,33 @@ imported, and the run ends there, so an answer cannot catch the fault and fall b
 turn `unsafe` into `verified`. A run that ends normally reports `done` and exits at once, so no exit
 handler the answer registered runs after that report; and the only results the judge reads back
 from an earlier run are records it wrote itself, in a directory no run can see.
+
+## What the verdicts guarantee
+
+The answer runs in the same Python process as the semantics, so in principle its own code can reach
+into the checker. What each verdict holds against is therefore worth stating plainly.
+
+- `wrong` and `verified` are robust against an adversarial answer. The values are compared against a
+  reference computed in a separate sandbox the answer cannot touch, so no code the answer runs in
+  its own process makes a wrong result read as right.
+- `unsafe` and `no_kernel` hold against an answer that does not tamper with the judge's own code
+  inside its process. The fault and the launch count travel out of band, over a pipe carrying a
+  token the answer does not know, so a forged report or a caught exception does not turn `unsafe`
+  or `no_kernel` into `verified`.
+- Two stop-gaps catch the direct forms of tampering seen so far, short of the full separation
+  below. Before an answer runs, a static scan of its source refuses it (`not_judged`) when it
+  imports the judge, walks `sys.modules`, the garbage collector or the interpreter's frames, uses
+  `ctypes`, rewrites an object's `__code__` / `__class__` / `__dict__`, reads `/proc/self/fd`, calls
+  `os.write` / `os.dup2` / `os._exit`, or names the events pipe. While it runs, the judge snapshots
+  its own critical callables (the memory checker, the semantics' entry points, the race finder, the
+  launch hook) and refuses the run (`not_judged`) if any was swapped before a launch is executed or
+  before the account is trusted. An answer that leaves the process itself without the runner's
+  token-bearing `done`, or whose launch count does not match the count the judge saw over the
+  channel, is `not_judged` (`forged`), not read as a clean run.
+- Full separation of the answer from the checker (running the semantics in a process the answer's
+  code cannot reach at all) is planned for the next release. Until then, an answer that defeats both
+  stop-gaps at once could in principle forge an `unsafe` or `no_kernel` result; it still cannot forge
+  `wrong` or `verified`, which rest on the out-of-sandbox reference.
 
 What a run can still read is the host's filesystem, read-only, except the hidden directories above:
 system files, your world-readable files, other checkouts. It cannot reach the network, your home

@@ -6,9 +6,10 @@
 ``JITFunction.run`` is replaced for the run. Each launch is recorded from the CPU tensors it was
 given, compiled to TTIR for the target, executed by the level-1 semantics on a copy of their
 storage, and what it computed is written back into the tensors, so the program goes on with the
-kernel's results. A launch that reads or writes outside the tensors it was given, or uses a
-value the semantics leaves undefined, stops the program with a :class:`KernelFault`: the op, the
-buffer, the distance, in words the author of the kernel (a person or an agent) can act on.
+kernel's results. A launch that reads or writes outside the tensors it was given, or performs an
+operation with an undefined result (a division by zero, two lanes of one store writing different
+values), stops the program with a :class:`KernelFault`: the op, the buffer, the distance, in words
+the author of the kernel (a person or an agent) can act on.
 
 A GPU forgives most of these: the allocator rounds sizes up, so a store a few elements past the
 end lands in padding and every test passes. ``TRITON_INTERPRET=1`` does not forgive them and
@@ -107,10 +108,23 @@ _ALIAS_USE = re.compile(r"loc\((#loc\d*)\)\s*$")
 _ALIAS_DEF = re.compile(r"^(#loc\d*) = loc\((.*)\)\s*$", re.M)
 
 
-def _source_of(op_text: str, ir_text: str = "") -> tuple[str, int, str]:
+def _line_of(path: str, line: int) -> str:
+    """The stripped text of `line` in `path`, or `""` where the file cannot be read there."""
+    try:
+        return Path(path).read_text().splitlines()[line - 1].strip()
+    except (OSError, IndexError):
+        return ""
+
+
+def _source_of(op_text: str, ir_text: str = "", kernel_file: str = "") -> tuple[str, int, str]:
     """(file, line, text of the line) the op was compiled from, read off its `loc`. The printer
     writes most locations as aliases (`loc(#loc7)`, defined at the end of the module, possibly
-    through a name: `#loc7 = loc("x"(#loc3))`), so the module's text resolves them."""
+    through a name: `#loc7 = loc("x"(#loc3))`), so the module's text resolves them.
+
+    The path in the `loc` is baked into the IR at compile time. When a Triton cache was filled from
+    another checkout, that path is the other checkout's and does not exist here, so the line's text
+    cannot be read from it; the line numbers still match the kernel's own file, so `kernel_file`
+    (``JITFunction.fn.__code__.co_filename``) is read at the same line instead."""
     m = _LOC.search(op_text)
     use = _ALIAS_USE.search(op_text)
     if m is None and use is not None and ir_text:
@@ -126,15 +140,20 @@ def _source_of(op_text: str, ir_text: str = "") -> tuple[str, int, str]:
     if m is None:
         return "", 0, ""
     path, line = m.group(1), int(m.group(2))
-    try:
-        text = Path(path).read_text().splitlines()[line - 1].strip()
-    except (OSError, IndexError):
-        text = ""
+    text = _line_of(path, line)
+    if not text and kernel_file and kernel_file != path:
+        # the loc path is unreadable (a cache from another checkout); the kernel's own file has
+        # the same lines
+        alt = _line_of(kernel_file, line)
+        if alt:
+            return kernel_file, line, alt
     return path, line, text
 
 
-def _with_source(fault: Fault, ir_text: str = "") -> Fault:
-    fault.source_file, fault.source_line, fault.source_text = _source_of(fault.op, ir_text)
+def _with_source(fault: Fault, ir_text: str = "", kernel_file: str = "") -> Fault:
+    fault.source_file, fault.source_line, fault.source_text = _source_of(
+        fault.op, ir_text, kernel_file
+    )
     return fault
 
 
@@ -221,7 +240,11 @@ def _drop_raw(entry: Any, inside: np.ndarray) -> np.ndarray:
 
 
 def _race_fault(
-    record: harness.LaunchRecord, race: pidraces.PidRace, launch: int, ir_text: str = ""
+    record: harness.LaunchRecord,
+    race: pidraces.PidRace,
+    launch: int,
+    ir_text: str = "",
+    kernel_file: str = "",
 ) -> Fault:
     """The race as a fault on the storing side, with the buffer and the element it is about."""
     buffer, element = None, None
@@ -233,7 +256,7 @@ def _race_fault(
     (pid_a, kind_a, op_a), (pid_b, kind_b, op_b) = sides
     # a silent store (`s`) leaves the bytes it found, but another instance may leave others
     words = {"r": "loads", "w": "stores to", "s": "stores to", "a": "atomically updates"}
-    other = _source_of(op_b, ir_text)
+    other = _source_of(op_b, ir_text, kernel_file)
     other_where = f"{Path(other[0]).name}:{other[1]}: {other[2]}" if other[1] else op_b[:120]
     detail = (
         f"program instances {pid_a} and {pid_b} both touch element {element} of `{buffer}`: "
@@ -270,7 +293,7 @@ def message(fault: Fault) -> str:
             "disjoint elements, or use an atomic update (`tl.atomic_add` and the like) for the "
             "shared ones."
         )
-    return f"{where}: `{op}` uses a value the semantics leaves undefined: {fault.detail}"
+    return f"{where}: `{op}` is an operation with an undefined result: {fault.detail}"
 
 
 def _write_back(record: harness.LaunchRecord, execution: harness.Execution) -> None:
@@ -603,6 +626,7 @@ def session(
     source: str = "<program>",
     cuda_is_cpu: bool = True,
     on_stop: Callable[[KernelFault | Unjudged], object] | None = None,
+    on_launch: Callable[[int], object] | None = None,
     races: str = "raise",
 ) -> Iterator[Session]:
     """While open, every Triton launch of this process is executed by the semantics on the CPU
@@ -617,7 +641,12 @@ def session(
     it is raised. On a GPU the launch would not raise at all, so code that catches the exception
     and goes on (computing the result some other way) would hide the fault from whoever reads
     the program's outcome: a judge records the exception there, out of the program's reach, and
-    ends the process without returning (`ttsem._judge_runner`)."""
+    ends the process without returning (`ttsem._judge_runner`).
+
+    ``on_launch`` is called with the launch count (``Session.launches`` after this launch) once
+    the launch is recorded and before its IR is read or executed: a judge sends the count to its
+    parent over a channel the answer cannot reach, and checks the checker's own code is unchanged
+    before the semantics run it; it may raise :class:`Unjudged` to stop the run there."""
     if races not in ("raise", "record", "off"):
         raise ValueError(f"races: {races!r}")
     harness._install_fake_driver(cc)
@@ -643,6 +672,17 @@ def session(
         record = recorded.record
         _check_shared(state, record)  # a kernel the GPU could not launch is not a launch
         state.launches += 1
+        # the kernel's own source file, whose line numbers match the `loc` even when the IR came
+        # from a cache another checkout filled (its baked-in path does not exist here)
+        kernel_file = ""
+        try:
+            kernel_file = self.fn.__code__.co_filename
+        except (AttributeError, TypeError):
+            pass
+        # before the IR is read or the semantics run it: the judge's count over its own channel,
+        # and a check that the checker's own code was not swapped by the answer (may raise Unjudged)
+        if on_launch is not None:
+            on_launch(state.launches)
         ir_text = harness.ir_for_launch(record, "ttir", target)
         try:
             many = int(np.prod([int(g) for g in record.grid])) > 1 and races != "off"
@@ -651,11 +691,13 @@ def session(
             buffer, past, before = _locate(record, exc)
             kind = "oob_write" if exc.kind == "write" else "oob_read"
             fault = Fault(kind, launch, record.fn_name, _op_of(exc), buffer, past, before, str(exc))
-            raise KernelFault(_with_source(fault, ir_text)) from None
+            raise KernelFault(_with_source(fault, ir_text, kernel_file)) from None
         except values.Poison as exc:
             raise KernelFault(
                 _with_source(
-                    Fault("poison", launch, record.fn_name, _op_of(exc), detail=str(exc)), ir_text
+                    Fault("poison", launch, record.fn_name, _op_of(exc), detail=str(exc)),
+                    ir_text,
+                    kernel_file,
                 )
             ) from None
         if execution.failure is not None:
@@ -669,7 +711,9 @@ def session(
         )
         race = pidraces.find_race(log) if many else None
         if race is not None:
-            fault = _with_source(_race_fault(record, race, launch, ir_text), ir_text)
+            fault = _with_source(
+                _race_fault(record, race, launch, ir_text, kernel_file), ir_text, kernel_file
+            )
             if races == "raise":
                 raise KernelFault(fault)
             state.races.append(fault)
@@ -735,13 +779,47 @@ def run_script(
     return Report("ok", state.launches, races_unchecked=state.races_unchecked)
 
 
+class _RaceSummary:
+    """A pytest plugin that, at the end of the session, says how many launches were too large to
+    be checked for races (over ``Memory.access_budget`` accesses): those launches were run and
+    their values compared, but no race between program instances was looked for in them, so the
+    count must not pass silently. The line goes to the terminal summary and, as a fallback for a
+    run with no terminal reporter, to stderr."""
+
+    def __init__(self, state: Session) -> None:
+        self.state = state
+        self.reported = False
+
+    def _line(self) -> str:
+        from ttsem.memory import Memory
+
+        budget = Memory().access_budget
+        n = self.state.races_unchecked
+        return (
+            f"ttsem: {n} launch(es) too large to be checked for races "
+            f"(over {budget:,} memory accesses each): run and compared, but not race-checked"
+        )
+
+    def pytest_terminal_summary(self, terminalreporter: Any, *args: Any, **kwargs: Any) -> None:
+        if self.state.races_unchecked:
+            terminalreporter.write_line(self._line())
+            self.reported = True
+
+
 def run_pytest(args: list[str], cc: int = harness.DEFAULT_CC) -> int:
     """``pytest args...`` in this process with every launch under the semantics: a kernel fault
-    is the failure of the test that launched it, with the message for the author as its text."""
+    is the failure of the test that launched it, with the message for the author as its text.
+    A launch too large for the race check is run and compared all the same; its count is printed
+    once at the end of the session (`_RaceSummary`), in the terminal summary, never dropped without
+    a word (a run with no terminal reporter gets the same line on stderr)."""
     import pytest
 
-    with session(cc, "<pytest>"):
-        return int(pytest.main(list(args)))
+    with session(cc, "<pytest>") as state:
+        summary = _RaceSummary(state)
+        code = int(pytest.main(list(args), plugins=[summary]))
+    if state.races_unchecked and not summary.reported:
+        sys.stderr.write(summary._line() + "\n")
+    return code
 
 
 def main() -> int:

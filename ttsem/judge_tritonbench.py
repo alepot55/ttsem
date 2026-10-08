@@ -23,9 +23,12 @@ The verdicts are those of ``python -m ttsem judge``, and `class` keeps the finer
   absolute tolerance scales with the reference's largest finite value, when that is below 1, down
   to 1e-6.
 - wrong: other values, another structure, shape or dtype, or an exception the test swallowed into
-  its results (`wrong_result`)
-- unsafe: out-of-bounds access, race between program instances, or use of memory nobody wrote,
-  with the kernel and its source line (`oob_read`, `oob_write`, `race`, `poison`)
+  its results (`wrong_result`). Memory nobody wrote is filled with NaN, so a kernel that reads it
+  shows up here, as NaN in the values
+- unsafe: an out-of-bounds access or a race between program instances (at the kernel's line), or
+  an operation with an undefined result (a division by zero, MIN / -1, two lanes of one store
+  writing different values), with the kernel and its source line (`oob_read`, `oob_write`, `race`,
+  `poison`)
 - no_kernel: the results are right, at any of the three tolerances, and no Triton kernel was
   launched (`verified_no_kernel`)
 - error: the file raised (`call_error`: a module that exists nowhere is the answer's error too),
@@ -34,13 +37,14 @@ The verdicts are those of ``python -m ttsem judge``, and `class` keeps the finer
 - not_judged: something this machine lacks (`environment`: torch or a known package missing, a
   function torch removed, an operator CPU torch does not have, or an error the reference file
   raises word for word too), an op ttsem does not model or its own error (`unsupported`, `error`,
-  `tool_error`), the memory cap (`memory`), a task file with no separator (`bad_task`); or a task
-  that cannot be compared by value: the reference run is not `ok` or keeps objects that are not
-  values (`ran_reference_unjudged`), keeps nothing (`ran_reference_returns_nothing`), two
-  reference runs under two poison patterns differ, so it returns memory it never wrote
-  (`ran_reference_unwritten`), the task or the answer draws random numbers inside the operator
-  (`ran_random_task`), or the answer faults where the task's own test drives the reference into a
-  fault too (`fault_also_in_reference`)
+  `tool_error`), the memory cap (`memory`), a task file with no separator (`bad_task`), the answer
+  reaching into the judge or not finishing through it (`tampered`); or a task that cannot be
+  compared by value: the reference run is not `ok` or keeps objects that are not values
+  (`ran_reference_unjudged`), keeps nothing (`ran_reference_returns_nothing`), two reference runs
+  under two poison patterns differ, so it returns memory it never wrote (`ran_reference_unwritten`),
+  the task or the answer draws random numbers inside the operator (`ran_random_task`), or the
+  answer faults where the task's own test drives the reference into a fault too
+  (`fault_also_in_reference`)
 
 The reference runs once per task (and a second time, with the second poison pattern, when an
 answer's results are to be compared with it), into OUT/reference/, with a Triton cache of its own
@@ -72,7 +76,7 @@ from typing import Any
 
 import numpy as np
 
-from ttsem import judge
+from ttsem import _guard, judge
 from ttsem.judge_io import Ran, load_npz, printable, read_json, run_sandboxed
 
 RUNNER = "ttsem._tritonbench_runner"
@@ -87,9 +91,10 @@ FAULTS = ("oob_read", "oob_write", "race", "poison")
 # what a run's report may say besides `ok`, a fault, `call_error`, `crash` and `timeout`: the
 # runner's own words for what the tool cannot judge (any other word is a report the runner did
 # not write)
-UNJUDGED_RUNS = ("unsupported", "error", "memory", "tool_error")
-# what a run that stopped at a launch the semantics cannot judge says (`sanitize.Unjudged`)
-STOPPED_RUNS = ("unsupported", "error")
+UNJUDGED_RUNS = ("unsupported", "error", "memory", "tool_error", "tampered")
+# what a run that stopped at a launch the semantics cannot judge says (`sanitize.Unjudged`): a
+# launch the semantics does not model, or a file that swapped the checker's own code (`tampered`)
+STOPPED_RUNS = ("unsupported", "error", "tampered")
 # the task's operator, read as text
 RNG = re.compile(r"dropout|tl\.rand|torch\.rand|torch\.bernoulli|random\.|manual_seed|\bseed\b")
 # the answer's operator, its code only (`code_only`): what draws random numbers, or reseeds the
@@ -114,6 +119,7 @@ MALFORMED = judge.MALFORMED
 UNSAFE = FAULTS
 NOT_JUDGED = (
     "unsupported", "timeout", "memory", "tool_error", "crash", "error", "environment", "bad_task",
+    "tampered", "forged",
 )  # fmt: skip
 NOT_COMPARED = (
     "ran_random_task",
@@ -127,6 +133,19 @@ NOT_COMPARED = (
 
 class BadTask(ValueError):
     """A task file that is not one of TritonBench's: no separator between operator and test."""
+
+
+def tamper_reason(answer: Path) -> str | None:
+    """Why this answer must not be run, read off its code (before the separator) without running
+    it (`_guard`), or None: an answer that reaches into the judge is `not_judged`, before it runs.
+    Only the answer's own code is scanned; the task's test, added after the separator, is the
+    benchmark's."""
+    try:
+        source = operator_part(answer.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    reason = _guard.tamper_scan(source, judge.FORBIDDEN_MODULES)
+    return None if reason is None else f"the answer reaches into the judge: {reason}"
 
 
 def operator_part(text: str) -> str:
@@ -275,9 +294,24 @@ def run_report(ran: Ran, work: Path, script: Path, timeout: int) -> dict[str, An
         return {"file": script.name, "run": "timeout", "seconds": timeout}
     found = read_json(work / "run.json")
     if not ran.done():
+        if isinstance(found, dict):
+            # a report is there, but the runner's own token-bearing `done` never arrived: the file
+            # left the process itself (os._exit), having written or forged the report
+            return {
+                "file": script.name, "run": "tampered",
+                "message": "the run wrote a report but did not finish through the judge",
+            }  # fmt: skip
         return {"file": script.name, "run": "crash", "message": ran.tail}
     if not isinstance(found, dict):
         return {"file": script.name, "run": "crash", "message": "unreadable report"}
+    confirmed = ran.confirmed_launches()
+    claimed = found.get("launches")
+    if confirmed is not None and isinstance(claimed, int) and claimed != confirmed:
+        return {
+            "file": script.name, "run": "tampered",
+            "message": f"the run claims {claimed} launch(es); the judge counted {confirmed} over "
+            "its own channel",
+        }  # fmt: skip
     return found
 
 
@@ -507,6 +541,13 @@ def judge_item(
     if kept is not None:
         return {**item, RECORD: kept}
     task, answer = Path(item["task"]), Path(item["answer"])
+    reason = tamper_reason(answer)
+    if reason is not None:
+        bad = {"answer": answer.name, "verdict": "not_judged", "class": "tampered"}
+        record = {**bad, "launches": 0, "message": reason}
+        with contextlib.suppress(OSError):
+            record_path.write_text(json.dumps(record, indent=1))
+        return {**item, RECORD: record}
     work = judge.fresh(out / judge.WORK / f"{item['id']}.{RECORD}")
     script = work / f"{item['id']}.{RECORD}.py"
     try:

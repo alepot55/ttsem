@@ -3,9 +3,10 @@
 [![CI](https://github.com/alepot55/ttsem/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/alepot55/ttsem/actions/workflows/ci.yml)
 
 Run the tests of your Triton kernels on a machine with no GPU and get the faults a GPU run hides:
-a write past the end of a tensor, two program instances that touch the same element, a read of
-memory nobody wrote. Each one fails its test at the line of your kernel. ttsem compiles every
-launch with Triton's own frontend and executes the IR it produces on the CPU.
+a write past the end of a tensor, two program instances that touch the same element, an operation
+with an undefined result. Each one fails its test at the line of your kernel. A read of memory
+nobody wrote is filled with NaN instead, so it shows up in the values. ttsem compiles every launch
+with Triton's own frontend and executes the IR it produces on the CPU.
 
 ```console
 $ pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
@@ -232,11 +233,14 @@ that are not; [LEDGER.md][ledger] describes each.
 `python -m ttsem judge task.py answer.py` judges a [KernelBench][kb] answer written with Triton on a
 CPU, by KernelBench's own rule (five seeded trials, `allclose` at 1e-2), with every launch executed
 by ttsem. With `--tritonbench` it judges a [TritonBench][tb] answer against its task's reference, by
-value. The verdict is `verified` (exit 0), `wrong`, `unsafe` (out of bounds, race, or memory nobody
-wrote, at the answer's line), `no_kernel` (PyTorch does the work), `error`, `too_slow` or
-`not_judged`. Each answer is model-written code and runs in its own `bwrap` sandbox, and the verdict
-is computed outside it, from the run's raw outputs. The rules, the batch mode, the classes and what
-the sandbox hides are in [docs/JUDGE.md][judge].
+value. The verdict is `verified` (exit 0), `wrong` (where memory nobody wrote shows up, as NaN in
+the values), `unsafe` (an out-of-bounds access, a race, or an operation with an undefined result,
+at the answer's line), `no_kernel` (PyTorch does the work), `error`, `too_slow` or `not_judged`.
+Each answer is model-written code and runs in its own `bwrap` sandbox, and the verdict is computed
+outside it, from the run's raw outputs. `wrong` and `verified` are robust against an adversarial
+answer; `unsafe` and `no_kernel` hold against an answer that does not tamper with the judge inside
+its own process. The rules, the batch mode, the classes, the sandbox and the integrity guarantee
+are in [docs/JUDGE.md][judge].
 
 ## How it was built
 

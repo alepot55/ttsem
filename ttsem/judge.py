@@ -21,9 +21,11 @@ One verdict per pass:
 
 - verified: every trial within atol/rtol, no fault
 - wrong: values or shape differ from the reference in some trial, or under another autotune config
-  (one the autotuner could pick: not one it skips, nor one its `prune_configs_by` drops)
-- unsafe: out-of-bounds access, race between program instances, or use of memory nobody wrote,
-  with the kernel and its source line
+  (one the autotuner could pick: not one it skips, nor one its `prune_configs_by` drops). Memory
+  nobody wrote is filled with NaN, so a kernel that reads it shows up here, as NaN in the values
+- unsafe: an out-of-bounds access or a race between program instances (at the kernel's line), or
+  an operation with an undefined result (a division by zero, MIN / -1, two lanes of one store
+  writing different values), with the kernel and its source line
 - no_kernel: the answer launches no Triton kernel (PyTorch does the work: a known reward hack)
 - error: the answer does not import, build or run (`shared_memory`: every config of one of its
   autotuners was skipped, and the one it falls back to needs more shared memory than the GPU
@@ -31,7 +33,8 @@ One verdict per pass:
   launch outside an autotuner is not checked against the limit), or its process died (`crash`)
 - too_slow: the timeout expired
 - not_judged: the tool cannot say (an op ttsem does not model, its own error, the memory cap,
-  a full /tmp, a task that does not run, a run that stopped before the trials the rule asks for)
+  a full /tmp, a task that does not run, a run that stopped before the trials the rule asks for),
+  or the answer reached into the judge (`tampered`) or did not finish through it (`forged`)
 
 `--gpu` sets only the shared-memory limit: every launch is compiled for sm_90a, so whether an
 autotune config compiles (the autotuner skips one that raises `CompileTimeAssertionFailure` or
@@ -88,6 +91,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from ttsem import _guard
 from ttsem.judge_io import (
     Ran,
     compare,
@@ -100,6 +104,9 @@ from ttsem.judge_io import (
 
 VERDICTS = ("verified", "wrong", "unsafe", "no_kernel", "error", "too_slow", "not_judged")
 RUNNER = "ttsem._judge_runner"
+# the judge's own top-level module the static tamper scan refuses an answer to import: a model's
+# answer writes a Triton kernel and never reaches into the checker
+FORBIDDEN_MODULES = frozenset({"ttsem"})
 # the directory this `ttsem` is imported from, so the sandboxed process imports this very copy
 ROOT = Path(__file__).resolve().parent.parent
 # under OUT: the reference runs, and each answer's own directory
@@ -109,7 +116,7 @@ KINDS = {
     "oob_read": "out-of-bounds read",
     "oob_write": "out-of-bounds write",
     "race": "race between program instances",
-    "poison": "use of a value nobody wrote",
+    "poison": "an operation with an undefined result",
 }
 
 NO_BWRAP = """\
@@ -441,6 +448,18 @@ def reference_of(account: Any, arrays: Mapping[str, Any]) -> dict[str, Any]:
     return found | {key: account[key] for key in ("scaling", "shapes") if key in account}
 
 
+def tamper_reason(answer: Path) -> str | None:
+    """Why this answer must not be run, read off its source without running it (`_guard`), or
+    None: an answer that reaches into the judge (imports it, walks the frames or the module table,
+    rewrites an object's code, leaves the process itself) is `not_judged`, before it runs."""
+    try:
+        source = answer.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    reason = _guard.tamper_scan(source, FORBIDDEN_MODULES)
+    return None if reason is None else f"the answer reaches into the judge: {reason}"
+
+
 def judge_one(
     task: Path,
     answer: Path,
@@ -463,6 +482,11 @@ def judge_one(
     report.unlink(missing_ok=True)  # judged under another rule, precision or GPU: judged again
     out = report.parent.resolve()
     head = {"answer": answer.name, "scale": scale, "launches": 0, "settings": settings}
+    reason = tamper_reason(answer)
+    if reason is not None:
+        record = {**head, "verdict": "not_judged", "why": "tampered", "message": reason}
+        report.write_text(json.dumps(record, indent=1))
+        return record
     reference, problem = reference_run(task, out, scale, settings, timeout, sandbox, strict)
     if reference is None:
         record = {**head, **problem}
@@ -515,8 +539,24 @@ def verdict_of(
     stop = ran.stop()
     if stop is None and ran.code is None:
         return {**head, "verdict": "too_slow", "seconds": timeout}
-    if stop is None and (account is None or not ran.done()):
+    if stop is None and account is None:
         return {**head, "verdict": "error", "why": "crash", "message": ran.tail}
+    if stop is None and not ran.done():
+        # a report is there, but the runner's own `done` (carrying its token) never arrived: the
+        # answer left the process itself, having written or forged the report (os._exit)
+        return {
+            **head, "verdict": "not_judged", "why": "forged",
+            "message": "the run wrote a report but did not finish through the judge",
+        }  # fmt: skip
+    if stop is None:
+        confirmed = ran.confirmed_launches()
+        claimed = account.get("launches") if account is not None else None
+        if confirmed is not None and isinstance(claimed, int) and claimed != confirmed:
+            return {
+                **head, "verdict": "not_judged", "why": "forged",
+                "message": f"the run claims {claimed} launch(es); the judge counted {confirmed} "
+                "over its own channel",
+            }  # fmt: skip
     try:
         if account is not None:
             arrays = load_npz(work / "run.npz") if (work / "run.npz").exists() else {}

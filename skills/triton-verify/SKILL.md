@@ -1,6 +1,6 @@
 ---
 name: triton-verify
-description: Use when writing, changing or reviewing a Triton GPU kernel and no GPU is available (or before trusting a GPU run) - runs the kernel's tests on the CPU under an executable semantics and reports out-of-bounds accesses, races between program instances and uninitialised reads with the kernel's own source line
+description: Use when writing, changing or reviewing a Triton GPU kernel and no GPU is available (or before trusting a GPU run) - runs the kernel's tests on the CPU under an executable semantics and reports out-of-bounds accesses and races between program instances with the kernel's own source line, while a read of memory nobody wrote shows up as NaN in the result
 ---
 
 # Verify a Triton kernel without a GPU

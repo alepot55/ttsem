@@ -1,8 +1,9 @@
 name: "ttsem: Triton tests without a GPU"
 description: >
   Run a pytest suite written for a GPU on a CPU runner: every Triton launch is compiled by the
-  real frontend and executed by ttsem's semantics; out-of-bounds accesses, races between program
-  instances and reads of uninitialised memory fail the test with the kernel's own source line.
+  real frontend and executed by ttsem's semantics; out-of-bounds accesses and races between
+  program instances fail the test with the kernel's own source line, and a read of memory nobody
+  wrote shows up as NaN in the result.
 branding:
   icon: check-circle
   color: blue

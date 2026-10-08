@@ -64,6 +64,21 @@ def test_a_pytest_suite_written_for_a_gpu_fails_where_the_kernel_is_wrong(capsys
     assert code != 0
     assert "1 failed, 1 passed" in out  # n = 1024 hides it, n = 1000 does not
     assert "24 element(s) past the end" in out and "suite_no_mask.py:15" in out
+    assert "too large to be checked for races" not in out  # no oversized launch here
+
+
+def test_a_pytest_suite_reports_launches_too_large_for_the_race_check(capsys) -> None:
+    """A launch over the race-check budget (over 4,000,000 accesses) is run and its values
+    checked, so the test passes, but the session says how many such launches there were, in the
+    terminal summary, rather than dropping the count without a word (item 7)."""
+    code = sanitize.run_pytest(
+        [str(AGENTS / "suite_big_launch.py"), "-q", "-p", "no:cacheprovider"]
+    )
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "1 passed" in out
+    assert "1 launch(es) too large to be checked for races" in out
+    assert "4,000,000" in out
 
 
 def test_memory_from_torch_empty_is_poisoned_so_reading_it_shows(capsys) -> None:
@@ -506,3 +521,47 @@ def test_a_block_cap_shrinks_the_block_of_a_direct_launch_whose_grid_reads_it(
     assert torch.equal(got[("", True)], torch.zeros(64))
     assert torch.equal(got[("16", True)], torch.arange(4).repeat_interleave(16).float())
     assert torch.equal(got[("16", False)], torch.zeros(64))
+
+def test_source_line_falls_back_to_the_kernels_own_file_when_the_loc_path_is_gone(
+    tmp_path: Path,
+) -> None:
+    """When the `loc` baked into the IR points at a path this checkout does not have (a Triton
+    cache filled from another checkout), the line's text cannot be read from it; the kernel's own
+    file has the same line numbers, so it is read there instead (bug B)."""
+    kernel = tmp_path / "here" / "k.py"
+    kernel.parent.mkdir()
+    kernel.write_text("import triton\n# a pad line\nx = tl.load(ptr)  # faulting line 3\n")
+    gone = "/a/checkout/that/is/not/here/k.py"
+    op = f'tt.load %x loc("{gone}":3:9)'
+    # the loc path is unreadable: fall back to the kernel's own file at the same line
+    path, line, text = sanitize._source_of(op, "", str(kernel))
+    assert (line, text, path) == (3, "x = tl.load(ptr)  # faulting line 3", str(kernel))
+    # without the kernel file there is nothing to read: the old behaviour, an empty source line
+    path0, line0, text0 = sanitize._source_of(op, "", "")
+    assert (line0, text0, path0) == (3, "", gone)
+
+
+def test_a_fault_from_a_cache_filled_elsewhere_still_names_the_line(tmp_path: Path) -> None:
+    """End to end: compile a no-mask kernel in one directory, then delete it and resolve the same
+    op against a copy in another directory. The loc's own path is gone, but the copy's line
+    numbers match, so the fault still carries its source line."""
+    first = tmp_path / "checkoutA"
+    first.mkdir()
+    (first / "k.py").write_text((AGENTS / "add_no_load_mask.py").read_text())
+    report = sanitize.run_program(first / "k.py")
+    assert report.verdict == "oob_read" and report.fault is not None
+    op, line, had = report.fault.op, report.fault.source_line, report.fault.source_text
+    assert had  # with the file present, the line was read
+    second = tmp_path / "checkoutB"
+    second.mkdir()
+    (second / "k.py").write_text((AGENTS / "add_no_load_mask.py").read_text())
+    import shutil
+
+    shutil.rmtree(first)  # the loc's own path no longer exists
+    # resolve the recorded op: nothing without a fallback, the copy's line with it
+    _, line_gone, text_gone = sanitize._source_of(op, "", "")
+    _, line_back, text_back = sanitize._source_of(op, "", str(second / "k.py"))
+    if text_gone == "":  # the loc held an absolute path that is now gone
+        assert line_back == line and text_back == had
+    else:  # a relative or still-present path: the line was there all along
+        assert text_back == had
