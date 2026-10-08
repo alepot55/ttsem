@@ -108,6 +108,14 @@ def test_the_module_entry_point_routes_demo() -> None:
     assert result.stdout.rstrip().splitlines()[-1] == CULPRIT_LINE
 
 
+def test_help_prints_the_usage() -> None:
+    for flag in ("-h", "--help"):
+        result = subprocess.run(
+            [sys.executable, "-m", "ttsem", flag], capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0 and "python -m ttsem judge" in result.stdout
+
+
 def test_an_unknown_subcommand_is_refused() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "ttsem", "nonsense"], capture_output=True, text=True, check=False

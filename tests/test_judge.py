@@ -144,6 +144,21 @@ def test_one_pair_as_json_through_the_package_entry_point(tmp_path: Path) -> Non
     assert (tmp_path / "answer_ok.scaled.json").exists()
 
 
+def test_a_file_that_is_not_there_is_refused_before_anything_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    started: list[Any] = []
+    monkeypatch.setattr(judge, "judge_one", lambda *a, **k: started.append(a))
+    for argv in (
+        [str(TASK), str(tmp_path / "answer.py")],
+        ["--manifest", str(tmp_path / "m.jsonl"), "--out", str(tmp_path / "out")],
+    ):
+        with pytest.raises(SystemExit) as stop:
+            judge.main(argv)
+        assert stop.value.code == 2 and "no such file" in capsys.readouterr().err
+    assert not started
+
+
 def test_without_bwrap_the_judge_refuses_to_run_anything(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

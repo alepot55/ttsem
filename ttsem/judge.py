@@ -806,6 +806,9 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--json is for one pair; a batch writes its records to OUT/rows.jsonl")
     if args.strict and args.no_sandbox:
         ap.error("--strict narrows the sandbox: not with --no-sandbox")
+    for path in (args.manifest,) if args.manifest is not None else (args.task, args.answer):
+        if not path.is_file():
+            ap.error(f"{path}: no such file")
     if args.tritonbench:
         given = [
             f"--{k.replace('_', '-')}" for k in KERNELBENCH_ONLY if getattr(args, k) is not None

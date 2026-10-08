@@ -76,6 +76,9 @@ def main(argv: list[str] | None = None) -> int:
         from ttsem.judge import main as judge_main
 
         return judge_main(argv[1:])
+    if argv and argv[0] in ("-h", "--help"):
+        sys.stdout.write(USAGE)
+        return 0
     if argv:
         sys.stderr.write(f"unknown command {argv[0]!r}\n\n")
         sys.stderr.write(USAGE)
