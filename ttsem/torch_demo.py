@@ -2,8 +2,8 @@
 
 TorchInductor turns a PyTorch program into Triton kernels. When a pass gets aliasing wrong, the
 kernel reads memory that another program instance of the same launch writes: on a GPU the
-instances run at the same time, the result depends on the schedule, and nothing fails. Each
-program below compiles to such a kernel on the torch releases that have the bug.
+instances run at the same time, the result depends on the schedule, and a test may well pass.
+Each program below compiles to such a kernel on the torch releases that have the bug.
 
 No GPU is needed because Inductor also emits Triton for CPU tensors (``cpu_backend = "triton"``,
 the same lowering and the same passes), and :func:`ttsem.sanitize.session` executes every launch

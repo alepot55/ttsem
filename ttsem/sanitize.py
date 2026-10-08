@@ -266,9 +266,10 @@ def message(fault: Fault) -> str:
     if fault.kind == "race":
         return (
             f"{where}: `{op}`: {fault.detail} Program instances run in any order and at the same "
-            "time, so the result depends on the schedule; run one after the other it looks "
-            "right, and an output comparison cannot see it. Make the instances write disjoint "
-            "elements, or use an atomic update (`tl.atomic_add` and the like) for the shared ones."
+            "time, so the result depends on the schedule: one order may give the right values "
+            "and another not, so an output comparison may not see it. Make the instances write "
+            "disjoint elements, or use an atomic update (`tl.atomic_add` and the like) for the "
+            "shared ones."
         )
     return f"{where}: `{op}` uses a value the semantics leaves undefined: {fault.detail}"
 

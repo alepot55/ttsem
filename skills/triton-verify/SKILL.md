@@ -20,7 +20,8 @@ What you get that a GPU run does not give you:
 - `oob_write` / `oob_read`: the line, the tensor argument, how many elements past the end. A GPU
   hides these because allocations are rounded up.
 - `race`: two program instances touch the same element and the result depends on the schedule.
-  The output is right when instances run one after the other, so no assertion on outputs fails.
+  One order of the instances may give the right values and another not, so an assertion on
+  outputs may not fail.
 - NaN everywhere in an output: the kernel read memory from `torch.empty` before writing it.
 - Compile errors that `TRITON_INTERPRET=1` does not raise: this runs the real frontend.
 
