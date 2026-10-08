@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -105,6 +106,7 @@ def test_the_source_line_is_found_through_named_and_aliased_locations(tmp_path: 
 def test_a_program_that_asks_whether_its_tensors_are_on_the_gpu_is_told_yes() -> None:
     import torch
 
+    before = pretend_state()
     with sanitize.session():
         x = torch.zeros(4, device="cuda")
         assert x.is_cuda and x.device.type == "cuda"
@@ -112,7 +114,36 @@ def test_a_program_that_asks_whether_its_tensors_are_on_the_gpu_is_told_yes() ->
         assert y.tolist() == [1.0] * 4 and torch.empty_like(x).shape == (4,)
         with torch.cuda.device(0):
             torch.cuda.set_device(0)
-    assert not torch.zeros(1).is_cuda and torch.zeros(1).device.type == "cpu"
+    assert pretend_state() == before
+
+
+def pretend_state() -> tuple[Any, ...]:
+    """What a tensor says of its device, and what `torch.Tensor` holds for it: outside any
+    session (False, "cpu", None, None); under `python -m ttsem.sanitize pytest`, the session
+    around the test's."""
+    import torch
+
+    x = torch.zeros(1)
+    return (
+        x.is_cuda,
+        x.device.type,
+        *(torch.Tensor.__dict__.get(k) for k in ("is_cuda", "device")),
+    )
+
+
+def test_a_session_inside_another_gives_the_outer_one_its_pretend_device_back() -> None:
+    """As under `python -m ttsem.sanitize pytest` on a suite whose tests open a session: the
+    inner session's exit leaves the outer one as it was, and the outer one's exit leaves torch
+    as it was."""
+    import torch
+
+    before = pretend_state()
+    with sanitize.session():
+        with sanitize.session():
+            assert torch.zeros(1, device="cuda").is_cuda
+        x = torch.zeros(1, device="cuda")
+        assert x.is_cuda and x.device.type == "cuda"
+    assert pretend_state() == before
 
 
 def test_a_launch_grid_that_is_a_bare_int_fails_as_it_does_on_a_gpu(tmp_path: Path) -> None:

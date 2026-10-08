@@ -370,6 +370,10 @@ def _pretend_cuda(mode: Any) -> Any:
     saved = {name: getattr(torch.cuda, name, None) for name in answers}
     for name, answer in answers.items():
         setattr(torch.cuda, name, answer)
+    # what `torch.Tensor` itself held, put back by the undo: a session opened inside another
+    # (a test that opens one, run under `python -m ttsem.sanitize pytest`) gives the outer one
+    # its own properties back instead of deleting them
+    shadowed = {name: torch.Tensor.__dict__.get(name) for name in ("is_cuda", "device")}
     torch.Tensor.is_cuda = property(lambda self: True)  # type: ignore[assignment,misc]
     # `x.device.type == "cuda"` is the other common guard, and `if out.device.type == "cpu"` a
     # common fallback branch that would skip the kernel: every tensor says it is on the pretend
@@ -390,8 +394,11 @@ def _pretend_cuda(mode: Any) -> Any:
         torch._C._cuda_getCurrentRawStream = lambda device=0: 0  # type: ignore[attr-defined]
 
     def undo() -> None:
-        del torch.Tensor.is_cuda
-        del torch.Tensor.device
+        for name, before in shadowed.items():
+            if before is not None:
+                setattr(torch.Tensor, name, before)
+            elif name in torch.Tensor.__dict__:
+                delattr(torch.Tensor, name)
         if not had_stream:
             del torch._C._cuda_getCurrentRawStream
         for name, original in saved.items():
