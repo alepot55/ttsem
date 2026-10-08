@@ -522,6 +522,7 @@ def test_a_block_cap_shrinks_the_block_of_a_direct_launch_whose_grid_reads_it(
     assert torch.equal(got[("16", True)], torch.arange(4).repeat_interleave(16).float())
     assert torch.equal(got[("16", False)], torch.zeros(64))
 
+
 def test_source_line_falls_back_to_the_kernels_own_file_when_the_loc_path_is_gone(
     tmp_path: Path,
 ) -> None:
