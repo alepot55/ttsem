@@ -778,13 +778,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--manifest", type=Path, help="judge every answer of this JSONL file")
     ap.add_argument("--out", type=Path, help="where the reports go (a temporary one otherwise)")
     ap.add_argument("--json", action="store_true", help="print the verdict record as JSON")
-    ap.add_argument("--scale", choices=("auto", "none"), help="(auto)")
+    ap.add_argument(
+        "--scale",
+        choices=("auto", "none"),
+        help="auto: shrink the task's sizes until its largest tensor holds at most 2**17 elements, "
+        "and run the real sizes too when --full-max allows; none: the real sizes only (auto)",
+    )
     # no default here: with --manifest, a flag given applies to the lines that do not set it
     ap.add_argument("--rule", choices=("kernelbench", "v3"), help="(kernelbench)")
     ap.add_argument("--precision", choices=("fp32", "keep"), help="(fp32)")
     ap.add_argument("--gpu", help="the dataset's GPU (H100, B200, RTX3090, ...)")
     ap.add_argument("--timeout", type=int, default=None, help="seconds per pass (600; 300 batch)")
-    ap.add_argument("--full-max", type=int, help="(2**20)")
+    ap.add_argument(
+        "--full-max",
+        type=int,
+        help="with --scale auto, run the real sizes too when the task's largest tensor holds at "
+        "most this many elements (2**20)",
+    )
     ap.add_argument("--jobs", type=int, default=2, help="answers judged at once (batch)")
     ap.add_argument("--limit", type=int, default=0, help="the first N answers only (batch)")
     ap.add_argument(
