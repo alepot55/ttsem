@@ -75,6 +75,7 @@ include = [
     "audits",
     "docs",
     "README.md",
+    "CITATION.cff",
     "CONTRIBUTING.md",
     "LEDGER.md",
     "LICENSE",
