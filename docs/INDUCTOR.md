@@ -26,8 +26,8 @@ pytorch#198033: torch._foreach_add_([x], [x.flip(0)])
 ```
 
 (Shortened where `...` stands: each race message goes on to say how many bytes the two instances
-share and what to change.) This run is torch 2.14.0+cpu on a 4-core VM, 18 s. On a torch that
-carries the fix, a case says `ok`.
+share and what to change.) This run is torch 2.14.0+cpu on a 4-core VM, 16.5 s from a fresh Triton
+cache. On a torch that carries the fix, a case says `ok`.
 
 ## Code you already have
 
@@ -70,7 +70,6 @@ left alone. The judge passes the variable into its sandbox.
 
 ## What is not here
 
-The numbers on `torch.compile` in the README (3,292 generated in-place programs, 856 wrong on an RTX
-4070, all 856 flagged with no GPU) come from a generator of PyTorch programs that is not in this
-repository; the bugs it found upstream are in
+The numbers on `torch.compile` in the README's "Evidence" come from generators of PyTorch
+programs that are not in this repository; the bugs they found upstream are in
 [LEDGER.md](https://github.com/alepot55/ttsem/blob/main/LEDGER.md).

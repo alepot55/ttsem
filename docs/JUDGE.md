@@ -16,6 +16,12 @@ answer's own line), `no_kernel` (PyTorch does the work), `error`, `too_slow` or 
 `--json` prints the whole record; `--manifest M.jsonl --out DIR` judges a batch (one verdict per id;
 `--rule`, `--precision` and `--gpu` apply to the lines that do not set them).
 
+The defaults, as the code sets them: `--rule kernelbench`; `--precision fp32`, which casts every
+tensor input to float32 as KernelBench does (`keep` leaves the task's dtypes, and `--rule v3`
+always keeps them); `--scale auto`; `--full-max` 2**20 elements; `--timeout` 600 s for each run of
+one pair, 300 s in a batch; `--jobs 2` in a batch. Every run also has an address-space cap of 6 GB
+(`TTSEM_MEM_GB`).
+
 `error` with `why: shared_memory` means every config of an autotuner was skipped and the one it
 falls back to needs more shared memory than the GPU (`--gpu`, an H100 by default) has, by Triton
 3.8.0's count. The count moves between Triton versions, so this verdict can disagree with a label
@@ -24,10 +30,14 @@ by choice of scope, and whether a config compiles is decided for sm_90a whatever
 other autotune configs are forced in turn after the trials, except those the autotuner itself would
 never run: one it skips, or one its `prune_configs_by` drops (`not_applicable`, `pruned`).
 
-A verdict at reduced sizes says what the kernel does at those sizes: an answer that hard-codes the
-benchmark's shape can be right there and wrong at others, and an access out of bounds that only the
-real shape reaches is missed. Where the benchmark's own shape is small enough, the judge runs it
-too.
+With `--scale auto`, every size constant of the task is divided by the same power of two until its
+largest tensor holds at most 2**17 elements, and that reduced pass always runs. The real sizes run
+too when the task's largest tensor holds at most `--full-max` elements and the reference model's
+parameters at most 32 times that, and always after a `no_kernel` verdict (an answer may launch its
+kernel only at the benchmark's own shape). `--scale none` runs the real sizes only. A verdict at
+reduced sizes says what the kernel does at those sizes: an answer that hard-codes the benchmark's
+shape can be right there and wrong at others, and an access out of bounds that only the real shape
+reaches is missed.
 
 ## TritonBench answers
 
@@ -38,9 +48,13 @@ is the code the benchmark runs for a model (its imports and functions for G, its
 for T), and the judge puts the task's test after it, as the benchmark does. TritonBench's own check
 compares the stdout of the two files and its tests print nothing, so it only asks that the answer
 runs. Here the reference file and the answer file each run in their own sandbox, and what the two
-tests keep is compared by value: `verified` within rtol 1e-4 or 1e-2 (or, with `tolerance:
-reduced`, 5e-2, a float16 accumulator), `wrong`, `unsafe`, `no_kernel` (right values, no Triton
-launch), `error`, `too_slow`, or `not_judged` with the reason in `class` (a package or a CPU
+tests keep is compared by value. The judge tries three tolerances in turn and the first that holds
+sets `tolerance` in the record: rtol 1e-4 and atol 1e-5 (`strict`), else rtol 1e-2 and atol 1e-3
+(`lenient`), else rtol and atol 5e-2 (`reduced`, what a float16 accumulator does to a float32
+result); the absolute tolerance shrinks with the reference's largest value when that is below 1,
+down to 1e-6. Within any of the three the verdict is `verified` (exit 0), or `no_kernel` when no
+Triton kernel was launched; the batch counts `reduced` apart. Otherwise the verdict is `wrong`,
+`unsafe`, `error`, `too_slow`, or `not_judged` with the reason in `class` (a package or a CPU
 operator this machine lacks, a task that draws random numbers, a reference that cannot be compared
 with: it does not run, keeps nothing, returns memory it never wrote, or faults under its own test
 where the answer does). `--manifest M.jsonl --out DIR` judges a batch and prints the counts per
@@ -59,15 +73,17 @@ The verdict is not the answer's to write. The answer and the task's reference ru
 sandboxes; each writes only raw outputs, in a directory of its own, and the judge compares them in
 the parent process. A kernel fault reaches the judge on a pipe opened before the answer is
 imported, and the run ends there, so an answer cannot catch the fault and fall back on PyTorch to
-turn `unsafe` into `verified`. No run's exit handler runs after its last word, and the judge never
-trusts a report from a writable location as a cached result.
+turn `unsafe` into `verified`. A run that ends normally reports `done` and exits at once, so no exit
+handler the answer registered runs after that report; and the only results the judge reads back
+from an earlier run are records it wrote itself, in a directory no run can see.
 
 What a run can still read is the host's filesystem, read-only, except the hidden directories above:
-system files, your world-readable files, other checkouts. It cannot reach the network, your home,
-or anything you ran earlier. `--strict` narrows that: the run sees only what it needs (the Python
-running the judge and its packages, this package, the task and the answer, and the few system files
-the C library reads), nothing else of the host. Use it when the machine holds data no model-written
-answer should read; it is off by default because it depends on the layout of your Python install.
+system files, your world-readable files, other checkouts. It cannot reach the network, your home
+directory, or the records and outputs of the judge's other runs. `--strict` narrows that: the run
+sees only what it needs (the Python running the judge and its packages, this package, the task and
+the answer, and the few system files the C library reads), nothing else of the host. Use it when the
+machine holds data no model-written answer should read; it is off by default because it depends on
+the layout of your Python install.
 
 ## What the judge has been run on
 

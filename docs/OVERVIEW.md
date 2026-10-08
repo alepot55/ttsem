@@ -14,7 +14,12 @@ shared-memory races are reported (level 3). All three levels ship in this packag
 
 ## Calibration
 
-The numbers below come from runs against the upstream test suite and a GPU; the recordings behind them are not in this repository (only the two examples under `examples/` ship), so they are reported, not reproducible from a clone. The methods and every device deviation are written in `docs/RESULTS.md` and `docs/SEMANTICS.md`.
+The numbers below come from runs against the upstream test suite and a GPU. The recordings behind
+them are not in this repository, so they are reported, not reproducible from a clone. `examples/`
+holds 13 files (reproducers, minimised witnesses, two drivers of `torch.compile` models, a test
+for the CI action) and one recording among them, the per-pass verdicts the demo replays. The
+methods are in `docs/RESULTS.md`, and each class of device deviation is described in
+`docs/SEMANTICS.md`.
 
 A semantics is only worth what it has been checked against. The calibration corpus is Triton's own
 language test suite, run under the pytest plugin, which validates every launch the suite makes.
@@ -23,9 +28,9 @@ language test suite, run under the pytest plugin, which validates every launch t
   **12,548 `match`** (bit for bit against the device), **1,484 `approx`** (inside the float policy
   written down in `SEMANTICS.md`: reassociated reductions, divisions within 2 ulp, NaN payloads),
   **173 `mismatch`**, **29 `unsupported`** (28 of them inline PTX), **1 `poison`** (`MIN % -1`).
-  No launch errors, and **no unexplained mismatch**: every one of the 173 is one of the device
-  deviations enumerated at the end of `SEMANTICS.md`, chiefly the permutation of old values a
-  `tt.atomic_rmw` returns, which depends on the order lanes arrive in.
+  No launch errors, and **no unexplained mismatch**: every one of the 173 falls in a class of
+  device deviation described at the end of `SEMANTICS.md`, most of them the permutation of old
+  values a `tt.atomic_rmw` returns, which depends on the order lanes arrive in.
 - **13,396 of 14,234 launches are decided and consistent all the way down to the last LLVM stage**,
   through a companion lock-step LLVM interpreter, not shipped in this package, that takes over at
   the first `llvm.func` (11,872 bit-exact plus 1,027 inside the float policy, plus the launches both
@@ -33,12 +38,13 @@ language test suite, run under the pytest plugin, which validates every launch t
   the same device deviations, read the same way by two semantics written from the two ends of the
   pipeline.
 - **Per-pass validation over the fuzzer corpus: 74,451 stage evaluations, 72,955 decided,
-  0 mismatches.** No pass of three pipelines changed any result with respect to the device.
+  0 mismatches.** On the programs of three fuzzer families, no pass changed any result with respect
+  to the device.
 - **Level 2 (layouts): 28,483 ops checked over the corpus, 0 violations, 0 coverage gaps**, plus 57
   cases of Triton's own C++ unit tests for `LinearLayoutConversions.cpp` reproduced exactly.
-- **Level 3 (races): 0 races with Membar's barriers in place over 9,372 distinct modules of the
-  test suite, 1,435 races with every barrier stripped.** Membar is sound on everything the suite
-  compiles, and about one barrier in six modules is individually necessary.
+- **Level 3 (races): 0 races with Membar's barriers in place over the 9,372 distinct modules of the
+  test suite that ran, 1,435 races with every barrier stripped.** No module raced with Membar's
+  barriers in place, and about one module in six needs at least one of them.
 
 ## How it works
 
@@ -92,12 +98,13 @@ kernels rather than on an abstraction of them.
   are outside the companion LLVM continuation's fragment.
 - **Everything below the LLVM conversion** is outside level 1; `ttsem/validate.py` stops at the first
   module containing `llvm.func` and reports "past lowering" once.
-- **Device deviations** stay mismatches. `SEMANTICS.md` lists them one by one: the `tt.clampf` NaN
+- **Device deviations** stay mismatches. `SEMANTICS.md` describes each class: the `tt.clampf` NaN
   sign, decided by whether a peephole matched; a non-associative `tt.reduce` combiner, whose answer
   depends on the association the lowering picks; a left fold of narrow floats saturating where a
-  balanced tree does not; `arith.remf` losing the sign of a zero remainder, because PTX has no
-  `frem`; and the permutation of old values an atomic returns, which is the order the lanes arrive
-  in.
+  balanced tree does not (the semantics has folded as a balanced tree since 19 Sep 2026, so these
+  two reduction cases now agree with the device); `arith.remf` losing the sign of a zero
+  remainder, because PTX has no `frem`; and the permutation of old values an atomic returns, which
+  is the order the lanes arrive in.
 - **A few ops raise `Unsupported` by name** rather than guess: the `e2m3` and `e3m2` microscaling
   formats, a `tt.atomic_poll` with no timeout, an im2col TMA copy, a `ttng.tmem_load` with a
   reduction (`redOp`), a `tmem_copy` into the blocked-scales layout, two-CTA and multicast MMAs,
