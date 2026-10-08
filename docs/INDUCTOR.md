@@ -62,6 +62,12 @@ block covers the whole tensor with one program instance, and nothing can race.
 launches with; a generated kernel is valid under every block size its autotuner may pick, so the
 cap changes the schedule, not the meaning.
 
+Older Inductor output launches its kernels directly, as `kernel[grid](..., XBLOCK=64)` with a grid
+computed from the block. For that code, set `TTSEM_BLOCK_CAP=16` in the environment: inside a
+session, a launch whose grid is a function of the block gets its `XBLOCK`, `YBLOCK` and `ZBLOCK`
+capped the same way, and the grid grows to cover the same elements. A grid given as numbers is
+left alone. The judge passes the variable into its sandbox.
+
 ## What is not here
 
 The numbers on `torch.compile` in the README (3,292 generated in-place programs, 856 wrong on an RTX
