@@ -49,6 +49,11 @@ On the code torch 2.14 emits for `x[1:] = x[:-1].clone()` on CPU tensors (with
 kernel. Code emitted for CUDA tensors goes through the same names (`inductor_names` answers
 `_empty_strided_cuda` and the kernel's switch to the GPU driver), but it was not tried here.
 
+Producing `output_code.py` is the part that needs care on a machine with no GPU: Inductor compiles
+the Triton it emits, and with no active Triton driver that compile fails (`0 active drivers`). The
+demo gets around it by compiling inside a ttsem session, which supplies a driver; see
+`run_case` in `ttsem/torch_demo.py`. Code saved on a machine with a GPU needs none of this.
+
 ## The block cap
 
 A race needs two program instances on the same data. At a test's small shape Inductor's default
