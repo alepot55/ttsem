@@ -8,10 +8,9 @@ form, runs a kernel on the CPU **from its IR** rather than from the Python sourc
 result with what the GPU actually produced. Because the semantics runs on IR, it can be run on the
 IR after *every* compiler pass, on the same inputs, and the first pass whose output stops agreeing
 is named. Triton has a large test suite and no written definition of what a pass must preserve;
-this package is that definition, in a form you can execute. Alive2 did this for LLVM's scalar IR.
-Nothing did it for a tile IR, whose values are distributed tensors: here layouts are erased
-(level 1), then modelled (level 2), then the warps are made concurrent and shared-memory races are
-reported (level 3).
+this package writes one down as an interpreter. The values of a tile IR are distributed tensors:
+here layouts are erased (level 1), then modelled (level 2), then the warps are made concurrent and
+shared-memory races are reported (level 3). All three levels ship in this package.
 
 ## Calibration
 
@@ -26,13 +25,13 @@ language test suite, run under the pytest plugin, which validates every launch t
   **173 `mismatch`**, **29 `unsupported`** (28 of them inline PTX), **1 `poison`** (`MIN % -1`).
   No launch errors, and **no unexplained mismatch**: every one of the 173 is one of the device
   deviations enumerated at the end of `SEMANTICS.md`, chiefly the permutation of old values a
-  `tt.atomic_rmw` returns, which depends on the order lanes arrive in. The semantics was never bent
-  toward the hardware to make a number come out.
+  `tt.atomic_rmw` returns, which depends on the order lanes arrive in.
 - **13,396 of 14,234 launches are decided and consistent all the way down to the last LLVM stage**,
-  through the companion lock-step LLVM interpreter that takes over at the first `llvm.func`
-  (11,872 bit-exact plus 1,027 inside the float policy, plus the launches both levels grade the
-  same way). No launch mismatches under a green TTGIR. The 152 that do mismatch are the same device
-  deviations, read the same way by two semantics written from the two ends of the pipeline.
+  through a companion lock-step LLVM interpreter, not shipped in this package, that takes over at
+  the first `llvm.func` (11,872 bit-exact plus 1,027 inside the float policy, plus the launches both
+  levels grade the same way). No launch mismatches under a green TTGIR. The 152 that do mismatch are
+  the same device deviations, read the same way by two semantics written from the two ends of the
+  pipeline.
 - **Per-pass validation over the fuzzer corpus: 74,451 stage evaluations, 72,955 decided,
   0 mismatches.** No pass of three pipelines changed any result with respect to the device.
 - **Level 2 (layouts): 28,483 ops checked over the corpus, 0 violations, 0 coverage gaps**, plus 57
@@ -45,16 +44,17 @@ language test suite, run under the pytest plugin, which validates every launch t
 
 **Level 1: TTIR and TTGIR with layouts erased.** Tensors are numpy arrays in logical index order,
 pointers are int64 addresses into a flat byte-addressed memory, control flow is executed, async
-copies are sequentialised in program order. `ttsem/mlir.py` parses the generic form, which is regular
-enough that one parser covers every dialect; `ttsem/ops.py` gives each of 158 op names a meaning (130 distinct handlers, a few shared across dialects); `ttsem/interp.py`
-runs a region, a function, or a whole grid, and raises `Unsupported` by name on anything it does
-not model, so coverage is measurable instead of silent. `ttsem/harness.py` records real launches, copies
-the arguments to the host at their device addresses, runs the grid, and compares every output
-buffer: bitwise, always, for the verdict `match`, and under a documented float policy for `approx`.
-`ttsem/validate.py` splits an `MLIR_ENABLE_DUMP=1` trace into one module per pass, runs each on the same
-inputs, and names the first pass after which the answer changes; `ttsem/minimize.py` then shrinks that
-module while the pass still changes its meaning, with no GPU and no `triton-opt` involved, because
-the property is a disagreement between two interpretations of the same input.
+copies are sequentialised in program order. `ttsem/mlir.py` parses the generic form, which is
+regular enough that one parser covers every dialect; `ttsem/ops.py` gives each of 185 op names in 11
+dialects a meaning (160 distinct handlers, a few shared across names); `ttsem/interp.py` runs a
+region, a function, or a whole grid, and raises `Unsupported` by name on anything it does not model,
+so coverage is measurable instead of silent. `ttsem/harness.py` records real launches, copies the
+arguments to the host at their device addresses, runs the grid, and compares every output buffer:
+bitwise, always, for the verdict `match`, and under a documented float policy for `approx`.
+`ttsem/validate.py` splits an `MLIR_ENABLE_DUMP=1` trace into one module per pass, runs each on the
+same inputs, and names the first pass after which the answer changes; `ttsem/minimize.py` then
+shrinks that module while the pass still changes its meaning, with no GPU and no `triton-opt`
+involved, because the property is a disagreement between two interpretations of the same input.
 
 **Level 2: distributed values.** Level 1 answers "does this kernel compute the right array".
 Level 2 answers "and does each thread hold the right part of it". `ttsem/linear_layout.py` is a port of
@@ -81,23 +81,26 @@ kernels rather than on an abstraction of them.
 ## Limits
 
 - **Inline PTX.** `tt.elementwise_inline_asm` is a deliberate rejection at the tile level, so it
-  reads as "out of scope" rather than "not written yet". The LLVM continuation decides many of them
-  and `llvm.inline_asm` templates it has no grammar for are the rest.
+  reads as "out of scope" rather than "not written yet". The companion LLVM continuation (not
+  shipped here) decides many of them; `llvm.inline_asm` templates it has no grammar for are the
+  rest.
 - **Warp-specialised TTGIR whose partitions wait on barriers** is rejected at level 1 by design:
   running the partitions in sequence would read shared buffers before the producer fills them.
   That is exactly the boundary between level 1 and level 3.
 - **Clusters of more than one CTA** are declared unsupported rather than judged, at both levels.
 - **`nvvm.ldmatrix` / `stmatrix`** in the m16n16 forms, and a small residue of NVVM intrinsics,
-  are outside the LLVM continuation's fragment.
+  are outside the companion LLVM continuation's fragment.
 - **Everything below the LLVM conversion** is outside level 1; `ttsem/validate.py` stops at the first
   module containing `llvm.func` and reports "past lowering" once.
-- **Device deviations are not gaps, they are findings**, and they stay mismatches. `SEMANTICS.md`
-  lists them one by one: the `tt.clampf` NaN sign, decided by whether a peephole matched; a
-  non-associative `tt.reduce` combiner, whose answer depends on the association the lowering picks;
-  a left fold of narrow floats saturating where a balanced tree does not; `arith.remf` losing the
-  sign of a zero remainder, because PTX has no `frem`; and the permutation of old values an atomic
-  returns, which is the order the lanes arrive in.
-- **A few ops raise `Unsupported` by name** rather than guess: `tt.mulhiui` at 64 bits, `e2m3` and
-  `e3m2` microscaling formats, a `tt.atomic_poll` with no timeout, an im2col TMA copy, TMEM and
-  warp-group MMA ops, and libdevice symbols outside the implemented table.
+- **Device deviations** stay mismatches. `SEMANTICS.md` lists them one by one: the `tt.clampf` NaN
+  sign, decided by whether a peephole matched; a non-associative `tt.reduce` combiner, whose answer
+  depends on the association the lowering picks; a left fold of narrow floats saturating where a
+  balanced tree does not; `arith.remf` losing the sign of a zero remainder, because PTX has no
+  `frem`; and the permutation of old values an atomic returns, which is the order the lanes arrive
+  in.
+- **A few ops raise `Unsupported` by name** rather than guess: the `e2m3` and `e3m2` microscaling
+  formats, a `tt.atomic_poll` with no timeout, an im2col TMA copy, a `ttng.tmem_load` with a
+  reduction (`redOp`), a `tmem_copy` into the blocked-scales layout, two-CTA and multicast MMAs,
+  and libdevice symbols outside the implemented table. Tensor memory and warp-group MMA
+  (`ttng.tmem_*`, `ttng.tc_gen5_mma`, `ttng.warp_group_dot`) are modelled; see `SEMANTICS.md`.
 
