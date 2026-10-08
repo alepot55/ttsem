@@ -52,8 +52,22 @@ results nor the task file, nor the directory tree the task sits in.
 
 Each answer is model-written code and runs in its own `bwrap` sandbox: a read-only filesystem, your
 home directory and the host's sockets in /run hidden, of your environment only the few variables a
-run needs, no network, its own pid namespace. Without `bwrap` the judge refuses to run unless given
-`--no-sandbox`.
+run needs, no network, its own pid namespace, no capabilities, and a session of its own with no
+controlling terminal. Without `bwrap` the judge refuses to run unless given `--no-sandbox`.
+
+The verdict is not the answer's to write. The answer and the task's reference run in separate
+sandboxes; each writes only raw outputs, in a directory of its own, and the judge compares them in
+the parent process. A kernel fault reaches the judge on a pipe opened before the answer is
+imported, and the run ends there, so an answer cannot catch the fault and fall back on PyTorch to
+turn `unsafe` into `verified`. No run's exit handler runs after its last word, and the judge never
+trusts a report from a writable location as a cached result.
+
+What a run can still read is the host's filesystem, read-only, except the hidden directories above:
+system files, your world-readable files, other checkouts. It cannot reach the network, your home,
+or anything you ran earlier. `--strict` narrows that: the run sees only what it needs (the Python
+running the judge and its packages, this package, the task and the answer, and the few system files
+the C library reads), nothing else of the host. Use it when the machine holds data no model-written
+answer should read; it is off by default because it depends on the layout of your Python install.
 
 ## What the judge has been run on
 

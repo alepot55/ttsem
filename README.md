@@ -186,8 +186,9 @@ CPU, by KernelBench's own rule (five seeded trials, `allclose` at 1e-2), with ev
 by ttsem. With `--tritonbench` it judges a [TritonBench][tb] answer against its task's reference, by
 value. The verdict is `verified` (exit 0), `wrong`, `unsafe` (out of bounds, race, or memory nobody
 wrote, at the answer's line), `no_kernel` (PyTorch does the work), `error`, `too_slow` or
-`not_judged`. Each answer is model-written code and runs in its own `bwrap` sandbox. The rules, the
-batch mode and the classes are in [docs/JUDGE.md][judge].
+`not_judged`. Each answer is model-written code and runs in its own `bwrap` sandbox, and the verdict
+is computed outside it, from the run's raw outputs. The rules, the batch mode, the classes and what
+the sandbox hides are in [docs/JUDGE.md][judge].
 
 ## How it was built
 
