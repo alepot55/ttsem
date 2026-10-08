@@ -38,7 +38,8 @@ After a pip install, the `ttsem` command is the same as `python -m ttsem`.
   python -m ttsem.sanitize pytest [PYTEST ARGS] | SCRIPT.py
       Run a test suite or a script written for a GPU on a machine without one: every
       launch is executed by the semantics, and an out-of-bounds access, a race between
-      program instances or an undefined value fails the test with the kernel's own line.
+      program instances or an operation with an undefined result fails the test with the
+      kernel's own line.
 
   python -m ttsem.races MODULE.generic.mlir [--strip-barriers]
       Shared-memory races between the warps of a CTA, from one execution of the module.

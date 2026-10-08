@@ -5,9 +5,10 @@
 The first file holds the rows of `python -m ttsem judge --tritonbench --manifest ... --out
 JUDGE_OUT`, the second those of `device.py`, both for the same manifest. Each side's class is put
 in a coarse class on purpose: did not run (the file raised), right (verified at any tolerance),
-wrong (other values), fault (out of bounds, race, use of memory nobody wrote: the semantics only;
-a GPU runs past them), not comparable, not judged. The agreement is counted over the answers both
-sides decide: did not run, right or wrong. `--list` prints the answers where those two disagree.
+wrong (other values), fault (out of bounds, race, an operation with an undefined result: the
+semantics only; a GPU runs past them), not comparable, not judged. The agreement is counted over
+the answers both sides decide: did not run, right or wrong. `--list` prints the answers where those
+two disagree.
 """
 
 from __future__ import annotations

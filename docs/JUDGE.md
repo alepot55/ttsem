@@ -79,18 +79,29 @@ turn `unsafe` into `verified`. A run that ends normally reports `done` and exits
 handler the answer registered runs after that report; and the only results the judge reads back
 from an earlier run are records it wrote itself, in a directory no run can see.
 
+What a run can still read is the host's filesystem, read-only, except the hidden directories above:
+system files, your world-readable files, other checkouts. It cannot reach the network, your home
+directory, or the records and outputs of the judge's other runs. `--strict` narrows that: the run
+sees only what it needs (the Python running the judge and its packages, this package, the task and
+the answer, and the few system files the C library reads), nothing else of the host. Use it when the
+machine holds data no model-written answer should read; it is off by default because it depends on
+the layout of your Python install.
+
 ## What the verdicts guarantee
 
 The answer runs in the same Python process as the semantics, so in principle its own code can reach
 into the checker. What each verdict holds against is therefore worth stating plainly.
 
-- `wrong` and `verified` are robust against an adversarial answer. The values are compared against a
-  reference computed in a separate sandbox the answer cannot touch, so no code the answer runs in
-  its own process makes a wrong result read as right.
-- `unsafe` and `no_kernel` hold against an answer that does not tamper with the judge's own code
-  inside its process. The fault and the launch count travel out of band, over a pipe carrying a
-  token the answer does not know, so a forged report or a caught exception does not turn `unsafe`
-  or `no_kernel` into `verified`.
+- The comparison of values, which tells `wrong` from `verified`, is robust against an adversarial
+  answer. The values are compared, in the judge's own process, against a reference computed in a
+  separate sandbox the answer cannot touch, so no code the answer runs in its own process makes
+  wrong values read as right.
+- The fault and launch checks behind `unsafe` and `no_kernel` hold against an answer that does not
+  tamper with the judge's own code inside its process. The fault and the launch count travel out of
+  band, over a pipe carrying a token the answer does not know, so a forged report or a caught
+  exception does not turn `unsafe` or `no_kernel` into `verified`. `no_kernel` means that no trial
+  launched a Triton kernel: an answer that launches one and leaves the rest of the work to PyTorch
+  is judged on its values.
 - Two stop-gaps catch the direct forms of tampering seen so far, short of the full separation
   below. Before an answer runs, a static scan of its source refuses it (`not_judged`) when it
   imports the judge, walks `sys.modules`, the garbage collector or the interpreter's frames, uses
@@ -103,16 +114,9 @@ into the checker. What each verdict holds against is therefore worth stating pla
   channel, is `not_judged` (`forged`), not read as a clean run.
 - Full separation of the answer from the checker (running the semantics in a process the answer's
   code cannot reach at all) is planned for the next release. Until then, an answer that defeats both
-  stop-gaps at once could in principle forge an `unsafe` or `no_kernel` result; it still cannot forge
-  `wrong` or `verified`, which rest on the out-of-sandbox reference.
-
-What a run can still read is the host's filesystem, read-only, except the hidden directories above:
-system files, your world-readable files, other checkouts. It cannot reach the network, your home
-directory, or the records and outputs of the judge's other runs. `--strict` narrows that: the run
-sees only what it needs (the Python running the judge and its packages, this package, the task and
-the answer, and the few system files the C library reads), nothing else of the host. Use it when the
-machine holds data no model-written answer should read; it is off by default because it depends on
-the layout of your Python install.
+  stop-gaps at once could in principle hide its fault or fake its launches, so that it reads as
+  `verified` where it should be `unsafe` or `no_kernel`. It still cannot make wrong values read as
+  right, since the comparison rests on the out-of-sandbox reference.
 
 ## What the judge has been run on
 

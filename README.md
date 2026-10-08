@@ -213,7 +213,8 @@ that are not; [LEDGER.md][ledger] describes each.
 - **Races are checked up to 4,000,000 element accesses per launch.** A larger launch still runs and
   is checked for out-of-bounds accesses. A script run ends with the number of launches too large to
   be checked for races: the run of the two launches above ends with `2 launch(es) too large to be
-  checked for races`. A pytest run does not print that number.
+  checked for races`. Under `python -m ttsem.sanitize pytest` the terminal summary prints the same
+  count.
 - **A race needs two program instances on the same data.** A block that covers a whole small tensor
   leaves one instance and nothing to race, so test at sizes several blocks long. For Inductor's
   code, `sanitize.inductor_names(block=16)` caps the block ([docs/INDUCTOR.md][inductor]).
@@ -237,10 +238,11 @@ value. The verdict is `verified` (exit 0), `wrong` (where memory nobody wrote sh
 the values), `unsafe` (an out-of-bounds access, a race, or an operation with an undefined result,
 at the answer's line), `no_kernel` (PyTorch does the work), `error`, `too_slow` or `not_judged`.
 Each answer is model-written code and runs in its own `bwrap` sandbox, and the verdict is computed
-outside it, from the run's raw outputs. `wrong` and `verified` are robust against an adversarial
-answer; `unsafe` and `no_kernel` hold against an answer that does not tamper with the judge inside
-its own process. The rules, the batch mode, the classes, the sandbox and the integrity guarantee
-are in [docs/JUDGE.md][judge].
+outside it, from the run's raw outputs. The comparison of values that tells `wrong` from
+`verified` is robust against an adversarial answer; the fault and launch checks behind `unsafe` and
+`no_kernel` hold against an answer that does not tamper with the judge inside its own process. The
+rules, the batch mode, the classes, the sandbox and what each verdict guarantees are in
+[docs/JUDGE.md][judge].
 
 ## How it was built
 
