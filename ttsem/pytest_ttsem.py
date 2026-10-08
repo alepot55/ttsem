@@ -157,7 +157,7 @@ def _validate(record: Any) -> None:
                 n_diff=cmp.n_diff,
                 unsupported=cmp.unsupported,
                 message=cmp.message[:300],
-                diffs=[d for d in cmp.diffs][:2],
+                diffs=cmp.diffs[:2],
             )
         except Exception as e:  # never let the checker break the suite
             line.update(verdict="error", message=harness._describe(e)[:400])

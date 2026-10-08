@@ -28,13 +28,12 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from ttsem import harness
 import numpy as np
-from ttsem import pidraces
-from ttsem import values
-from ttsem.memory import MemoryFault
 from triton.runtime.errors import OutOfResources
 from triton.runtime.jit import JITFunction
+
+from ttsem import harness, pidraces, values
+from ttsem.memory import MemoryFault
 
 
 @dataclasses.dataclass

@@ -12,8 +12,9 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
-from ttsem import mlir
 import pytest
+
+from ttsem import mlir
 from ttsem.ir_types import Block, DenseAttr, FloatBits, Op, Region, Type
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"

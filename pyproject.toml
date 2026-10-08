@@ -70,3 +70,17 @@ testpaths = ["tests"]
 extend-exclude = ["tests/fixtures/inductor"]
 line-length = 100
 target-version = "py312"
+
+# The rules are listed rather than left to ruff's default, which changes between releases. These
+# are the families the code passes; CI runs the ruff version it pins.
+[tool.ruff.lint]
+select = ["B", "C4", "E", "F", "I", "PIE", "RET", "UP", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+# the reproducers are kept as they were filed, `range(0, n)` included
+"examples/*" = ["PIE808"]
+
+[tool.ruff.format]
+# the Python in the Markdown files is laid out by hand, as part of the prose
+exclude = ["*.md"]
+

@@ -104,7 +104,7 @@ def _parse_header(line: str) -> tuple[str, str, str | None] | None:
 def _starts_module(line: str) -> bool:
     """A module's first line, in the pretty form (`module {`) or the generic one
     (`"builtin.module"() ({`)."""
-    return line.startswith("module") or line.startswith('"builtin.module"')
+    return line.startswith(("module", '"builtin.module"'))
 
 
 def _split_modules(lines: list[str]) -> list[str]:

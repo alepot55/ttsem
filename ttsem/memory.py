@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import Any
 
 import numpy as np
+
 from ttsem.values import Poison
 
 # Decodes a stored value into the value it denotes, or encodes it back (`values.to_float` and

@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from conftest import block, func, interp, op, ptr, region, tensor, ty
+
 from ttsem.ir_types import DenseAttr, Module, Op
 from ttsem.memory import Memory
 from ttsem.values import Unsupported
