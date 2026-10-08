@@ -12,8 +12,14 @@ python -m ttsem.sanitize pytest <paths or pytest args>      # a suite written fo
 python -m ttsem.sanitize script.py                           # any script that launches kernels
 ```
 
-Install once with `pip install -e ".[triton]"` from a clone of https://github.com/alepot55/ttsem
-plus `pip install torch --index-url https://download.pytorch.org/whl/cpu`.
+Install once (Linux; Triton 3.8.0 and the CPU build of torch come with it):
+
+```
+pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+    'ttsem[triton] @ git+https://github.com/alepot55/ttsem'
+```
+
+Once ttsem is on PyPI, `'ttsem[triton]'` replaces the git requirement.
 
 What you get that a GPU run does not give you:
 

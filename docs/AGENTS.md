@@ -1,10 +1,11 @@
 # For coding agents: check a Triton kernel without a GPU
 
 You are writing or changing a Triton kernel and the machine you run on has no GPU. You can still
-run it, and you get more than a GPU run gives.
+run it, and it reports faults that a GPU run does not.
 
 ```
-pip install -e .           # from a clone of this repository; needs torch (CPU is enough) and triton
+pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+    'ttsem[triton] @ git+https://github.com/alepot55/ttsem'   # 'ttsem[triton]' once it is on PyPI
 python -m ttsem.sanitize pytest tests/ -q        # a test suite, as it is written for a GPU
 python -m ttsem.sanitize script.py               # any script that launches kernels
 ```
@@ -37,7 +38,9 @@ What to test once it runs: sizes that are **not** a multiple of the block (a tes
 cannot see a missing mask; n = 1000 can), n = 0 and n = 1, non-contiguous inputs, and more than
 one program instance writing to the same output.
 
-Limits, said plainly: it is an interpreter, so millions of elements take seconds to minutes; a
-launch that uses an op the semantics does not model stops with `unsupported` rather than a
-guess; timing and performance are out of scope; the semantics is calibrated against real devices
-on Triton's own test suite (see `docs/RESULTS.md`), not proved.
+Limits: it is an interpreter (on a 4-core VM a vector add over 16.8 million elements takes 16 s);
+races are checked for launches of up to 4,000,000 element accesses, and a block that covers a whole
+small tensor leaves one program instance and nothing to race; a launch that uses an op the
+semantics does not model stops with `unsupported` rather than a guess; timing and performance are
+out of scope; the semantics is calibrated against real devices on Triton's own test suite (see
+`docs/RESULTS.md`), not proved. The README's "Limits" section has the rest.
