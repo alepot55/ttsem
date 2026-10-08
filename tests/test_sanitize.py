@@ -411,3 +411,32 @@ def test_a_race_whose_first_store_leaves_the_bytes_it_found_is_reported() -> Non
     assert stop.value.fault.kind == "race"
     text = sanitize.message(stop.value.fault)
     assert "(0, 0, 0) stores to it, (1, 0, 0) stores to it" in text
+
+
+def test_a_recorded_race_lets_the_program_go_on_and_another_order_witnesses_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With `races="record"` the race is kept and the launch completes; the element then holds
+    what the last instance stored, and `TTSEM_GRID_ORDER=reverse` makes that the other one: the
+    result depends on the schedule, seen in the values without a GPU."""
+    import torch
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def pid_to_first(out_ptr):
+        tl.store(out_ptr, tl.program_id(0).to(tl.float32))
+
+    got = {}
+    for order in ("", "reverse"):
+        monkeypatch.setenv("TTSEM_GRID_ORDER", order)
+        with sanitize.session(races="record") as state:
+            out = torch.zeros(4, dtype=torch.float32, device="cuda")
+            pid_to_first[(2,)](out)
+        assert [fault.kind for fault in state.races] == ["race"]
+        got[order] = float(out[0])
+    assert got == {"": 1.0, "reverse": 0.0}
+    monkeypatch.setenv("TTSEM_GRID_ORDER", "")
+    with sanitize.session(races="off") as state:
+        pid_to_first[(2,)](torch.zeros(4, dtype=torch.float32, device="cuda"))
+    assert state.races == []

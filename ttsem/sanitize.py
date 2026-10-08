@@ -569,6 +569,8 @@ class Session:
     # does on the device, so an autotuner skips such a configuration as it would there
     shared_limit: tuple[int, int] | None = None
     shared_unknown: int = 0  # launches checked whose compile for that GPU failed (not skipped)
+    # with `session(races="record")`: the race of each launch that had one, instead of a raise
+    races: list[Fault] = dataclasses.field(default_factory=list)
 
 
 def _check_shared(state: Session, record: harness.LaunchRecord) -> None:
@@ -594,17 +596,23 @@ def session(
     source: str = "<program>",
     cuda_is_cpu: bool = True,
     on_stop: Callable[[KernelFault | Unjudged], object] | None = None,
+    races: str = "raise",
 ) -> Iterator[Session]:
     """While open, every Triton launch of this process is executed by the semantics on the CPU
     tensors it was given and written back into them. A launch that faults raises
     :class:`KernelFault` out of the launching call. With ``cuda_is_cpu`` every request for a
-    CUDA device gets the CPU, so code written for a GPU runs as it is.
+    CUDA device gets the CPU, so code written for a GPU runs as it is. ``races`` is what a race
+    between program instances does: ``"raise"`` (a fault, as above), ``"record"`` (kept in
+    ``Session.races`` and the program goes on, to see what the schedule run gives) or ``"off"``
+    (no access log: faster, for a run that only wants values).
 
     ``on_stop`` is called with the :class:`KernelFault` or :class:`Unjudged` of a launch before
     it is raised. On a GPU the launch would not raise at all, so code that catches the exception
     and goes on (computing the result some other way) would hide the fault from whoever reads
     the program's outcome: a judge records the exception there, out of the program's reach, and
     ends the process without returning (`ttsem._judge_runner`)."""
+    if races not in ("raise", "record", "off"):
+        raise ValueError(f"races: {races!r}")
     harness._install_fake_driver(cc)
     restore_bench = _no_benchmarks()
     target = harness.target_for("cpu", cc)
@@ -624,7 +632,7 @@ def session(
         state.launches += 1
         ir_text = harness.ir_for_launch(record, "ttir", target)
         try:
-            many = int(np.prod([int(g) for g in record.grid])) > 1
+            many = int(np.prod([int(g) for g in record.grid])) > 1 and races != "off"
             execution = harness.execute(record, ir_text, raise_faults=True, trace_access=many)
         except MemoryFault as exc:
             buffer, past, before = _locate(record, exc)
@@ -646,9 +654,12 @@ def session(
         log = _without_protocol_buffers(
             record, getattr(self, "src", "") or "", execution.memory.access_log
         )
-        race = pidraces.find_race(log)
+        race = pidraces.find_race(log) if many else None
         if race is not None:
-            raise KernelFault(_with_source(_race_fault(record, race, launch, ir_text), ir_text))
+            fault = _with_source(_race_fault(record, race, launch, ir_text), ir_text)
+            if races == "raise":
+                raise KernelFault(fault)
+            state.races.append(fault)
         return None
 
     def stopping(self: JITFunction, *args: Any, grid: Any, warmup: bool, **kwargs: Any) -> Any:
