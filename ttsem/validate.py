@@ -355,6 +355,26 @@ def culprit_of(results: list[PassResult]) -> str | None:
     return None
 
 
+def summary_lines(report: Report) -> list[str]:
+    """The lines under a launch's stages, the pass first, in the words of the demo.
+
+    The pass is ``changed_by`` (its output is the first to disagree with the reference), or the
+    ``culprit`` when the reference is a device that agrees with the IR only after it. The stage
+    named next (``first_bad_pass``) is the first dump that differs from the reference: the input
+    of some pass, not the pass to blame."""
+    meaning = report.changed_by if report.changed_by is not None else report.culprit
+    if meaning is not None:
+        lines = [f"first pass that changes the meaning: {meaning}"]
+    elif report.first_bad_pass is None:
+        lines = ["no pass changes the meaning: every stage agrees with the reference"]
+    else:
+        lines = ["no pass is named: every stage that was decided differs, the first one too"]
+    lines.append(f"first stage whose input differs: {report.first_bad_pass or 'none'}")
+    if report.culprit is not None:
+        lines.append(f"culprit: {report.culprit} (the device agrees with the IR only after it)")
+    return lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "")
     ap.add_argument("program", type=Path)
@@ -379,11 +399,8 @@ def main() -> int:
         for r in report.passes:
             extra = f" extra_reads={r.extra_reads}" if r.extra_reads else ""
             print(f"  {r.verdict:<12} n_diff={r.n_diff:<4} {r.pass_name}  {r.message}{extra}")
-        print(f"  first bad pass: {report.first_bad_pass}")
-        if report.changed_by:
-            print(f"  changed by: {report.changed_by} (its output is the first to disagree)")
-        if report.culprit is not None:
-            print(f"  culprit: {report.culprit} (the device agrees with the IR only after it)")
+        for line in summary_lines(report):
+            print(f"  {line}")
         if report.first_bad_pass is not None:
             exit_code = 1
         launches.append(
