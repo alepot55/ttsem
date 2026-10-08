@@ -220,14 +220,15 @@ Engineer after the system was found to exploit its evaluation harness ([TechCrun
 | [docs/SEMANTICS.md][semantics] | what each op is defined to mean, the float policy, and the device deviations |
 | [docs/DESIGN.md][design] | the three levels, the interfaces between them, and why they are drawn there |
 | [docs/RESULTS.md][results] | the corpora, the counts, and the calibration of the semantics against the device |
-| [docs/JUDGE.md][judge] | the judge of model-written kernels: rules, verdicts, batches |
+| [docs/JUDGE.md][judge] | the judge of model-written kernels: rules, verdicts, batches, the sandbox |
 | [docs/INDUCTOR.md][inductor] | the Triton code of `torch.compile` under ttsem |
 | [docs/AGENTS.md][agents] | for coding agents that write Triton kernels |
 | [audits/](https://github.com/alepot55/ttsem/tree/main/audits) | the commands that redo the TritonBench and KernelBench audits from a clone |
 | [CONTRIBUTING.md][contributing] | how a new op, a new check or a new witness gets in |
 
 A report on the semantics, the validator and what they found is in preparation; until then, cite
-this repository by URL and commit. MIT licence, see `LICENSE`.
+this repository with the metadata in `CITATION.cff` and the commit you used. MIT licence, see
+`LICENSE`.
 
 [nomask]: https://github.com/alepot55/ttsem/blob/main/tests/fixtures/agents/suite_no_mask.py
 [inductor]: https://github.com/alepot55/ttsem/blob/main/docs/INDUCTOR.md

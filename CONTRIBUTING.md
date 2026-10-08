@@ -1,7 +1,9 @@
 # Contributing
 
 1. **Run the tests**: `python -m pytest -q tests`. No GPU and no `triton-opt` are needed, and
-   without the Triton wheel the tests that need it are skipped.
+   without the Triton wheel the tests that need it are skipped. CI also runs `ruff check .`,
+   `ruff format --check .` and `mypy`, at the versions pinned in `.github/workflows/ci.yml`, with
+   the settings in `pyproject.toml`.
 2. **Add an op** in `ttsem/ops.py`: one function per op name, registered in `OPS`, with the
    signature `fn(interp, op, args) -> list[Value]`. Region-carrying ops call
    `interp.run_region(region, args)`; numpy only, no torch.
