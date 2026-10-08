@@ -1,6 +1,6 @@
 """One TritonBench file on a GPU, as the benchmark runs it: the audit's control.
 
-    python -P audits/tritonbench/device_runner.py FILE.py OUT.json OUT.npz
+    python -P audits/tritonbench/device_runner.py FILE.py OUT.json OUT.npz [--events FD]
 
 Run by `device.py`, inside the judge's `bwrap` sandbox with the GPU's device nodes let in, never
 outside it: started by hand, without the variable `device.py` sets only inside the sandbox
@@ -12,12 +12,14 @@ the file (`sandboxed`). Nothing of ttsem runs here: the file is executed as `pyt
 ``ttsem.judge_tritonbench.decide`` reads both sides the same way. Kernel launches are counted as
 the semantics counts them (`JITFunction.run`, warm-ups left out).
 
-`run` in OUT.json: ok | call_error (the file raised).
+`run` in OUT.json: ok | call_error (the file raised). The run then sends `done` on the events pipe
+and leaves without running the file's exit handlers, as the judge's runner does.
 """
 
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import os
 import runpy
@@ -118,13 +120,23 @@ def sandboxed() -> bool:
 
 
 def main() -> int:
+    # the way out and the pipe to `device.py`, taken before the file under test is imported (it
+    # cannot reach them by patching `os`); the control imports nothing of ttsem, so not its
+    # `judge_io.Channel`, but it speaks the same events
+    write, leave = os.write, os._exit
+    argv = sys.argv[1:]
+    events = None
+    if "--events" in argv:
+        at = argv.index("--events")
+        events = int(argv[at + 1])
+        del argv[at : at + 2]
     if not sandboxed():
         sys.stderr.write(
             "device_runner.py: model-written code runs only inside device.py's bwrap sandbox: "
             "run device.py\n"
         )
         return 2
-    script, out_json, out_npz = (Path(a) for a in sys.argv[1:4])
+    script, out_json, out_npz = (Path(a) for a in argv[:3])
     report: dict[str, Any] = {"file": script.name, "run": "ok", "launches": 0}
     launches = count_launches()
     start = time.time()
@@ -148,7 +160,14 @@ def main() -> int:
         np.savez(out_npz, *arrays)
     report["seconds"] = round(time.time() - start, 1)
     out_json.write_text(json.dumps(report, indent=1))
-    return 0
+    # `done`, then out without running the file's exit handlers (one could rewrite the report)
+    if events is not None:
+        with contextlib.suppress(OSError):
+            write(events, b'\n{"event": "done"}\n')
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):
+            stream.flush()
+    leave(0)
 
 
 if __name__ == "__main__":

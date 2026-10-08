@@ -2,19 +2,20 @@
 
     python -m ttsem judge TASK.py ANSWER.py [--json] [--timeout S] [--scale auto|none]
                           [--rule kernelbench|v3] [--precision fp32|keep] [--gpu NAME] [--out DIR]
+                          [--strict]
     python -m ttsem judge --manifest M.jsonl --out DIR [--jobs N] [--timeout S] [--full-max N]
                           [--rule ...] [--precision ...] [--gpu ...]  (for lines without them)
     python -m ttsem judge --tritonbench TASK.py ANSWER.py | --manifest M.jsonl --out DIR
                           (a TritonBench answer: ``ttsem.judge_tritonbench``)
 
 A task is a KernelBench problem file (`Model`, `get_inputs`, `get_init_inputs`); an answer is the
-file that defines `ModelNew` (or, in the KernelBench-v3 release, a replacement `Model`). Each
-answer runs in its own process (``ttsem._judge_runner``) under `bwrap`: read-only filesystem
-except the output directory, a private /tmp, the home directory and the host's sockets (/run)
-hidden, none of the caller's environment but what the run needs (`run_env`), no network, its own
-pid namespace, a timeout and an address-space cap (`TTSEM_MEM_GB`, default 6). There the
-reference and the answer are compared by KernelBench's correctness rule (or, with `--rule v3`, by
-the KernelBench-v3 harness's own rule), with every Triton launch executed by ttsem on the CPU.
+file that defines `ModelNew` (or, in the KernelBench-v3 release, a replacement `Model`). The answer
+and the task's reference each run in their own process (``ttsem._judge_runner``) under `bwrap`
+(`sandbox_prefix`), with a timeout and an address-space cap (`TTSEM_MEM_GB`, default 6). There the
+answer is run by KernelBench's correctness rule (or, with `--rule v3`, by the KernelBench-v3
+harness's own rule), with every Triton launch executed by ttsem on the CPU, and this process
+compares what it returned with what the reference returned (`verdict_of`): the process that ran
+the answer never writes a verdict.
 
 One verdict per pass:
 
@@ -27,10 +28,10 @@ One verdict per pass:
 - error: the answer does not import, build or run (`shared_memory`: every config of one of its
   autotuners was skipped, and the one it falls back to needs more shared memory than the GPU
   has, by Triton 3.8.0's count, which can disagree with labels produced under another Triton; a
-  launch outside an autotuner is not checked against the limit)
+  launch outside an autotuner is not checked against the limit), or its process died (`crash`)
 - too_slow: the timeout expired
 - not_judged: the tool cannot say (an op ttsem does not model, its own error, the memory cap,
-  a full /tmp)
+  a full /tmp, a task that does not run, a run that stopped before the trials the rule asks for)
 
 `--gpu` sets only the shared-memory limit: every launch is compiled for sm_90a, so whether an
 autotune config compiles (the autotuner skips one that raises `CompileTimeAssertionFailure` or
@@ -42,6 +43,16 @@ by one power of two until its largest tensor holds at most 2**17 elements (`judg
 elements and its reference model's parameters at most 32 times that, and always after a
 `no_kernel` verdict (an answer may launch its kernel only at the benchmark's own shape).
 
+What the sandbox gives a run: no capabilities, no network, its own pid namespace and session (no
+controlling terminal, stdin closed), none of the caller's environment but what the run needs
+(`run_env`), a private /tmp, and one writable directory of its own. It hides the caller's home
+directory, the XDG directories, /run (the host's sockets), and the whole tree OUT sits in: the
+reference runs, the other answers' runs and the judge's records. The rest of the host's filesystem
+stays readable, read-only: system files, other users' world-readable files, other checkouts. With
+`--strict` it sees only what a run needs: /usr and the links into it, the few files of /etc the
+dynamic loader and the C library read, the CPU's description in /sys, the Python running the judge
+with its site-packages, this package, and the task and the answer.
+
 One pair prints one line per pass that ran (usually one) and exits 0 only if every pass says
 `verified`. A manifest line is a JSON object with `id`, `task`, `answer` (relative paths are
 taken from the manifest's directory), optionally `rule`, `precision` and `gpu`, and any labels
@@ -49,8 +60,9 @@ to carry along; `--rule`, `--precision` and `--gpu` given with `--manifest` appl
 that do not set that field, or set it to null or "" (KernelBench's defaults otherwise). An id is
 judged once: a later line with an id already seen is dropped, with a warning, if it names the
 same task, answer and settings, and is an error otherwise. The reports go to
-OUT/<id>.<pass>.json (a rerun reads back those judged under the same rule, precision and GPU),
-one row per answer to OUT/rows.jsonl, and the counts per verdict to the terminal.
+OUT/<id>.<pass>.json (a rerun reads back those judged under the same rule, precision and GPU:
+only this process writes there), one row per answer to OUT/rows.jsonl, and the counts per verdict
+to the terminal. The runs keep their files in OUT/work/<id>.<pass>/ and OUT/reference/.
 """
 
 from __future__ import annotations
@@ -58,6 +70,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import functools
+import hashlib
 import importlib.util
 import json
 import math
@@ -67,16 +80,30 @@ import site
 import subprocess
 import sys
 import tempfile
+import threading
+import zipfile
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+
+from ttsem.judge_io import (
+    Ran,
+    compare,
+    load_npz,
+    printable,
+    read_json,
+    run_sandboxed,
+    tensor_of,
+)
 
 VERDICTS = ("verified", "wrong", "unsafe", "no_kernel", "error", "too_slow", "not_judged")
 RUNNER = "ttsem._judge_runner"
 # the directory this `ttsem` is imported from, so the sandboxed process imports this very copy
 ROOT = Path(__file__).resolve().parent.parent
+# under OUT: the reference runs, and each answer's own directory
+REFERENCE, WORK = "reference", "work"
 
 KINDS = {
     "oob_read": "out-of-bounds read",
@@ -92,6 +119,11 @@ bubblewrap (apt install bubblewrap, dnf install bubblewrap), or pass --no-sandbo
 them unsandboxed, with your user's permissions, at your own risk.
 """
 
+# what a run's account may be broken in, once the answer's process wrote it
+MALFORMED = (
+    ValueError, KeyError, IndexError, TypeError, AttributeError, RecursionError, OSError,
+    zipfile.BadZipFile,
+)  # fmt: skip
 
 # What a run is given of the caller's environment, where set. Nothing else of it reaches the
 # answer, which could otherwise copy a token from it into the report the judge prints.
@@ -100,6 +132,19 @@ PASSED_ENV = (
 )  # fmt: skip
 # HOME inside the sandbox: an empty directory of its private /tmp
 SANDBOX_HOME = "/tmp/home"
+# Every run: no capabilities (run by root, bwrap keeps them, and CAP_SYS_ADMIN would let the run
+# unmount the tmpfs over a hidden directory), a session of its own (no controlling terminal, so
+# no TIOCSTI into the caller's shell), no network, its own pid namespace, gone with its parent.
+# A user namespace adds nothing here: bwrap makes one by itself for a caller without privileges,
+# and for root it would map the run's uid back to root's.
+SANDBOX_FLAGS = (
+    "--cap-drop", "ALL", "--new-session", "--unshare-net", "--unshare-pid", "--die-with-parent",
+)  # fmt: skip
+# With --strict, of /etc only what the dynamic loader and the C library read
+STRICT_ETC = (
+    "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/alternatives",
+    "/etc/localtime", "/etc/passwd", "/etc/group", "/etc/nsswitch.conf",
+)  # fmt: skip
 
 
 def run_env(
@@ -161,54 +206,233 @@ def runtime_paths() -> list[Path]:
     return paths
 
 
+def hidden_tree(path: Path) -> Path | None:
+    """The highest directory above `path` that holds nothing the runs need (this package, the
+    Python running it, the directories on PYTHONPATH, the home directory), or None: the tree a
+    task or an output sits in, hidden from an answer whole (a benchmark's checkout, the outputs
+    of earlier runs next to OUT). Under /tmp there is nothing to hide: the sandbox's /tmp is its
+    own."""
+    needed = [p.resolve() for p in [*runtime_paths(), Path.home()]]
+    top = None
+    for parent in path.resolve().parents:
+        if parent.is_relative_to("/tmp") or any(p.is_relative_to(parent) for p in needed):
+            break
+        top = parent
+    return top
+
+
+def out_tree(out: Path) -> list[Path]:
+    """What hides OUT from every run: the tree it sits in (`hidden_tree`), or OUT itself where
+    that tree holds what the runs need; nothing under /tmp, which the sandbox replaces. An OUT
+    that holds what the runs need (this package, the Python running it) is refused (ValueError):
+    shown to the runs, it would show them the reference runs too."""
+    out = out.resolve()
+    held = [path for path in runtime_paths() if path.resolve().is_relative_to(out)]
+    if held:
+        raise ValueError(f"the output directory {out} holds {held[0]}: give it one of its own")
+    if out.is_relative_to("/tmp"):
+        return []
+    return [hidden_tree(out) or out]
+
+
+def strict_root() -> list[str]:
+    """With --strict, the filesystem a run starts from: /usr read-only and the links into it
+    (/bin, /lib, ...) as the host has them, the few files of /etc the dynamic loader and the C
+    library read, and the CPU's description in /sys (torch reads it to choose its kernels)."""
+    cmd = ["--ro-bind", "/usr", "/usr"]
+    for name in ("bin", "sbin", "lib", "lib32", "lib64", "libx32"):
+        path = Path("/") / name
+        if path.is_symlink():
+            cmd += ["--symlink", os.readlink(path), str(path)]
+        elif path.is_dir():
+            cmd += ["--ro-bind", str(path), str(path)]
+    for name in STRICT_ETC:
+        cmd += ["--ro-bind-try", name, name]
+    return cmd + ["--ro-bind-try", "/sys/devices/system/cpu", "/sys/devices/system/cpu"]
+
+
 def sandbox_prefix(
-    out: Path, cache: Path, keep: list[Path] | None = None, env: Mapping[str, str] | None = None
+    out: Path,
+    cache: Path,
+    keep: list[Path] | None = None,
+    env: Mapping[str, str] | None = None,
+    hide: Sequence[Path] = (),
+    strict: bool = False,
 ) -> list[str]:
-    """The `bwrap` command line every answer runs under: the filesystem read-only except OUT
-    (where the run writes its report), a private /tmp, the caller's home and the host's sockets
-    (`private_dirs`) under an empty tmpfs, no network, its own pid namespace, and no environment
-    but `env` (`run_env`'s by default). The paths in `keep` and those every run reads
+    """The `bwrap` command line every run goes through (`SANDBOX_FLAGS`): the filesystem
+    read-only except OUT (the run's own directory), a private /tmp, the caller's home and the
+    host's sockets (`private_dirs`) and the directories in `hide` under an empty tmpfs, and no
+    environment but `env` (`run_env`'s by default). The paths in `keep` and those every run reads
     (`runtime_paths`: this package, the Python running it) stay visible, read-only, where /tmp
     or a hidden directory would hide them; one that holds a hidden directory whole stays hidden.
-    An OUT that holds one is refused (ValueError): the answer would see it, and could write
-    there."""
+    An OUT that holds one is refused (ValueError): the run would see it, and could write there.
+    With `strict`, the run starts from an empty root instead of the host's (`strict_root`), and
+    sees of the rest only `keep` and the runtime paths."""
     out = out.resolve()
     private = private_dirs()
     held = [path for path in private if path.is_relative_to(out)]
     if held:
         raise ValueError(f"the output directory {out} holds {held[0]}: give it one of its own")
-    hidden = [Path("/tmp"), *private]
-    cmd = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
-    for path in private:
+    hidden = [Path("/tmp"), *private, *(Path(p).resolve() for p in hide)]
+    shown = [p for p in dict.fromkeys(p.resolve() for p in [*(keep or []), *runtime_paths()])]
+    shown = [p for p in shown if p.exists()]
+    cmd = ["bwrap", *SANDBOX_FLAGS]
+    cmd += strict_root() if strict else ["--ro-bind", "/", "/"]
+    cmd += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
+    if strict:  # nothing of the host but these, before what hides part of them
+        for path in sorted(shown, key=lambda p: len(p.parts)):
+            cmd += ["--ro-bind", str(path), str(path)]
+    for path in hidden[1:]:
         cmd += ["--tmpfs", str(path)]
-    for path in dict.fromkeys(p.resolve() for p in [*(keep or []), *runtime_paths()]):
-        if (
-            path.exists()
-            and any(path.is_relative_to(top) for top in hidden)
-            and not any(inner.is_relative_to(path) for inner in private)
+    for path in shown:
+        if any(path.is_relative_to(top) for top in hidden) and not any(
+            inner.is_relative_to(path) for inner in private
         ):
             cmd += ["--ro-bind", str(path), str(path)]
-    cmd += [
-        "--bind", str(out), str(out), "--dir", SANDBOX_HOME, "--unshare-net", "--unshare-pid",
-        "--die-with-parent", "--chdir", str(out), "--clearenv",
-    ]  # fmt: skip
+    cmd += ["--bind", str(out), str(out), "--dir", SANDBOX_HOME, "--chdir", str(out), "--clearenv"]
     for key, value in (run_env(cache) if env is None else env).items():
         cmd += ["--setenv", key, value]
     return cmd
 
 
-def sandbox_problem() -> str | None:
+def sandbox_problem(strict: bool = False) -> str | None:
     """Why the sandbox cannot run here (no `bwrap` on PATH, or one that cannot create the
-    namespaces, as where unprivileged user namespaces are off), or None."""
+    namespaces, as where unprivileged user namespaces are off, or that does not know one of
+    `SANDBOX_FLAGS`), or None."""
     if shutil.which("bwrap") is None:
         return "bwrap is not on PATH"
-    probe = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
-    probe += ["--unshare-net", "--unshare-pid", "--die-with-parent", "--clearenv", "true"]
-    done = subprocess.run(probe, capture_output=True, text=True, check=False)
+    with tempfile.TemporaryDirectory(prefix="ttsem-probe-") as tmp:
+        work = Path(tmp)
+        env = {"PATH": os.environ.get("PATH", os.defpath)}
+        probe = sandbox_prefix(work, work, [], env, strict=strict) + ["true"]
+        done = subprocess.run(
+            probe, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False
+        )
     if done.returncode:
         why = (done.stderr or "").strip().splitlines()[-1:] or [f"exit {done.returncode}"]
         return f"bwrap cannot create a sandbox here ({why[0]})"
     return None
+
+
+def fresh(path: Path) -> Path:
+    """`path` as an empty directory of its own: a run never starts from what an earlier one
+    left there."""
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True)
+    return path
+
+
+def tidy(work: Path) -> None:
+    """A run's directory once its outputs are read: its arrays and its Triton cache go (the
+    account and the files it ran stay, for whoever looks)."""
+    with contextlib.suppress(OSError):
+        for path in work.iterdir():
+            if path.name == ".cache" and path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.suffix == ".npz":
+                path.unlink()
+
+
+_LOCKS: dict[Path, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+@contextlib.contextmanager
+def locked(path: Path) -> Iterator[None]:
+    """One run at a time for `path` in this process: two answers of one task wait for one
+    reference run."""
+    with _LOCKS_GUARD:
+        lock = _LOCKS.setdefault(path.resolve(), threading.Lock())
+    with lock:
+        yield
+
+
+def settings_flags(settings: Mapping[str, str]) -> list[str]:
+    return [arg for key, value in settings.items() for arg in (f"--{key}", value)]
+
+
+def reference_run(
+    task: Path,
+    out: Path,
+    scale: str,
+    settings: Mapping[str, str],
+    timeout: int,
+    sandbox: bool,
+    strict: bool = False,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """The task's reference run for one pass (``ttsem._judge_runner`` without an answer), once per
+    task content, scale, rule and precision, in OUT/reference/<key>/ (its Triton cache inside),
+    which no answer's sandbox sees. Returns (the reference, None): its trials (seed, precision,
+    `want`), the sweep's inputs' output, the scaling; or (None, the record of what kept it from
+    running), which is the answer's record too. What it came to is kept, by this process, in
+    OUT/reference/<key>.json, and a rerun reads it back (a timeout aside)."""
+    digest = hashlib.sha256(task.read_bytes()).hexdigest()[:12]
+    key = f"{task.stem}-{digest}.{scale}.{settings['rule']}.{settings['precision']}"
+    base = out / REFERENCE
+    work, summary = base / key, base / f"{key}.json"
+    with locked(summary):
+        kept = read_json(summary)
+        if not isinstance(kept, dict):
+            fresh(work)
+            cache = work / ".cache"
+            cache.mkdir(parents=True, exist_ok=True)  # a run may write there first
+            env = run_env(cache, sandbox)
+            cmd = sandbox_prefix(work, cache, [task], env, out_tree(out), strict) if sandbox else []
+            cmd += [sys.executable, "-P", "-m", RUNNER, str(task.resolve()), str(work.resolve())]
+            cmd += ["--scale", scale, "--rule", settings["rule"]]
+            cmd += ["--precision", settings["precision"]]
+            ran = run_sandboxed(cmd, env, work, timeout)
+            kept = reference_outcome(ran, work, timeout)
+            if kept.get("verdict") != "too_slow":
+                summary.write_text(json.dumps(kept, indent=1))
+    if "verdict" in kept:
+        return None, kept
+    try:
+        return reference_of(read_json(work / "run.json"), load_npz(work / "run.npz")), {}
+    except MALFORMED as exc:
+        unread = f"the reference run's outputs cannot be read: {type(exc).__name__}: {exc}"
+        return None, {"verdict": "not_judged", "why": "task_error", "message": unread[:300]}
+
+
+def reference_outcome(ran: Ran, work: Path, timeout: int) -> dict[str, Any]:
+    """What a reference run came to: `{}` when it ran to the end, the record of the pass
+    otherwise (a task that does not run, or stops, is not the answer's to answer for)."""
+    account = read_json(work / "run.json")
+    context = {}
+    if isinstance(account, dict):
+        context = {key: account[key] for key in ("scaling", "shapes") if key in account}
+    stop = ran.stop()
+    if stop is not None:
+        message = f"the reference run stopped: {stop.get('fault') or stop.get('why')}"
+        if stop.get("message"):
+            message += f": {stop['message']}"
+        return {"verdict": "not_judged", "why": "task_error", "message": message[:600], **context}
+    if ran.code is None:
+        return {"verdict": "too_slow", "seconds": timeout, "stage": "reference"}
+    if not isinstance(account, dict) or not ran.done():
+        message = f"the reference run died: {ran.tail}" if ran.tail else "the reference run died"
+        return {"verdict": "not_judged", "why": "task_error", "message": message, **context}
+    failure = account.get("failure")
+    if isinstance(failure, dict):
+        return {**context, "stage": account.get("stage"), **failure}
+    return {}
+
+
+def reference_of(account: Any, arrays: Mapping[str, Any]) -> dict[str, Any]:
+    """The reference run's account with its outputs as tensors (`want`)."""
+    if not isinstance(account, dict):
+        raise TypeError("the reference run's account is not an object")
+    trials = []
+    for index, trial in enumerate(account["trials"]):
+        want = tensor_of(trial["output"], arrays, f"trial{index}")
+        trials.append({"seed": trial["seed"], "precision": str(trial["precision"]), "want": want})
+    sweep = account["sweep"]
+    found = {"trials": trials, "sweep": {"precision": str(sweep["precision"])}}
+    found["sweep"]["want"] = tensor_of(sweep["output"], arrays, "sweep")
+    return found | {key: account[key] for key in ("scaling", "shapes") if key in account}
 
 
 def judge_one(
@@ -219,53 +443,207 @@ def judge_one(
     scale: str = "auto",
     settings: dict[str, str] | None = None,
     sandbox: bool = True,
+    strict: bool = False,
 ) -> dict[str, Any]:
     """One answer, in its own process, with a timeout, under `settings` (`rule`, `precision`,
-    `gpu`; `DEFAULTS` for those missing). The report is kept: a rerun reads it back, unless it
-    was judged under other settings."""
+    `gpu`; `DEFAULTS` for those missing), against the task's reference run (`reference_run`).
+    The run writes only in its own directory, OUT/work/<report's name>/, which no other run
+    sees; the report is this process's, and a rerun reads it back, unless it was judged under
+    other settings."""
     settings = {**DEFAULTS, **(settings or {})}
-    if report.exists():
-        kept = dict(json.loads(report.read_text()))
-        if kept.get("settings") == settings:
-            return kept
-        report.unlink()  # judged under another rule, precision or GPU: judged again
+    kept = read_json(report)
+    if isinstance(kept, dict) and "verdict" in kept and kept.get("settings") == settings:
+        return kept
+    report.unlink(missing_ok=True)  # judged under another rule, precision or GPU: judged again
     out = report.parent.resolve()
-    cache = out / ".cache"
-    cache.mkdir(parents=True, exist_ok=True)
-    # the caller's environment stays out: an answer could copy a token from it into its report
-    env = run_env(cache, sandbox)
-    cmd = sandbox_prefix(out, cache, [task, answer], env) if sandbox else []
-    # -P: the working directory, OUT, stays off the path, so a module an answer leaves there is
-    # not what a later run imports as ttsem
-    cmd += [
-        sys.executable, "-P", "-m", RUNNER, str(task.resolve()), str(answer.resolve()),
-        str(report.resolve()), "--scale", scale,
-    ]  # fmt: skip
-    for key, value in settings.items():
-        cmd += [f"--{key}", value]
-    try:
-        done = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, env=env, cwd=out, check=False
+    head = {"answer": answer.name, "scale": scale, "launches": 0, "settings": settings}
+    reference, problem = reference_run(task, out, scale, settings, timeout, sandbox, strict)
+    if reference is None:
+        record = {**head, **problem}
+    else:
+        work = fresh(out / WORK / report.stem)
+        cache = work / ".cache"
+        cache.mkdir(parents=True, exist_ok=True)  # a run may write there first
+        # the caller's environment stays out: an answer could copy a token from it into its report
+        env = run_env(cache, sandbox)
+        cmd = (
+            sandbox_prefix(work, cache, [task, answer], env, out_tree(out), strict)
+            if sandbox
+            else []
         )
-        if not report.exists():
-            tail = (done.stderr or "").strip().splitlines()[-1:] or [""]
-            died = {"answer": answer.name, "verdict": "error", "why": "crash", "message": tail[0]}
-            report.write_text(json.dumps({**died, "settings": settings}, indent=1))
-    except subprocess.TimeoutExpired:
-        slow = {"answer": answer.name, "verdict": "too_slow", "seconds": timeout}
-        report.write_text(json.dumps({**slow, "settings": settings}, indent=1))
-    return dict(json.loads(report.read_text()))
+        # -P: the working directory, the run's own, stays off the path, so a module the answer
+        # leaves there is not what the runner imports as ttsem
+        cmd += [sys.executable, "-P", "-m", RUNNER, str(task.resolve()), str(work.resolve())]
+        cmd += ["--answer", str(answer.resolve()), "--scale", scale, *settings_flags(settings)]
+        ran = run_sandboxed(cmd, env, work, timeout)
+        record = verdict_of(head, reference, ran, work, settings["rule"], timeout)
+        tidy(work)
+    report.write_text(json.dumps(record, indent=1))
+    return record
+
+
+# what of a run's account goes into its report as it is (the run's own counts and notes)
+ACCOUNT = (
+    "answer_overrides", "entry", "not_copied", "launches_init", "launches", "races_unchecked",
+    "gpu", "shared_unknown", "torch_ops", "atomics", "autotune", "seconds",
+)  # fmt: skip
+
+
+def verdict_of(
+    head: dict[str, Any],
+    reference: dict[str, Any],
+    ran: Ran,
+    work: Path,
+    rule: str,
+    timeout: int,
+) -> dict[str, Any]:
+    """The pass's report, decided here from what the answer's run left: a `stop` it sent (a
+    fault: unsafe; a launch the semantics cannot judge: not_judged), else, for a run that said
+    `done`, its failure or its outputs compared with the reference's by `rule`. A run that sent
+    neither died (error, `crash`) or was killed at the timeout (too_slow). Whatever the run
+    wrote is read as untrusted (`MALFORMED`: the answer's crash)."""
+    report = dict(head)
+    report |= {key: reference[key] for key in ("scaling", "shapes") if key in reference}
+    account = read_json(work / "run.json")
+    account = account if isinstance(account, dict) else None
+    stop = ran.stop()
+    if stop is None and ran.code is None:
+        return {**head, "verdict": "too_slow", "seconds": timeout}
+    if stop is None and (account is None or not ran.done()):
+        return {**head, "verdict": "error", "why": "crash", "message": ran.tail}
+    try:
+        if account is not None:
+            arrays = load_npz(work / "run.npz") if (work / "run.npz").exists() else {}
+            outcome = compared(report, account, arrays, reference, rule)
+        else:
+            outcome = {}
+    except MALFORMED as exc:
+        if stop is None:
+            message = f"malformed run report: {type(exc).__name__}: {exc}"[:300]
+            return {**head, "verdict": "error", "why": "crash", "message": message}
+        outcome = {}
+    if stop is not None:
+        return report | stopped(stop) | stage_of(account)
+    failure = account.get("failure") if account is not None else None
+    if failure is None and account is not None and not isinstance(account.get("trials"), list):
+        message = "malformed run report: no trials and no failure"
+        return {**head, "verdict": "error", "why": "crash", "message": message}
+    if failure is not None:
+        if not isinstance(failure, dict) or failure.get("verdict") not in ("error", "not_judged"):
+            message = "malformed run report: a failure that is no error"
+            return {**head, "verdict": "error", "why": "crash", "message": message}
+        return report | stage_of(account) | failure
+    return report | outcome
+
+
+def stage_of(account: dict[str, Any] | None) -> dict[str, Any]:
+    """Where a run that did not end was: its stage, as it said it."""
+    if account is None or "stage" not in account:
+        return {}
+    return {"stage": str(account["stage"])}
+
+
+def stopped(stop: dict[str, Any]) -> dict[str, Any]:
+    """The verdict of a `stop` (sent before the answer could catch anything)."""
+    if stop.get("kind") == "fault":
+        fields = ("kernel", "buffer", "file", "line", "source", "message")
+        found = {key: stop.get(key) for key in fields}
+        return {"verdict": "unsafe", "kind": str(stop.get("fault")), **found}
+    why = str(stop.get("why") or "error")
+    return {"verdict": "not_judged", "why": why, "message": str(stop.get("message", ""))[:300]}
+
+
+def compared(
+    report: dict[str, Any],
+    account: dict[str, Any],
+    arrays: Mapping[str, Any],
+    reference: dict[str, Any],
+    rule: str,
+) -> dict[str, Any]:
+    """The answer's outputs against the reference's, trial by trial, then config by config, into
+    `report` (`trials`, `configs`, and the account's own counts); returns the verdict they come to
+    when the run ended on its own. A comparison that raises (a dtype the reference's does not
+    take) is the answer's error, as it was when the runner compared."""
+    report |= {key: account[key] for key in ACCOUNT if key in account}
+    expected = reference["trials"]
+    trials: list[dict[str, Any]] = []
+    report["trials"] = trials
+    stage = "forward"
+    try:
+        ran = account.get("trials") or []
+        for index, (mine, theirs) in enumerate(zip(ran, expected, strict=False)):
+            got = tensor_of(mine["output"], arrays, f"trial{index}")
+            row = compare(theirs["want"], got, theirs["precision"], rule)
+            row.update(seed=theirs["seed"], launches=int(mine["launches"]))
+            row["seconds"] = mine.get("seconds")
+            trials.append(row)
+            if not row["pass"]:
+                break
+        passed = len(trials) == len(expected) and all(t["pass"] for t in trials)
+        sweep = account.get("sweep")
+        if passed and sweep is not None:
+            stage = "configs"
+            report["configs"] = configs_of(sweep, arrays, reference["sweep"], rule, account)
+    except MALFORMED:
+        raise
+    except Exception as exc:  # noqa: BLE001  a comparison torch refuses, as `torch.allclose` does
+        text = str(exc).strip().splitlines()
+        message = f"{type(exc).__name__}: {text[0] if text else ''}"[:300]
+        return {"verdict": "error", "stage": stage, "message": message}
+    if trials and all(t["pass"] for t in trials) and len(trials) < len(expected):
+        short = f"the run stopped after {len(trials)} of the rule's {len(expected)} trials"
+        return {"verdict": "not_judged", "why": "incomplete", "message": short}
+    if passed and int(account.get("tuners", 0)) and "configs" not in report:
+        return {"verdict": "not_judged", "why": "incomplete", "message": "no autotune sweep"}
+    if not any(t["launches"] for t in trials):  # a launch at init only does not do the task
+        return {"verdict": "no_kernel"}
+    if passed and "failed" not in report.get("configs", {}):
+        return {"verdict": "verified"}
+    return {"verdict": "wrong"}
+
+
+def configs_of(
+    sweep: dict[str, Any],
+    arrays: Mapping[str, Any],
+    reference: dict[str, Any],
+    rule: str,
+    account: dict[str, Any],
+) -> dict[str, Any]:
+    """The sweep's outcome (`checked`, the config that `failed` first, those `not_applicable`):
+    each config's output against the reference's on the same inputs."""
+    done: dict[str, Any] = {"tuners": int(account.get("tuners", 0)), "checked": 0}
+    last = math.inf
+    for run in sweep["runs"]:
+        got = tensor_of(run["output"], arrays, f"config{int(run['index'])}")
+        row = compare(reference["want"], got, reference["precision"], rule)
+        done["checked"] += 1
+        if not row["pass"]:
+            rest = {k: v for k, v in row.items() if k != "pass"}
+            done["failed"] = {"index": int(run["index"]), "config": str(run["config"]), **rest}
+            last = int(run["index"])
+            break
+    skipped = [entry for entry in sweep.get("not_applicable", []) if entry["index"] <= last]
+    if skipped:
+        done["not_applicable"] = skipped
+    if "forcing" in sweep:
+        done["forcing"] = sweep["forcing"]
+    return done
 
 
 def judge_item(
-    item: dict[str, Any], out: Path, timeout: int, full_max: int, sandbox: bool = True
+    item: dict[str, Any],
+    out: Path,
+    timeout: int,
+    full_max: int,
+    sandbox: bool = True,
+    strict: bool = False,
 ) -> dict[str, Any]:
     """The scaled pass, and the full pass where the rule above calls for it."""
     task, answer = Path(item["task"]), Path(item["answer"])
     # the GPU's shared-memory limit bounds the configs judged
     settings = {key: item[key] for key in DEFAULTS}
     small = out / f"{item['id']}.scaled.json"
-    scaled = judge_one(task, answer, small, timeout, "auto", settings, sandbox)
+    scaled = judge_one(task, answer, small, timeout, "auto", settings, sandbox, strict)
     row = {**item, "scaled": scaled}
     note = scaled.get("scaling", {})
     footprint = note.get("footprint_full")
@@ -273,7 +651,7 @@ def judge_item(
     if scaled["verdict"] == "no_kernel" and note.get("factor", 1) > 1:
         # PyTorch alone is quick at any size, and an answer that launches its kernel only at the
         # benchmark's own shape (`if x.shape[1] != 256: return torch.sum(...)`) shows it there
-        row["full"] = judge_one(task, answer, full, timeout, "none", settings, sandbox)
+        row["full"] = judge_one(task, answer, full, timeout, "none", settings, sandbox, strict)
     elif (
         full_max
         and footprint is not None
@@ -282,7 +660,7 @@ def judge_item(
         # parameters cost memory more than time: a looser bound for them
         and note.get("params_full", 0) <= 32 * full_max
     ):
-        row["full"] = judge_one(task, answer, full, timeout, "none", settings, sandbox)
+        row["full"] = judge_one(task, answer, full, timeout, "none", settings, sandbox, strict)
     return row
 
 
@@ -404,6 +782,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--jobs", type=int, default=2, help="answers judged at once (batch)")
     ap.add_argument("--limit", type=int, default=0, help="the first N answers only (batch)")
     ap.add_argument(
+        "--strict",
+        action="store_true",
+        help="show the runs only what they need of the filesystem, not the host's read-only",
+    )
+    ap.add_argument(
         "--no-sandbox",
         action="store_true",
         help="run the answers without bwrap (model-written code, with your permissions)",
@@ -415,6 +798,8 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--manifest needs --out DIR")
     if args.manifest is not None and args.json:
         ap.error("--json is for one pair; a batch writes its records to OUT/rows.jsonl")
+    if args.strict and args.no_sandbox:
+        ap.error("--strict narrows the sandbox: not with --no-sandbox")
     if args.tritonbench:
         given = [
             f"--{k.replace('_', '-')}" for k in KERNELBENCH_ONLY if getattr(args, k) is not None
@@ -423,7 +808,7 @@ def main(argv: list[str] | None = None) -> int:
             ap.error(f"{', '.join(given)}: KernelBench only, not with --tritonbench")
     sandbox = not args.no_sandbox
     if sandbox:
-        problem = sandbox_problem()
+        problem = sandbox_problem(args.strict)
         if problem is not None:
             sys.stderr.write(NO_BWRAP.format(problem=problem))
             return 2
@@ -460,22 +845,25 @@ def single(args: argparse.Namespace, sandbox: bool) -> int:
         **{key: getattr(args, key) or value for key, value in DEFAULTS.items()},
     }
     timeout = args.timeout or 600
+    strict = bool(getattr(args, "strict", False))
     with contextlib.ExitStack() as stack:
         out = args.out or Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="ttsem-")))
         out.mkdir(parents=True, exist_ok=True)
         for tag in ("scaled", "full"):  # one pair is judged afresh, not read back
             (out / f"{item['id']}.{tag}.json").unlink(missing_ok=True)
         if args.scale == "auto":
-            row = judge_item(item, out, timeout, args.full_max, sandbox)
+            row = judge_item(item, out, timeout, args.full_max, sandbox, strict)
         else:
             settings = {key: item[key] for key in DEFAULTS}
             report = out / f"{item['id']}.full.json"
-            full = judge_one(args.task, args.answer, report, timeout, "none", settings, sandbox)
+            full = judge_one(
+                args.task, args.answer, report, timeout, "none", settings, sandbox, strict
+            )
             row = {**item, "full": full}
     if args.json:
         print(json.dumps(row, indent=1))
     else:
-        print("\n".join(lines_of(row)))
+        print(printable("\n".join(lines_of(row))))
     passes = [row[key]["verdict"] for key in ("scaled", "full") if key in row]
     return 0 if all(v == "verified" for v in passes) else 1
 
@@ -528,16 +916,22 @@ def batch(args: argparse.Namespace, sandbox: bool) -> int:
     out: Path = args.out
     out.mkdir(parents=True, exist_ok=True)
     timeout = args.timeout or 300
+    strict = bool(getattr(args, "strict", False))
     rows: list[dict[str, Any]] = []
     with ThreadPoolExecutor(args.jobs) as pool, (out / "rows.jsonl").open("w") as sink:
         work = functools.partial(
-            judge_item, out=out, timeout=timeout, full_max=args.full_max, sandbox=sandbox
+            judge_item,
+            out=out,
+            timeout=timeout,
+            full_max=args.full_max,
+            sandbox=sandbox,
+            strict=strict,
         )
         for row in pool.map(work, items):
             rows.append(row)
             sink.write(json.dumps(row) + "\n")
             sink.flush()
-            print(f"{row['id']}: " + "; ".join(lines_of(row)), flush=True)
+            print(printable(f"{row['id']}: " + "; ".join(lines_of(row))), flush=True)
     print("\n".join(tally(rows)))
     return 0
 

@@ -3,7 +3,7 @@
 Not meant to be imported: ``ttsem.judge_tritonbench`` runs it, under ``bwrap`` and with a timeout,
 as
 
-    python -m ttsem._tritonbench_runner FILE.py OUT.json OUT.npz
+    python -m ttsem._tritonbench_runner FILE.py OUT.json OUT.npz [--events FD]
 
 A TritonBench file is an operator, a line of 146 `#`, and the task's test, which calls the
 operator on its test cases and keeps what it returns in a module-level variable (`result_gold` in
@@ -17,12 +17,18 @@ OUT.json and its tensors in OUT.npz (bfloat16 and float16 widened to float32), w
 reads back with `allow_pickle=False`. TritonBench itself compares the stdout of the two runs, and
 its tests print nothing.
 
-`run` in OUT.json: ok | oob_read | oob_write | race | poison (a fault) | unsupported | error (the
-semantics cannot go on) | memory (the run's memory cap) | tool_error | call_error (the file raised).
+`run` in OUT.json: ok | unsupported | error (the semantics cannot go on) | memory (the run's
+memory cap) | tool_error | call_error (the file raised, or raised the tool's own exception
+itself). A fault (oob_read, oob_write, race, poison), or a launch the semantics cannot judge, is
+not written there: it goes to the judge at once on the events pipe (`--events FD`) and the process
+ends (`ttsem.judge_io.Channel`), so the file cannot catch it and go on as if the kernel had run. A
+run that ends otherwise writes OUT.json and OUT.npz, sends `done` and leaves the same way: no exit
+handler of the file's runs after it.
 """
 
 from __future__ import annotations
 
+import argparse
 import ast
 import json
 import runpy
@@ -35,7 +41,8 @@ import numpy as np
 import torch
 
 from ttsem import sanitize
-from ttsem._judge_runner import answer_frame, blame, cap_memory, first_line
+from ttsem._judge_runner import answer_frame, blame, cap_memory, first_line, raised_by_answer
+from ttsem.judge_io import Channel
 
 
 def plain(value: Any, arrays: list[np.ndarray]) -> Any:
@@ -84,56 +91,88 @@ def results_name(script: Path) -> str:
     return name
 
 
-def main() -> int:
+def fault_event(fault: sanitize.Fault) -> dict[str, Any]:
+    """A fault as the judge's run report gives it."""
+    return {
+        "kind": "fault",
+        "run": fault.kind,
+        "kernel": fault.kernel,
+        "buffer": fault.buffer,
+        "fault_file": Path(fault.source_file).name,
+        "line": fault.source_line,
+        "source": fault.source_text,
+        "message": sanitize.message(fault)[:600],
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    ap.add_argument("script", type=Path)
+    ap.add_argument("out_json", type=Path)
+    ap.add_argument("out_npz", type=Path)
+    ap.add_argument("--events", type=int, help="the pipe to the judge (`judge_io.Channel`)")
+    args = ap.parse_args(argv)
+    channel = Channel(args.events)  # before anything of the file's is imported
     cap_memory()
-    script, out_json, out_npz = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+    script: Path = args.script
     report: dict[str, Any] = {"file": script.name, "run": "ok", "launches": 0}
     own = {script.resolve()}
+    live: dict[str, Any] = {}
     start = time.time()
     torch.manual_seed(0)
     sys.argv = [str(script)]
     results: Any = None
+
+    def on_stop(stop: sanitize.KernelFault | sanitize.Unjudged) -> None:
+        """A launch faulted, or cannot be judged: the judge hears it now, and the file never
+        gets control back. The tool's own exception raised by the file's code is its error."""
+        if isinstance(stop, sanitize.Unjudged) and raised_by_answer(stop, own):
+            return
+        if isinstance(stop, sanitize.KernelFault):
+            event = fault_event(stop.fault)
+        else:
+            event = {"kind": "unjudged", "run": stop.verdict, "message": stop.detail[:300]}
+            event["ops"] = stop.unsupported
+        state = live.get("state")
+        if state is not None:
+            event |= {"launches": state.launches, "races_unchecked": state.races_unchecked}
+        channel.stop(event)
+
     if "_inductor" in script.read_text(encoding="utf-8", errors="replace"):
         sanitize.inductor_names()  # code in Inductor's style: `grid`, `_empty_strided_cuda`
-    with sanitize.session(source=str(script)) as state:
+    with sanitize.session(source=str(script), on_stop=on_stop) as state:
+        live["state"] = state
         try:
             scope = runpy.run_path(str(script), run_name="__main__")
             results = scope.get(results_name(script))
-        except sanitize.KernelFault as stop:
-            fault = stop.fault
-            report.update(
-                run=fault.kind,
-                kernel=fault.kernel,
-                buffer=fault.buffer,
-                fault_file=Path(fault.source_file).name,
-                line=fault.source_line,
-                source=fault.source_text,
-                message=sanitize.message(fault)[:600],
-            )
-        except sanitize.Unjudged as stop:
-            report.update(run=stop.verdict, message=stop.detail[:300], ops=stop.unsupported)
+        except sanitize.KernelFault as stop:  # raised outside a launch: the file's own doing
+            channel.stop({**fault_event(stop.fault), "launches": state.launches})
         except MemoryError:
             report.update(run="memory", message="more memory than this run is allowed")
         except BaseException as exc:  # noqa: BLE001  the file under test may raise anything
-            inside, frame = blame(exc, own)
-            where = answer_frame(exc, own) or frame  # a compile error: the file's own launch
-            lines = [ln.strip() for ln in str(exc).strip().splitlines() if ln.strip()]
-            # a compilation error says what went wrong last
-            report.update(
-                run="tool_error" if inside else "call_error",
-                message=first_line(exc),
-                detail=" | ".join(lines[-2:])[:300],
-                where=f"{Path(where.filename).name}:{where.lineno}",
-            )
+            if isinstance(exc, sanitize.Unjudged) and not raised_by_answer(exc, own):
+                # the semantics' own, out of a launch the session does not watch
+                report.update(run=exc.verdict, message=exc.detail[:300], ops=exc.unsupported)
+            else:
+                inside, frame = blame(exc, own)
+                where = answer_frame(exc, own) or frame  # a compile error: the file's own launch
+                lines = [ln.strip() for ln in str(exc).strip().splitlines() if ln.strip()]
+                # a compilation error says what went wrong last
+                report.update(
+                    run="tool_error" if inside else "call_error",
+                    message=first_line(exc),
+                    detail=" | ".join(lines[-2:])[:300],
+                    where=f"{Path(where.filename).name}:{where.lineno}",
+                )
         report["launches"] = state.launches
         report["races_unchecked"] = state.races_unchecked
     if report["run"] == "ok":
         arrays: list[np.ndarray] = []
         report["results"] = plain(results, arrays)
-        np.savez(out_npz, *arrays)
+        np.savez(args.out_npz, *arrays)
     report["seconds"] = round(time.time() - start, 1)
-    out_json.write_text(json.dumps(report, indent=1))
-    return 0
+    args.out_json.write_text(json.dumps(report, indent=1))
+    channel.finish(0)
 
 
 if __name__ == "__main__":

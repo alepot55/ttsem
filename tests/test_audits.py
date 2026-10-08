@@ -236,16 +236,16 @@ def test_the_device_control_shows_an_answer_no_secret_of_the_caller(
     planted: Planted, tmp_path: Path, monkeypatch: Any
 ) -> None:
     """The control's sandbox, on CPU tensors: what the file copies of a secret the caller holds,
-    in its environment and in its home's config, into OUT."""
+    in its environment and in its home's config, into its own directory."""
     device = load("tritonbench/device.py")
     monkeypatch.setattr(device, "gpu_nodes", list)
     script = tmp_path / "leak.py"
     script.write_text(planted.leak() + "import torch\nresult_gold = {'a': torch.ones(2)}\n")
-    out = tmp_path / "out"
-    out.mkdir()
-    got = device.run_file(script, out / "leak.device.json", out, 120, out / ".cache", [])
+    work = tmp_path / "work"
+    work.mkdir()
+    got = device.run_file(script, work, 120)
     assert got["run"] == "ok", got
-    seen = planted.check(out)
+    seen = planted.check(work)
     assert seen["environ"][device.SANDBOXED] == "1"  # set inside, for the runner
 
 

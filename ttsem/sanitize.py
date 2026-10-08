@@ -24,7 +24,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -590,12 +590,21 @@ def _check_shared(state: Session, record: harness.LaunchRecord) -> None:
 
 @contextlib.contextmanager
 def session(
-    cc: int = harness.DEFAULT_CC, source: str = "<program>", cuda_is_cpu: bool = True
+    cc: int = harness.DEFAULT_CC,
+    source: str = "<program>",
+    cuda_is_cpu: bool = True,
+    on_stop: Callable[[KernelFault | Unjudged], object] | None = None,
 ) -> Iterator[Session]:
     """While open, every Triton launch of this process is executed by the semantics on the CPU
     tensors it was given and written back into them. A launch that faults raises
     :class:`KernelFault` out of the launching call. With ``cuda_is_cpu`` every request for a
-    CUDA device gets the CPU, so code written for a GPU runs as it is."""
+    CUDA device gets the CPU, so code written for a GPU runs as it is.
+
+    ``on_stop`` is called with the :class:`KernelFault` or :class:`Unjudged` of a launch before
+    it is raised. On a GPU the launch would not raise at all, so code that catches the exception
+    and goes on (computing the result some other way) would hide the fault from whoever reads
+    the program's outcome: a judge records the exception there, out of the program's reach, and
+    ends the process without returning (`ttsem._judge_runner`)."""
     harness._install_fake_driver(cc)
     restore_bench = _no_benchmarks()
     target = harness.target_for("cpu", cc)
@@ -642,7 +651,16 @@ def session(
             raise KernelFault(_with_source(_race_fault(record, race, launch, ir_text), ir_text))
         return None
 
-    JITFunction.run = run
+    def stopping(self: JITFunction, *args: Any, grid: Any, warmup: bool, **kwargs: Any) -> Any:
+        __tracebackhide__ = True
+        try:
+            return run(self, *args, grid=grid, warmup=warmup, **kwargs)
+        except (KernelFault, Unjudged) as stop:
+            if on_stop is not None:
+                on_stop(stop)
+            raise
+
+    JITFunction.run = run if on_stop is None else stopping
     redirect = _cuda_is_cpu() if cuda_is_cpu else contextlib.nullcontext()
     restore_cuda = _pretend_cuda(redirect) if cuda_is_cpu else (lambda: None)
     try:

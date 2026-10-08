@@ -1,0 +1,369 @@
+"""What an answer can do to its own verdict, or to another's, from inside its run; and what the
+sandbox around the run keeps from it.
+
+The answers under `fixtures/judge/` and `fixtures/tritonbench/` named `swallows`, `forges` and
+`prewrites` were written to cheat: one catches the fault the judge would raise into its code and
+lets PyTorch compute the result, one rewrites at exit every report it can name as `verified`, one
+writes a `verified` record for another answer of its batch before that answer is judged. Each got
+`verified` from the judge before its runs sent faults out of band, ended with `os._exit`, wrote
+outputs instead of verdicts and wrote only in directories of their own. They run through the
+judge's own `bwrap` sandbox like any answer, so those tests skip where it cannot run; the rest
+builds the sandbox's command or reads hand-made runs, and runs no answer.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import pty
+import select
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+import zipfile
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pytest
+from conftest import Planted
+
+from ttsem import judge
+from ttsem import judge_tritonbench as tb
+from ttsem.judge_io import (
+    EXIT_STOPPED,
+    load_npz,
+    printable,
+    read_untrusted,
+    run_sandboxed,
+)
+
+HERE = Path(__file__).resolve().parent
+KB = HERE / "fixtures" / "judge"
+TB = HERE / "fixtures" / "tritonbench"
+ROOT = HERE.parent
+
+needs_bwrap = pytest.mark.skipif(
+    judge.sandbox_problem() is not None, reason="needs a working bwrap"
+)
+needs_sandbox = pytest.mark.skipif(
+    importlib.util.find_spec("torch") is None
+    or importlib.util.find_spec("triton") is None
+    or judge.sandbox_problem() is not None,
+    reason="needs torch, Triton and a working bwrap",
+)
+
+
+def batch(here: Path, lines: list[tuple[str, Path, Path]], *flags: str) -> dict[str, Any]:
+    """A manifest judged in order, one answer at a time, through the package's entry point:
+    the rows by id."""
+    here.mkdir(parents=True, exist_ok=True)
+    manifest = here / "manifest.jsonl"
+    rows = [{"id": i, "task": str(task), "answer": str(answer)} for i, task, answer in lines]
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    out = here / "out"
+    done = subprocess.run(
+        [sys.executable, "-m", "ttsem", "judge", *flags, "--manifest", str(manifest)]
+        + ["--out", str(out), "--jobs", "1"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    found = [json.loads(line) for line in (out / "rows.jsonl").read_text().splitlines()]
+    return {row["id"]: row for row in found}
+
+
+# --- the forged answers -------------------------------------------------------------------------
+
+
+@needs_sandbox
+def test_a_fault_the_answer_catches_is_still_unsafe(tmp_path: Path) -> None:
+    """KernelBench: the fault reaches the judge before the answer's `except` does, and the run
+    ends there."""
+    got = judge.judge_one(KB / "task_relu.py", KB / "answer_swallows.py", tmp_path / "a.json", 300)
+    assert (got["verdict"], got["kind"], got["buffer"]) == ("unsafe", "oob_read", "x_ptr"), got
+    assert (got["file"], got["source"]) == ("answer_swallows.py", "x = tl.load(x_ptr + offs)")
+
+
+@needs_sandbox
+def test_a_fault_a_tritonbench_answer_catches_is_still_unsafe(tmp_path: Path) -> None:
+    item = {"id": "a", "task": str(TB / "task_relu.py"), "answer": str(TB / "answer_swallows.py")}
+    got = tb.judge_item(item, tmp_path, 300, sandbox=True)[tb.RECORD]
+    assert (got["verdict"], got["class"]) == ("unsafe", "oob_read"), got
+    assert (got["file"], got["line"]) == ("answer_swallows.py", 14)
+
+
+@needs_sandbox
+def test_an_answer_that_rewrites_reports_at_exit_is_judged_on_its_outputs(tmp_path: Path) -> None:
+    """Its exit handler never runs (the run leaves by `os._exit`), and no file of its run says
+    the verdict anyway: x + 1 is wrong."""
+    task, answer = KB / "task_relu.py", KB / "answer_forges.py"
+    got = judge.judge_one(task, answer, tmp_path / "a.json", 300)
+    assert got["verdict"] == "wrong", got
+    assert got["trials"][0]["max_abs_diff"] > 0.5
+    account = json.loads((tmp_path / judge.WORK / "a" / "run.json").read_text())
+    assert account.get("verdict") is None and account["trials"]  # the runner's, not the forge's
+
+
+@needs_sandbox
+def test_no_answer_writes_the_record_of_another_in_its_batch(tmp_path: Path) -> None:
+    """`prewrites` runs first and writes a `verified` record for `victim` (a wrong answer)
+    wherever it can reach; `victim` is judged all the same, and nothing was written in OUT."""
+    task = KB / "task_relu.py"
+    lines = [
+        ("prewrites", task, KB / "answer_prewrites.py"),
+        ("victim", task, KB / "answer_wrong.py"),
+    ]
+    rows = batch(tmp_path, lines)
+    assert rows["prewrites"]["scaled"]["verdict"] == "verified"
+    assert rows["victim"]["scaled"]["verdict"] == "wrong", rows["victim"]
+    out = tmp_path / "out"
+    assert json.loads((out / "victim.scaled.json").read_text())["trials"][0]["seed"] is not None
+    assert not (out / judge.WORK / "victim.scaled.json").exists()
+    assert (out / judge.WORK / "prewrites.scaled" / "victim.scaled.json").exists()  # its own
+
+
+@needs_sandbox
+def test_no_tritonbench_answer_writes_the_record_of_another_in_its_batch(tmp_path: Path) -> None:
+    task = TB / "task_relu.py"
+    lines = [
+        ("prewrites", task, TB / "answer_prewrites.py"),
+        ("victim", task, TB / "answer_wrong.py"),
+    ]
+    rows = batch(tmp_path, lines, "--tritonbench")
+    assert rows["prewrites"][tb.RECORD]["verdict"] == "verified"
+    victim = rows["victim"][tb.RECORD]
+    assert (victim["verdict"], victim["class"]) == ("wrong", "wrong_result"), victim
+
+
+@needs_sandbox
+def test_strict_keeps_every_verdict(tmp_path: Path) -> None:
+    """With --strict the runs see only what they need of the filesystem, and judge the same."""
+    task = KB / "task_relu.py"
+    names = ("ok", "wrong", "unsafe", "no_kernel")
+    rows = batch(tmp_path / "kb", [(n, task, KB / f"answer_{n}.py") for n in names], "--strict")
+    assert {n: rows[n]["scaled"]["verdict"] for n in names} == {
+        "ok": "verified", "wrong": "wrong", "unsafe": "unsafe", "no_kernel": "no_kernel",
+    }  # fmt: skip
+    task = TB / "task_relu.py"
+    names = ("ok", "unsafe")
+    rows = batch(
+        tmp_path / "tb",
+        [(n, task, TB / f"answer_{n}.py") for n in names],
+        "--tritonbench",
+        "--strict",
+    )
+    assert {n: rows[n][tb.RECORD]["verdict"] for n in names} == {
+        "ok": "verified",
+        "unsafe": "unsafe",
+    }
+
+
+# --- the sandbox --------------------------------------------------------------------------------
+
+UNHIDE = r"""
+import ctypes, json, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+status = open("/proc/self/status").read().splitlines()
+caps = {l.split(":")[0]: l.split()[1] for l in status if l.startswith("CapEff")}
+# first try to take the hiding away, as a run with CAP_SYS_ADMIN could (MNT_DETACH)
+tries = {path: libc.umount2(path.encode(), 2) for path in sys.argv[2:]}
+try:
+    secret = open(sys.argv[1]).read()
+except OSError as exc:
+    secret = "unreadable: " + type(exc).__name__
+print(json.dumps({"caps": caps, "umount": tries, "secret": secret}))
+"""
+
+
+@needs_bwrap
+def test_a_run_has_no_capability_and_cannot_take_the_hiding_away(
+    planted: Planted, tmp_path: Path
+) -> None:
+    """Run by root (as in a cloud session) bwrap keeps its capabilities unless told to drop them,
+    and with CAP_SYS_ADMIN a run unmounts the tmpfs over a hidden directory and reads what is
+    under it. The run tries that first, on every directory the sandbox hides, then reads the
+    secret planted in the caller's home."""
+    out = tmp_path / "out"
+    out.mkdir()
+    cmd = judge.sandbox_prefix(out, out / ".cache", [], hide=[tmp_path / "elsewhere"])
+    hidden = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--tmpfs"]
+    done = subprocess.run(
+        [*cmd, sys.executable, "-c", UNHIDE, str(planted.file), *hidden],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=judge.run_env(out / ".cache"),
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    seen = json.loads(done.stdout)
+    # the effective set is empty, so no CAP_SYS_ADMIN: the unmount below is what it forbids
+    assert seen["caps"] == {"CapEff": "0000000000000000"}, seen
+    assert all(code != 0 for code in seen["umount"].values()), seen["umount"]
+    assert seen["secret"].startswith("unreadable: ")
+    assert planted.value not in done.stdout
+
+
+INJECT = r"""
+import fcntl, os, termios
+done = []
+for name, fd in (("tty", None), ("stdin", 0)):
+    try:
+        fd = os.open("/dev/tty", os.O_RDWR) if fd is None else fd
+        for c in b"INJECTED\n":
+            fcntl.ioctl(fd, termios.TIOCSTI, bytes([c]))
+        done.append(name)
+    except OSError as exc:
+        pass
+print("pushed:", done)
+"""
+
+
+def in_a_terminal(command: str) -> str:
+    """`command` run by a shell in a fresh terminal, which then reads one line from it: what
+    it read (a run that pushes a line into the terminal's input queue is read here)."""
+    pid, fd = pty.fork()
+    if pid == 0:  # the shell
+        script = f"{command} >/dev/null 2>&1; IFS= read -r -t 3 line; echo READ=[$line]"
+        os.execvp("bash", ["bash", "--norc", "--noprofile", "-c", script])
+    seen = b""
+    end = time.time() + 60
+    while time.time() < end and b"READ=[" not in seen.split(b"\n")[-1] + seen[-80:]:
+        ready, _, _ = select.select([fd], [], [], 0.5)
+        if ready:
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            seen += chunk
+        if b"READ=[" in seen and seen.rstrip().endswith(b"]"):
+            break
+    os.waitpid(pid, 0)
+    os.close(fd)
+    text = seen.decode(errors="replace")
+    return text[text.rindex("READ=[") + 6 :].split("]")[0] if "READ=[" in text else ""
+
+
+@needs_bwrap
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_a_run_cannot_push_input_into_the_callers_terminal(tmp_path: Path) -> None:
+    """TIOCSTI on its controlling terminal, or on a terminal it was handed as stdin, puts bytes
+    in the input queue of whatever reads that terminal next: the shell the judge was started
+    from. Out of the sandbox, the same code does it (else the kernel forbids it, and there is
+    nothing to show); in the sandbox (a session of its own, no capability), it cannot."""
+    child = shlex.join([sys.executable, "-c", INJECT])
+    if in_a_terminal(child) != "INJECTED":
+        pytest.skip("this kernel lets no process push input into a terminal (TIOCSTI is off)")
+    out = tmp_path / "out"
+    out.mkdir()
+    cmd = judge.sandbox_prefix(out, out / ".cache", [], judge.run_env(out / ".cache"))
+    assert in_a_terminal(shlex.join([*cmd, sys.executable, "-c", INJECT])) == ""
+
+
+def test_every_run_starts_with_stdin_closed_and_its_events_reach_the_judge(tmp_path: Path) -> None:
+    """`run_sandboxed`, on a child of this test's own (no sandbox needed for what it shows): its
+    stdin reads nothing, and what it sends on the pipe comes back as events."""
+    child = (
+        "import json, os, sys; fd = int(sys.argv[-1]); data = sys.stdin.read()\n"
+        "os.write(fd, b'garbage without a newline')\n"
+        "os.write(fd, b'\\n' + json.dumps({'event': 'note', 'stdin': data}).encode() + b'\\n')\n"
+    )
+    ran = run_sandboxed([sys.executable, "-c", child], os.environ, tmp_path, 60)
+    assert ran.code == 0 and ran.events == [{"event": "note", "stdin": ""}]
+
+
+CHANNEL_CHILD = r"""
+import atexit, os, sys
+from ttsem.judge_io import Channel
+fd = int(os.environ["EVENTS_FD"])
+channel = Channel(fd)
+atexit.register(lambda: os.write(fd, b'\n{"event": "atexit"}\n'))
+if sys.argv[1] == "stop":
+    channel.stop({"kind": "fault", "run": "oob_read"})
+channel.finish(0)
+raise SystemExit("unreachable")
+"""
+
+
+@pytest.mark.parametrize(
+    ("mode", "code", "last_event"),
+    [("stop", EXIT_STOPPED, "stop"), ("done", 0, "done")],
+)
+def test_the_channel_sends_then_leaves_without_the_answers_exit_handlers(
+    tmp_path: Path, mode: str, code: int, last_event: str
+) -> None:
+    """`Channel.stop` and `.finish` send their event and leave by `os._exit`, so the atexit
+    handler a run registered (a forge) never runs, and its `{"event": "atexit"}` never reaches
+    the judge after the last word. The child imports this checkout's `ttsem`."""
+    read_fd, write_fd = os.pipe()
+    env = {**os.environ, "PYTHONPATH": str(ROOT), "EVENTS_FD": str(write_fd)}
+    done = subprocess.run(
+        [sys.executable, "-c", CHANNEL_CHILD, mode],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=env,
+        pass_fds=(write_fd,),
+        check=False,
+    )
+    os.close(write_fd)
+    os.set_blocking(read_fd, False)
+    try:
+        sent = os.read(read_fd, 65536)
+    finally:
+        os.close(read_fd)
+    assert done.returncode == code, done.stderr
+    events = [json.loads(line) for line in sent.split(b"\n") if line.strip()]
+    assert [e["event"] for e in events] == [last_event]  # no atexit event after it
+
+
+def test_read_untrusted_refuses_a_link_a_fifo_and_too_large(tmp_path: Path) -> None:
+    """A run writes in its own directory; what the judge reads back there is read as untrusted:
+    a regular file of bounded size, never followed through a link."""
+    plain = tmp_path / "plain"
+    plain.write_bytes(b"ok")
+    assert read_untrusted(plain) == b"ok"
+    assert read_untrusted(plain, limit=1) is None  # over the limit
+    link = tmp_path / "link"
+    link.symlink_to("/etc/passwd")
+    assert read_untrusted(link) is None  # a link is not followed
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    assert read_untrusted(fifo) is None  # not a regular file
+    assert read_untrusted(tmp_path / "missing") is None
+
+
+def test_load_npz_refuses_a_compressed_member_and_a_bad_header(tmp_path: Path) -> None:
+    """A run's arrays are read with `allow_pickle=False` and only when stored as `np.savez`
+    stores them: a compressed member, or one whose header does not read, is refused."""
+    good = tmp_path / "good.npz"
+    np.savez(good, np.arange(4, dtype=np.float32), np.ones(2))
+    data = load_npz(good)
+    assert set(data) == {"arr_0", "arr_1"} and data["arr_0"].dtype == np.float32
+    packed = tmp_path / "packed.npz"
+    np.savez_compressed(packed, np.arange(4))
+    with pytest.raises(ValueError, match="stored"):
+        load_npz(packed)
+    with zipfile.ZipFile(tmp_path / "bad.npz", "w") as archive:
+        archive.writestr("arr_0.npy", b"not a real npy header")
+    with pytest.raises(ValueError):
+        load_npz(tmp_path / "bad.npz")
+
+
+def test_printable_escapes_control_characters() -> None:
+    """What a run says (an exception's message, a kernel's source line) is the answer's to
+    choose; a terminal takes some control sequences as commands, so the judge escapes them."""
+    assert printable("ok line") == "ok line"
+    assert "\x1b" not in printable("a\x1b]0;x\x07b")
+    rtl = chr(0x202E)  # a right-to-left override, built so the source holds no control char
+    assert printable("a" + rtl + "b") == "a\\u202eb"
+    assert printable("tab\tkept?") == "tab\\tkept?"

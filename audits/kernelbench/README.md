@@ -16,7 +16,10 @@ flagged.
 - Linux with `bwrap` (bubblewrap) and unprivileged user namespaces: every answer is model-written
   code and runs only inside the sandbox (read-only filesystem, your home directory and the host's
   sockets in /run hidden, of your environment only the few variables a run needs, no network, its
-  own pid namespace).
+  own pid namespace and session, no capabilities). The verdict is computed in the parent from the
+  run's raw outputs, never written by the run; a fault ends the run out of band, so a try/except in
+  the answer cannot hide it. The run can still read the rest of the host read-only; `--strict`
+  (the judge) narrows that to what a run needs.
 - Python 3.12 and a clone of this repository, installed with the Triton wheel and CPU torch:
 
   ```console
