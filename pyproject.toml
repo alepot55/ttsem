@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "ttsem"
 dynamic = ["version"]
-description = "An executable semantics of Triton's TTIR and TTGIR, with a per-pass validator"
+description = "Run Triton kernel tests without a GPU: out-of-bounds accesses and races at the kernel's line"
 readme = "README.md"
 # 3.12 is the floor because the package needs it, not by habit. On 3.10 every interpreter error
 # fails (BaseException.add_note is 3.11). On 3.11 the CPU suite passes but for one test of the
