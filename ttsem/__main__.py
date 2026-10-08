@@ -9,6 +9,7 @@ from ttsem import __version__
 USAGE = f"""ttsem {__version__} - an executable semantics of Triton's TTIR and TTGIR.
 
 The package is a library first; every entry point below is a module you run with `-m`.
+After a pip install, the `ttsem` command is the same as `python -m ttsem`.
 
   python -m ttsem demo [--live]
       The whole idea on one real bug (triton#11519): replay the committed recording of a

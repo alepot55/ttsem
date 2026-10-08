@@ -7,6 +7,11 @@ name = "ttsem"
 dynamic = ["version"]
 description = "An executable semantics of Triton's TTIR and TTGIR, with a per-pass validator"
 readme = "README.md"
+# 3.12 is the floor because the package needs it, not by habit. On 3.10 every interpreter error
+# fails (BaseException.add_note is 3.11). On 3.11 the CPU suite passes but for one test of the
+# TritonBench judge: before PEP 701 the tokenizer reads an f-string as a single string, so a call
+# such as `torch.rand` inside an f-string's braces goes unseen. On 3.12 and 3.13 the CPU suite
+# passes in full; CI runs the tests that need Triton and torch on 3.12.
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -20,16 +25,25 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Compilers",
     "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
 ]
 dependencies = ["numpy"]
 
 [project.optional-dependencies]
 # The tool interprets IR without a GPU; Triton is needed only to produce IR from a Python
-# kernel, and to record the launch the semantics is checked against.
-triton = ["triton==3.8.0", "torch"]
+# kernel, and to record the launch the semantics is checked against. torch is pinned with it:
+# 2.14.0 is the release built against Triton 3.8 (its own requirement is triton~=3.8.0), the one
+# the tests and `python -m ttsem demo --torch` run on, and a later torch may carry the fixes for
+# the races that demo shows. The pin matches the CPU build too (2.14.0+cpu), so the install line
+# with PyTorch's CPU index keeps working.
+triton = ["triton==3.8.0", "torch==2.14.0"]
 test = ["pytest", "pytest-xdist"]
+
+[project.scripts]
+ttsem = "ttsem.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/alepot55/ttsem"
@@ -42,9 +56,13 @@ path = "ttsem/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ttsem"]
+# Research scripts that stay in the repository and the sdist: bot.sh rebuilds a Triton checkout
+# in a loop on a GPU machine, campaign_target.py plugs into a fuzzing driver that is not part of
+# the package. Nothing in ttsem imports either.
+exclude = ["ttsem/bot.sh", "ttsem/campaign_target.py"]
 
-# The recorded demo and its live program travel in the wheel, so `python -m ttsem demo` works after
-# `pip install git+...` as well as from a clone.
+# The recorded demo and its live program travel in the wheel, so `python -m ttsem demo` works from
+# an installed wheel as well as from a clone.
 [tool.hatch.build.targets.wheel.force-include]
 "examples/e15_11519_main_e1f944a7a.json" = "ttsem/_examples/e15_11519_main_e1f944a7a.json"
 "examples/e15_repro.py" = "ttsem/_examples/e15_repro.py"
