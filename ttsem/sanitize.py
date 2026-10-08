@@ -619,10 +619,16 @@ def session(
     state = Session()
     orig_run = JITFunction.run
 
+    cap = int(os.environ.get("TTSEM_BLOCK_CAP", "0") or 0)
+
     def run(self: JITFunction, *args: Any, grid: Any, warmup: bool, **kwargs: Any) -> Any:
         __tracebackhide__ = True  # pytest: the failure is the caller's line, not ours
         if warmup:
             return _Warm(self, kwargs)
+        if cap and callable(grid):  # TTSEM_BLOCK_CAP: as `inductor_names(block=...)` does for
+            for name in ("XBLOCK", "YBLOCK", "ZBLOCK"):  # the autotuner, for direct launches
+                if isinstance(kwargs.get(name), int) and kwargs[name] > cap:  # whose grid reads
+                    kwargs[name] = cap  # the block from the meta, so it covers what it did
         launch = state.launches
         recorded = harness.record_launch(
             self, args, kwargs, grid, lambda *a, **k: None, source, launch

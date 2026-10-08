@@ -440,3 +440,35 @@ def test_a_recorded_race_lets_the_program_go_on_and_another_order_witnesses_it(
     with sanitize.session(races="off") as state:
         pid_to_first[(2,)](torch.zeros(4, dtype=torch.float32, device="cuda"))
     assert state.races == []
+
+
+def test_a_block_cap_shrinks_the_block_of_a_direct_launch_whose_grid_reads_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`TTSEM_BLOCK_CAP` does for a launch written as `kernel[grid](..., XBLOCK=64)` (the style of
+    older Inductor output, KernelBook's) what `inductor_names(block=...)` does for the autotuner:
+    the block shrinks and the grid, which reads XBLOCK from the meta, grows to cover the same
+    elements. A grid given as numbers is left alone, since a smaller block would leave elements
+    out."""
+    import torch
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def stamp(out_ptr, n, XBLOCK: tl.constexpr):
+        offs = tl.program_id(0) * XBLOCK + tl.arange(0, XBLOCK)
+        tl.store(out_ptr + offs, tl.program_id(0).to(tl.float32), mask=offs < n)
+
+    def grid(meta):  # type: ignore[no-untyped-def]
+        return (triton.cdiv(64, meta["XBLOCK"]),)
+
+    got = {}
+    for cap, launch_grid in (("", grid), ("16", grid), ("16", (1,))):
+        monkeypatch.setenv("TTSEM_BLOCK_CAP", cap)
+        with sanitize.session(races="off"):
+            out = torch.full((64,), -1.0, device="cuda")
+            stamp[launch_grid](out, 64, XBLOCK=64)
+            got[(cap, callable(launch_grid))] = out.cpu().clone()
+    assert torch.equal(got[("", True)], torch.zeros(64))
+    assert torch.equal(got[("16", True)], torch.arange(4).repeat_interleave(16).float())
+    assert torch.equal(got[("16", False)], torch.zeros(64))
