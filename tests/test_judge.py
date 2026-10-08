@@ -204,6 +204,13 @@ def test_a_run_is_given_none_of_the_callers_environment(planted: Planted, tmp_pa
     assert bare["HOME"] == str(planted.home) and "TTSEM_TEST_SECRET" not in set(bare)
 
 
+def test_a_run_keeps_the_block_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`TTSEM_BLOCK_CAP` reaches the run: it sets how many program instances a direct launch has,
+    so whether the judge can see a race depends on it."""
+    monkeypatch.setenv("TTSEM_BLOCK_CAP", "16")
+    assert judge.run_env(tmp_path / ".cache")["TTSEM_BLOCK_CAP"] == "16"
+
+
 def test_an_output_directory_that_holds_a_hidden_one_is_refused(tmp_path: Path) -> None:
     """OUT is bound writable over the hidden directories: one that holds the home or /run would
     give them back to the answer."""

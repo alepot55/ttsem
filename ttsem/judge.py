@@ -129,6 +129,7 @@ MALFORMED = (
 # answer, which could otherwise copy a token from it into the report the judge prints.
 PASSED_ENV = (
     "PATH", "PYTHONPATH", "LANG", "LC_ALL", "PYTHONHASHSEED", "TTSEM_MEM_GB", "TTSEM_TRACEBACK",
+    "TTSEM_BLOCK_CAP",
 )  # fmt: skip
 # HOME inside the sandbox: an empty directory of its private /tmp
 SANDBOX_HOME = "/tmp/home"
