@@ -84,3 +84,33 @@ select = ["B", "C4", "E", "F", "I", "PIE", "RET", "UP", "W"]
 # the Python in the Markdown files is laid out by hand, as part of the prose
 exclude = ["*.md"]
 
+# Lenient on purpose, for now. The modules under ignore_errors do not pass yet: they index and
+# do arithmetic on values typed `object` (attributes read out of an op's dictionary) and pass a
+# value's payload union on without narrowing it. torch and Triton are treated as untyped, so the
+# result does not depend on whether they are installed. A module comes off the list when it
+# passes; the tests are not checked yet.
+[tool.mypy]
+python_version = "3.12"
+files = ["ttsem"]
+warn_unused_configs = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*", "triton", "triton.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "ttsem.interp",
+    "ttsem.layout_checks",
+    "ttsem.layouts",
+    "ttsem.memory",
+    "ttsem.ops",
+    "ttsem.pidraces",
+    "ttsem.races",
+    "ttsem.races_corpus",
+    "ttsem.validate_corpus",
+    "ttsem.values",
+]
+ignore_errors = true
