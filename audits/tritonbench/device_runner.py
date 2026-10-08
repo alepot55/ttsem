@@ -167,7 +167,7 @@ def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         with contextlib.suppress(Exception):
             stream.flush()
-    leave(0)
+    return leave(0)  # os._exit, taken before the import: it does not return
 
 
 if __name__ == "__main__":

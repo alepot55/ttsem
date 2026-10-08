@@ -274,7 +274,7 @@ def sandbox_prefix(
     if held:
         raise ValueError(f"the output directory {out} holds {held[0]}: give it one of its own")
     hidden = [Path("/tmp"), *private, *(Path(p).resolve() for p in hide)]
-    shown = [p for p in dict.fromkeys(p.resolve() for p in [*(keep or []), *runtime_paths()])]
+    shown = list(dict.fromkeys(p.resolve() for p in [*(keep or []), *runtime_paths()]))
     shown = [p for p in shown if p.exists()]
     cmd = ["bwrap", *SANDBOX_FLAGS]
     cmd += strict_root() if strict else ["--ro-bind", "/", "/"]
@@ -430,8 +430,13 @@ def reference_of(account: Any, arrays: Mapping[str, Any]) -> dict[str, Any]:
         want = tensor_of(trial["output"], arrays, f"trial{index}")
         trials.append({"seed": trial["seed"], "precision": str(trial["precision"]), "want": want})
     sweep = account["sweep"]
-    found = {"trials": trials, "sweep": {"precision": str(sweep["precision"])}}
-    found["sweep"]["want"] = tensor_of(sweep["output"], arrays, "sweep")
+    found: dict[str, Any] = {
+        "trials": trials,
+        "sweep": {
+            "precision": str(sweep["precision"]),
+            "want": tensor_of(sweep["output"], arrays, "sweep"),
+        },
+    }
     return found | {key: account[key] for key in ("scaling", "shapes") if key in account}
 
 

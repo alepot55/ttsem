@@ -288,8 +288,7 @@ def read_npy(stream: IO[bytes], member: zipfile.ZipInfo) -> np.ndarray:
     data = stream.read(size)
     if len(data) != size:
         raise ValueError(f"{member.filename[:40]}: cut short")
-    order = "F" if fortran else "C"
-    return np.frombuffer(data, dtype=dtype).reshape(shape, order=order)
+    return np.frombuffer(data, dtype=dtype).reshape(shape, order="F" if fortran else "C")
 
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
