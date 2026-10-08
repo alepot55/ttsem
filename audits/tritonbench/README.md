@@ -6,7 +6,8 @@ by value with the public judge, `python -m ttsem judge --tritonbench`, on a CPU.
 check compares the stdout of the answer's file with the reference's, and 342 of its 350 tests print
 nothing, so for those it asks only that the file runs. Here the answer file and the reference file each run in their own
 `bwrap` sandbox, every Triton launch is executed by ttsem, and what the two tests keep is compared by
-value. The README's numbers come from these commands. Nothing of the benchmark is in this
+value. The README's counts of wrong and unsafe answers come from these commands; its agreement
+with the device comes from the control at the end of this page. Nothing of the benchmark is in this
 repository: not its data, not its answers, not a list of the answers flagged.
 
 ## What you need
@@ -106,8 +107,15 @@ judged), prints the matrix and ends with the agreement over the answers both sid
 Both sides decide on 7,280 answers and agree on 7,264 (99.8%).
 ```
 
-That figure comes from the control runs of 19 Sep 2026 on an RTX 4070 (about two and a half hours,
-three processes on the card), which `device.py` ports onto the judge's current rules; the port itself
-has been run without a GPU only. A rerun can move a few answers: the 19 Sep table counts three T
-answers as random that the current rules compare, and a card with other limits runs other answers
-(on the 4070, 11 references stop at `OutOfResources`).
+That figure counts the answers that did not run on either side, which are most of the 7,280 and
+are easy to agree on. The informative cells are the `right` and `wrong` rows and columns, the
+answers both sides ran and compared, and the `fault` row: in the audit of 19-20 Sep 2026 (the judge
+of that date against the device), 636 of the 637 right or wrong decisions agree, and of the 95
+answers the judge stopped for a fault where the device decided, 86 crash on the device or return
+wrong values and 9 return the reference's values.
+
+The device side comes from the control runs of 19 Sep 2026 on an RTX 4070 (about two and a half
+hours, three processes on the card), which `device.py` ports onto the judge's current rules; the
+port itself has been run without a GPU only. A rerun can move a few answers: the 19 Sep table counts
+three T answers as random that the current rules compare, and a card with other limits runs other
+answers (on the 4070, 11 references stop at `OutOfResources`).
