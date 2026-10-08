@@ -13,7 +13,8 @@ the schedule:
 
 Two atomic updates of one address are not a race (that is what they are for), nor are two loads.
 A store of the bytes the address already holds (kind `s`, a silent store) is no conflict for a
-load: whoever loads sees the same bytes before and after it. Compilers write whole tensors back
+load: whoever loads sees the same bytes before and after it. Next to an atomic update it is one:
+whether it was silent depends on the order that ran. Compilers write whole tensors back
 after an update of a slice (`x[::2] += ...` stores the untouched rows of `x` again), and every
 instance that reads those rows would otherwise be a race with the one that rewrites them. A silent
 store still counts among the last stores of its address: if another instance leaves other bytes
@@ -171,9 +172,11 @@ def find_race(log: list[Entry] | None) -> PidRace | None:
     rw = cross(reads, w | atomics)
     if rw.size:
         found.append(("read-write", rw, reads, w | atomics))
-    wa = cross(w, atomics)
+    # a store next to an atomic update counts even when silent: it is silent only because of the
+    # order that ran (first, it finds the bytes it writes; last, it wipes the updates)
+    wa = cross(stores, atomics)
     if wa.size:
-        found.append(("write-atomic", wa, w, atomics))
+        found.append(("write-atomic", wa, stores, atomics))
     if not found:
         return None
 
