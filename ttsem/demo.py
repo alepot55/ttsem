@@ -239,11 +239,13 @@ def run_live(program: Path, out: Any) -> int:
     try:
         import triton  # noqa: F401
     except ImportError:
+        from ttsem._install import triton_hint
+
         print(
             "--live needs the Triton wheel, which is not installed here.\n"
             "It compiles the kernel (through the fake driver, so no GPU is needed) to get the\n"
             "module every pass receives. Install it with:\n"
-            "    pip install 'ttsem[triton] @ git+https://github.com/alepot55/ttsem'\n"
+            f"{triton_hint()}"
             "The default `python -m ttsem demo` replays a committed recording instead.",
             file=out,
         )

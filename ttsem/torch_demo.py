@@ -116,10 +116,9 @@ def main(argv: list[str] | None = None, out: Any = None) -> int:
     try:
         import torch
     except ImportError:
-        out.write(
-            "this demo needs torch and the Triton wheel:\n"
-            "    pip install 'ttsem[triton] @ git+https://github.com/alepot55/ttsem'\n"
-        )
+        from ttsem._install import triton_hint
+
+        out.write(f"this demo needs torch and the Triton wheel:\n{triton_hint()}")
         return 2
     out.write(f"torch {torch.__version__}, no GPU: Inductor's Triton code run under ttsem\n")
     verdicts = [run_case(c, out) for c in CASES if args.case in (None, c.issue)]

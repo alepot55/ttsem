@@ -76,11 +76,12 @@ except ImportError:  # pragma: no cover - the triton-free path is a whole CI job
 def _require_triton() -> None:
     """Raise where a Triton install is the actual missing piece, not ten frames later."""
     if not TRITON_AVAILABLE:
+        from ttsem._install import GIT_NOTE, PIP_TRITON
+
         raise RuntimeError(
             "this needs a Triton install: recording or compiling a launch goes through the "
-            "wheel. Install the extra with `pip install 'ttsem[triton] @ git+https://github.com/"
-            "alepot55/ttsem'`. Running an already recorded module through the semantics needs "
-            "numpy only."
+            f"wheel. Install the extra with `{PIP_TRITON}` ({GIT_NOTE}). Running an already "
+            "recorded module through the semantics needs numpy only."
         )
 
 
