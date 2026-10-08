@@ -62,7 +62,7 @@ CASES = [
     Case(
         "pytorch#198033",
         "torch._foreach_add_([x], [x.flip(0)])",
-        "fix proposed in pytorch#198242",
+        "fixed on main by pytorch#198549 (1 Oct 2026)",
         _foreach_flip,
     ),
 ]
