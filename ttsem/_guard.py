@@ -207,10 +207,14 @@ class _Scan:
         self.judge = forbidden_modules
         self.last = last
         self.aliases: dict[str, str] = {}  # a local name bound by an import -> the dotted name
+        # a plain name bound to what an import bound, by a simple binding (`w = os`) -> the
+        # dotted names it may stand for (`bind`)
+        self.bound: dict[str, set[str]] = {}
         self.parents: dict[int, ast.AST] = {}
 
     def run(self, tree: ast.AST) -> str | None:
         nodes = []
+        bindings: list[ast.AST] = []
         for node in ast.walk(tree):
             for child in ast.iter_child_nodes(node):
                 self.parents[id(child)] = node
@@ -224,6 +228,9 @@ class _Scan:
             elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
                 for alias in node.names:
                     self.aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr, ast.arguments)):
+                bindings.append(node)
+        self.bind(bindings)
         nodes.sort(key=lambda n: (getattr(n, "lineno", 0), getattr(n, "col_offset", 0)))
         for node in nodes:
             reason = self.check(node)
@@ -295,16 +302,58 @@ class _Scan:
             return f"it imports `{attr}`"
         return None
 
-    def resolve(self, node: ast.AST) -> str | None:
-        """The dotted name an attribute chain stands for, when its root is a name an import
-        bound (`np.searchsorted` -> `numpy.searchsorted`), else None."""
+    def bind(self, nodes: list[ast.AST]) -> None:
+        """Follow the simple bindings of a plain name to a name an import bound, or to an
+        attribute chain on one: `w = os`, `w: Any = os`, `(w := os)`, `w, s = os, sys`, a default
+        `def f(w=os)`, and chains of them (`v = w` after `w = os`, `p = os.path`). Each such name
+        then resolves to every dotted name it may stand for, wherever it is used (`w.write` and
+        `getattr(w, "write")` are `os.write`): bindings are taken as a set per name, regardless of
+        scope and order, so a name rebound to two modules is checked as both.
+
+        Only these forms are followed. A module reached through any other expression (returned by
+        a function or a lambda, held in a container or an object's attribute, picked by a
+        conditional) is not resolved here: the run-time integrity check and the channel's token
+        are what stand against those (`Integrity`, `ttsem.judge_io`)."""
+        pairs: list[tuple[str, ast.AST]] = []
+        for node in nodes:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    pairs += _bound_pairs(target, node.value)
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+                pairs += _bound_pairs(node.target, node.value)
+            elif isinstance(node, ast.arguments):
+                positional = [*node.posonlyargs, *node.args]
+                given = positional[len(positional) - len(node.defaults) :]
+                pairs += [(a.arg, d) for a, d in zip(given, node.defaults, strict=True)]
+                pairs += [
+                    (a.arg, d)
+                    for a, d in zip(node.kwonlyargs, node.kw_defaults, strict=True)
+                    if d is not None
+                ]
+        for _ in range(8):  # chains of bindings, never deep; a name bound to itself grows no more
+            grew = False
+            for name, value in pairs:
+                found = set(self.resolve(value)) - self.bound.get(name, set())
+                if found and len(self.bound.get(name, ())) < 16:
+                    self.bound.setdefault(name, set()).update(found)
+                    grew = True
+            if not grew:
+                break
+
+    def resolve(self, node: ast.AST) -> list[str]:
+        """Every dotted name an attribute chain may stand for, when its root is a name an import
+        bound (`np.searchsorted` -> `numpy.searchsorted`) or a name a simple binding gave one of
+        those (`w = os; w.write` -> `os.write`, `bind`); empty for anything else."""
         parts: list[str] = []
         while isinstance(node, ast.Attribute):
             parts.append(node.attr)
             node = node.value
-        if isinstance(node, ast.Name) and node.id in self.aliases:
-            return ".".join([self.aliases[node.id], *reversed(parts)])
-        return None
+        if not isinstance(node, ast.Name):
+            return []
+        roots = set(self.bound.get(node.id, ()))
+        if node.id in self.aliases:
+            roots.add(self.aliases[node.id])
+        return sorted(".".join([root, *reversed(parts)]) for root in roots)
 
     def attribute(self, node: ast.Attribute) -> str | None:
         attr = node.attr
@@ -323,9 +372,10 @@ class _Scan:
             return None
         if attr in _FORBIDDEN_ATTRIBUTES:
             return f"it uses `.{attr}`"
-        dotted = self.resolve(node)
-        if dotted is not None:
-            return self.dotted_reason(dotted)
+        for dotted in self.resolve(node):
+            reason = self.dotted_reason(dotted)
+            if reason is not None:
+                return reason
         return None
 
     def name(self, node: ast.Name) -> str | None:
@@ -359,28 +409,28 @@ class _Scan:
                 return f"it uses the dunder attribute `{name}` through `{func.id}`"
             if name in _FORBIDDEN_ATTRIBUTES or name == "modules":
                 return f"it uses `.{name}` through `{func.id}`"
-            target = self.resolve(node.args[0]) if node.args else None
-            if write and target is not None and not self.settable(f"{target}.{name}"):
-                return f"it rebinds `{target}.{name}`, a library's own attribute"
-            # what `os.write` or `types.CodeType` is refused as, it is refused as through
-            # `getattr(os, "write")` too
-            reason = self.dotted_reason(f"{target}.{name}") if target is not None else None
-            if reason is not None:
-                return f"{reason} through `{func.id}`"
+            for target in self.resolve(node.args[0]) if node.args else []:
+                if write and not self.settable(f"{target}.{name}"):
+                    return f"it rebinds `{target}.{name}`, a library's own attribute"
+                # what `os.write` or `types.CodeType` is refused as, it is refused as through
+                # `getattr(os, "write")` too
+                reason = self.dotted_reason(f"{target}.{name}")
+                if reason is not None:
+                    return f"{reason} through `{func.id}`"
             return None
         if isinstance(func, ast.Name) and func.id == "open" and "open" not in self.aliases:
             path = node.args[0] if node.args else None
             if not (isinstance(path, ast.Constant) and isinstance(path.value, (str, bytes))):
                 return "it opens a path computed at run time"
-        dotted = self.resolve(func)
-        if dotted in ("torch.load", "torch.serialization.load"):
+        called = self.resolve(func)
+        if {"torch.load", "torch.serialization.load"} & set(called):
             safe = any(
                 k.arg == "weights_only" and isinstance(k.value, ast.Constant) and k.value.value
                 for k in node.keywords
             )
             if not safe:
                 return "it calls `torch.load` without `weights_only=True` (unpickling)"
-        if dotted in ("numpy.load", "numpy.lib.npyio.load"):
+        if {"numpy.load", "numpy.lib.npyio.load"} & set(called):
             for k in node.keywords:
                 if k.arg == "allow_pickle" and not (
                     isinstance(k.value, ast.Constant) and k.value.value is False
@@ -396,9 +446,9 @@ class _Scan:
         for target in targets:
             for leaf in ast.walk(target):
                 if isinstance(leaf, ast.Attribute) and isinstance(leaf.ctx, (ast.Store, ast.Del)):
-                    dotted = self.resolve(leaf)
-                    if dotted is not None and not self.settable(dotted):
-                        return f"it rebinds `{dotted}`, a library's own attribute"
+                    for dotted in self.resolve(leaf):
+                        if not self.settable(dotted):
+                            return f"it rebinds `{dotted}`, a library's own attribute"
         return None
 
     def defined(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
@@ -414,6 +464,21 @@ class _Scan:
         if value == "--events":
             return "it names the judge's events flag (`--events`)"
         return None
+
+
+def _bound_pairs(target: ast.AST, value: ast.AST) -> list[tuple[str, ast.AST]]:
+    """The (plain name, value) pairs of one binding `target = value`: a name, or a tuple or list
+    of them matched element by element against a tuple or list of the same length."""
+    if isinstance(target, ast.Name):
+        return [(target.id, value)]
+    if (
+        isinstance(target, (ast.Tuple, ast.List))
+        and isinstance(value, (ast.Tuple, ast.List))
+        and len(target.elts) == len(value.elts)
+        and not any(isinstance(e, ast.Starred) for e in [*target.elts, *value.elts])
+    ):
+        return [p for t, v in zip(target.elts, value.elts, strict=True) for p in _bound_pairs(t, v)]
+    return []
 
 
 # --- the runtime integrity check ------------------------------------------------------------------

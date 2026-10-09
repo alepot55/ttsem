@@ -196,6 +196,64 @@ def test_getattr_on_os_with_an_ordinary_name_still_passes() -> None:
         assert _guard.tamper_scan(source, forbidden) is None, source
 
 
+# Round 5: a module reached through a simple local binding of a plain name, which the scan once
+# resolved through imports only (`w = os; getattr(w, "write")` passed it).
+ROUND_FIVE = {
+    "assign_getattr": "import os\nw = os\nf = getattr(w, 'write')\n",
+    "assign_attribute": "import os\nw = os\nw.write(5, b'x')\n",
+    "chain": "import os\nw = os\nv = w\nv.write(5, b'x')\n",
+    "annotated": "import os\nfrom typing import Any\nw: Any = os\nw.write(5, b'x')\n",
+    "walrus": "import os\nif (w := os):\n    w.write(5, b'x')\n",
+    "tuple": "import os, sys\nw, s = os, sys\nf = getattr(w, 'write')\n",
+    "default": "import os\ndef f(w=os):\n    return w.write(5, b'x')\n",
+    "kw_default": "import os\ndef f(*, w=os):\n    return getattr(w, 'write')\n",
+    "lambda_default": "import os\nf = lambda w=os: w.write(5, b'x')\n",
+    "from_import": "from os import path\np = path\nimport os\nw = os\nw._exit(0)\n",
+    "sys_rebound": "import sys\ns = sys\ns.excepthook = None\n",
+    "sys_modules": "import sys\ns = sys\nm = getattr(s, 'modules')\n",
+    "two_modules": "import os, numpy\nw = numpy\nw = os\nw.write(5, b'x')\n",
+    "torch_load": "import torch\nload = torch.load\nm = load('m.pt')\n",
+    "types": "import types\nt = types\nF = t.FunctionType\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(ROUND_FIVE))
+def test_the_scan_follows_a_module_bound_to_another_name(name: str) -> None:
+    """A plain name bound to an imported module (or an attribute of one) by a simple binding is
+    resolved as the module itself, so what the scan refuses on `os` it refuses on `w = os` too."""
+    reason = _guard.tamper_scan(ROUND_FIVE[name], judge.FORBIDDEN_MODULES)
+    assert reason is not None, name
+
+
+def test_a_module_bound_to_another_name_with_ordinary_uses_still_passes() -> None:
+    """The bindings answers write (`F = torch.nn.functional`, `p = os.path`, `env = os.environ`)
+    and an attribute set through one where the library allows it still pass."""
+    forbidden = judge.FORBIDDEN_MODULES
+    for source in (
+        "import torch\nF = torch.nn.functional\ny = F.relu(torch.zeros(1))\n",
+        "import os\np = os.path\nd = p.join('a', 'b')\n",
+        "import os\nenv = os.environ\nx = env.get('X')\nenv['Y'] = '1'\n",
+        "import os\nw = os\nd = getattr(w, 'environ')\n",
+        "import torch\ncfg = torch._inductor.config\ncfg.max_autotune = True\n",
+        "import torch\nload = torch.load\nm = load('m.pt', weights_only=True)\n",
+        "import triton.language as tl\nlang = tl\nx = lang.float32\n",
+    ):
+        assert _guard.tamper_scan(source, forbidden) is None, source
+
+
+def test_a_module_reached_through_an_expression_is_left_to_the_run_time_checks() -> None:
+    """Arbitrary expressions are not followed (a lambda's return value, a container, an object's
+    attribute): what stands against those is the integrity check and the channel's token
+    (`atk_lambda_forge` of round 4 ends `no_kernel`, its forged events refused)."""
+    forbidden = judge.FORBIDDEN_MODULES
+    for source in (
+        "import os\nf = getattr((lambda: os)(), 'write')\n",
+        "import os\nm = [os][0]\nf = getattr(m, 'write')\n",
+        "import os\nclass H:\n    m = os\nf = getattr(H.m, 'write')\n",
+    ):
+        assert _guard.tamper_scan(source, forbidden) is None, source
+
+
 def test_the_integrity_snapshot_catches_a_swapped_or_recoded_callable() -> None:
     """A watched attribute rebound to another object, or the same function given another function's
     code, is a breach; the untouched snapshot is not."""
