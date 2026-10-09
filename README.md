@@ -79,13 +79,13 @@ check.
 | | needs a GPU | access out of bounds | race between program instances | read of memory nobody wrote | source |
 |---|---|---|---|---|---|
 | ttsem | no | fails at the kernel's line, counted against the tensor's real size | fails at the kernel's line, for launches of up to 4,000,000 element accesses | `torch.empty` and its kin are filled with NaN (integers with a pattern), so the read shows in the values | measured here |
-| `TRITON_INTERPRET=1` | no | not reported: on a copy of `suite_no_mask.py` with CPU tensors, the n = 1000 case corrupts the heap; in 19 runs of 20 the process died of a segmentation fault or an abort (once after both tests had passed), and in the other the store raised an `IndexError` about an array of size 0; no run named the cause | not reported as a race: it runs the program instances one after the other | not reported: on a copy of `accumulate_into_empty.py` with CPU tensors, the read returns what the CPU allocator left there (wrong values in 3 runs of 3) | measured here; [Triton docs][interp] |
+| `TRITON_INTERPRET=1` | no | not reported: on a copy of `suite_no_mask.py` with CPU tensors, the n = 1000 case corrupts the heap and the process dies of an abort (40 runs of 40 on 9 Oct, each after the n = 1024 case had passed); no run names the cause | not reported as a race: it runs the program instances one after the other | not reported: on a copy of `accumulate_into_empty.py` with CPU tensors, the read returns what the CPU allocator left there (wrong values in 3 runs of 3) | measured here; [Triton docs][interp] |
 | compute-sanitizer memcheck | yes | reported; an overflow into the next allocation only with `--padding`, and PyTorch's docs ask to turn its caching allocator off for memory checkers (`PYTORCH_NO_CUDA_MEMORY_CACHING=1`) | | | [NVIDIA][cs], [PyTorch][ptcuda] |
 | compute-sanitizer racecheck | yes | | shared memory only, not global memory | | [NVIDIA][cs] |
 | compute-sanitizer initcheck | yes | | | reported, in device global memory by default | [NVIDIA][cs] |
 | Triton-Sanitizer (ASPLOS '26), part of TileLens | not for its basic workflows, which its README runs through Triton's interpreter | reported: each load and store, pointer and mask, checked symbolically with the Z3 solver | its README names a `tile-race` command without saying what it reports | | [README][tilelens], [source][tsan-src]; [paper][tsan-paper] |
 | Triton-San | no: the kernel is lowered to CPU code through triton-shared | AddressSanitizer | ThreadSanitizer, one OpenMP thread per program instance | named among its targets | [LLVM Dev Meeting 2025][tritonsan] |
-| GPU output compared with a reference | yes | seen only when values change or the run crashes: 86 of 95 in the control below | seen only when the values of that run change | seen only when values change | measured here |
+| GPU output compared with a reference | yes | seen only when values change or the run crashes: in the control below, 86 of the 95 answers ttsem stops for a fault of any kind (out of bounds, race, undefined value) | seen only when the values of that run change | seen only when values change | measured here |
 
 What ttsem executes is the IR Triton's compiler produces: TTIR for a test run, and under the
 validator the module every pass receives, down to the LLVM conversion, so the run that checks a
@@ -106,19 +106,23 @@ depends on the order the lanes arrive in; each class of mismatch is described in
 **TritonBench, judged by value.** TritonBench's check compares printed output, and 342 of its 350
 tests print nothing. Judged by value with `python -m ttsem judge --tritonbench`, 245 of the 767
 published answers (models of 2024-25) that run and can be judged return wrong values (147) or are
-unsafe (98: 62 out-of-bounds reads, 23 out-of-bounds writes, 7 races, 6 undefined values), 32%. The
-7,752 answers took about 75 minutes on a 20-core desktop, no GPU. The audit of 19-20 Sep 2026, with
-the judge of that date, ran the same files on an RTX 4070 as a control: of the answers both sides
-ran and compared, 636 of 637 right or wrong decisions agree; of the 95 answers ttsem stops for a
-fault and the device decides, 86 crash on the device or return wrong values and 9 return the
-reference's values. The commands that redo the audit from a clone are in
-[audits/tritonbench][audit-tb]; those that judge two public sets of KernelBench answers the same way
-are in [audits/kernelbench][audit-kb].
+unsafe (98: 62 out-of-bounds reads, 23 out-of-bounds writes, 7 races, 6 undefined values), 32%. With
+no GPU, the public judge redid the whole audit from scratch on 7 Oct in about 2 hours on a 4-vCPU
+cloud VM (2 jobs, then 4); the private harness of 19 Sep had taken about 75 minutes on a 20-core
+desktop. The audit of 19-20 Sep 2026, with the judge of that date, ran the same files on an RTX 4070
+as a control: of the answers both sides ran and compared, 636 of 637 right or wrong decisions agree;
+of the 95 answers ttsem stops for a fault and the device decides, 86 crash on the device or return
+wrong values and 9 return the reference's values. The commands that redo the audit from a clone are
+in [audits/tritonbench][audit-tb]; those that judge two public sets of KernelBench answers the same
+way are in [audits/kernelbench][audit-kb].
 
 **torch.compile.** On torch 2.14, over five families of generated in-place programs (3,292), an RTX
 4070 gets 856 wrong, 855 of them only at a large shape. Inductor emitted each program's Triton for
 the GPU at small or medium shapes (on the same RTX 4070), and ttsem, judging that code with no GPU,
-flags all 856, plus 90 programs the device does not confirm at those shapes. These five families are
+flags all 856, plus 90 programs the device does not confirm at those shapes. The judge caps
+Inductor's block at 16, then 4, so that a small shape spans several program instances; Inductor
+masks its loads and stores for any power-of-two block, so the cap changes the schedule, not the
+values, and 16 need not be a size the autotuner would pick. These five families are
 also where the judge's choices were tuned (the block cap, a second block size, a second input, the
 medium shapes, not counting a store of the value already there), so they are not a held-out test. On
 programs drawn at random from a separate generator, with no GPU at all (Inductor's Triton for CPU
@@ -142,8 +146,8 @@ the 31. The harness of that experiment is not in this repository.
 ## Upstream bugs from this project
 
 State on 8 October 2026; [LEDGER.md][ledger] has every row with its dates and, for the reported
-ones, a link to the report that holds its reproducer. Once the package is on PyPI, its page there
-keeps the state of its release. **PyTorch**, since 20 Sep: 18 defects reported (17 issues, one
+ones, a link to the report that holds its reproducer. The copy of this page on PyPI keeps the
+states of its release date. **PyTorch**, since 20 Sep: 18 defects reported (17 issues, one
 reported with its fix); 7 fixed on `main`, 6 of them by 5 PRs of ours and one by another
 contributor; 3 more fixes of ours are open PRs, one of them approved. **Triton**: 4 bug-fix PRs of
 ours merged, 7 merged in all (the other 3 are a documentation change and two optimizations). "ours"
@@ -156,7 +160,7 @@ marks a PR by the author.
 | PyTorch [#198033](https://github.com/pytorch/pytorch/issues/198033): `torch._foreach_add_([x], [x.flip(0)])` reads `x` while writing it | race detector, in the emitted code | **fixed** 1 Oct, [#198549](https://github.com/pytorch/pytorch/pull/198549) (ours) |
 | PyTorch, reported with its fix: `x.copy_((x.transpose(0, 1) + 1.0).reshape(x.shape))` reads `x` elsewhere in the copy that writes it, wrong values | program generator, device against eager | open, fix [#198242](https://github.com/pytorch/pytorch/pull/198242) (ours) |
 | PyTorch [#198270](https://github.com/pytorch/pytorch/issues/198270): `x.index_put_(...)`, then `x.add_(x.flip(0))`, wrong values | program generator, device against eager | **fixed** 29 Sep, [#198325](https://github.com/pytorch/pytorch/pull/198325) (ours) |
-| PyTorch [#198280](https://github.com/pytorch/pytorch/issues/198280): `x.copy_(x.transpose(-1, -2) * 1.0)` wrong on CUDA, a regression | program generator, on the device | open, fixes [#198328](https://github.com/pytorch/pytorch/pull/198328) (ours) and [#199080](https://github.com/pytorch/pytorch/pull/199080) (a draft) |
+| PyTorch [#198280](https://github.com/pytorch/pytorch/issues/198280): `x.copy_(x.transpose(-1, -2) * 1.0)` wrong on CUDA, a regression | program generator, on the device | open, fix [#198328](https://github.com/pytorch/pytorch/pull/198328) (ours) |
 | PyTorch [#198332](https://github.com/pytorch/pytorch/issues/198332): `copy_strided`'s lowering; under `dynamic=True` a CPU kernel writes past its output | program generator, dynamic shapes | open |
 | PyTorch [#198343](https://github.com/pytorch/pytorch/issues/198343): `lerp` with a weight >= 0.5 takes `end`'s strides, so `x.lerp_(end_t, 0.75); x.view(-1)` fails to compile, a regression | OpInfo layout sweep | open |
 | PyTorch [#198364](https://github.com/pytorch/pytorch/issues/198364): `copysign`, `floor_divide`, `div` floor, `addr(beta=0)`, `put` return other strides than eager, and a later `view` fails to compile | OpInfo layout sweep | open |
@@ -207,7 +211,9 @@ companion tools that are not; [LEDGER.md][ledger] describes each.
 - How long does a verdict take? About 12 s for a small KernelBench answer on the machine of "Limits"
   (11.4 s to 11.8 s over two runs each of `tests/fixtures/judge/task_relu.py` with
   `answer_unsafe.py` and with `answer_ok.py`): two sandboxed processes, the task's reference and the
-  answer. The 7,752 TritonBench answers took about 75 minutes on a 20-core desktop.
+  answer. The 7,752 TritonBench answers took about 2 hours under `python -m ttsem judge
+  --tritonbench` on a 4-vCPU cloud VM (7 Oct, 2 jobs, then 4), and about 75 minutes under the
+  private harness of 19 Sep on a 20-core desktop.
 - Which targets and versions? Kernels are compiled for CUDA sm_90 (a script run can pick another
   with `--cc`; the judge uses sm_90a); there is no AMD back end; only Triton 3.8.0 and torch 2.14.0
   are tested, the versions the `triton` extra pins.
@@ -230,7 +236,7 @@ companion tools that are not; [LEDGER.md][ledger] describes each.
   is checked for out-of-bounds accesses. A script run ends with the number of launches too large to
   be checked for races: the run of the two launches above ends with `2 launch(es) too large to be
   checked for races`. Under `python -m ttsem.sanitize pytest` the terminal summary prints the same
-  count.
+  count. Under the judge, such a launch makes the run `not_judged`.
 - **A race needs two program instances on the same data.** A block that covers a whole small tensor
   leaves one instance and nothing to race, so test at sizes several blocks long. For Inductor's
   code, `sanitize.inductor_names(block=16)` caps the block ([docs/INDUCTOR.md][inductor]).
@@ -292,7 +298,7 @@ after the system was found to exploit its evaluation harness ([TechCrunch][sakan
 
 | file | what is in it |
 |---|---|
-| [LEDGER.md][ledger] | every upstream defect, with its reproducer, its dates and its fix |
+| [LEDGER.md][ledger] | every upstream defect, with its dates and its fix, and for a reported one a link to the report that holds the reproducer |
 | [docs/OVERVIEW.md][overview] | calibration against the device, how the three levels work, the limits |
 | [docs/SEMANTICS.md][semantics] | what each op is defined to mean, the float policy, and the device deviations |
 | [docs/DESIGN.md][design] | the three levels, the interfaces between them, and why they are drawn there |
