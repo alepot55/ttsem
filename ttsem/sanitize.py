@@ -851,7 +851,7 @@ def run_pytest(args: list[str], cc: int = harness.DEFAULT_CC) -> int:
     except ModuleNotFoundError:
         sys.stderr.write(
             "ttsem: `ttsem.sanitize pytest` needs pytest; install it with `pip install pytest` "
-            "(it ships in ttsem's `triton` extra: `pip install ttsem[triton]`).\n"
+            "(ttsem's `triton` extra includes it).\n"
         )
         return 2
 

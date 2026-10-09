@@ -14,7 +14,7 @@ ttsem, large tasks shrunk to sizes an interpreter runs. The verdict is `verified
 (where memory nobody wrote shows up, as NaN in the values), `unsafe` (an out-of-bounds access or a
 race between program instances at the answer's own line, or an operation with an undefined result:
 a division by zero, MIN / -1, two lanes of one store writing different values), `no_kernel`
-(PyTorch does the work), `error`, `too_slow` or `not_judged`.
+(no trial launched a Triton kernel), `error`, `too_slow` or `not_judged`.
 `--json` prints the whole record; `--manifest M.jsonl --out DIR` judges a batch (one verdict per id;
 `--rule`, `--precision` and `--gpu` apply to the lines that do not set them).
 
@@ -119,11 +119,12 @@ into the checker. What each verdict holds against is therefore worth stating pla
     when the run starts, so rebinding the channel's class does not reach the run's own exit, and a
     forged report or a mismatched launch count is `not_judged` (`forged`).
 - Full separation of the answer from the checker (running the semantics in a process the answer's
-  code cannot reach at all) is planned for 0.2. Until then: today the judge is an auditor of
-  published answers and an evaluation tool, and it is sound at that. Used as an RL reward against an
-  optimiser that is free to write anything, treat `unsafe` and `no_kernel` with this caveat: the
-  two stop-gaps block every attack in the test suite, but they are not a proof, and `wrong` versus
-  `verified` is the only distinction that holds unconditionally against adversarial code.
+  code cannot reach at all) is planned for 0.2. Until then the judge is fit for auditing published
+  answers and for evaluation, where the answers were not written to defeat it. Used as an RL reward
+  against an optimiser that is free to write anything, treat `unsafe` and `no_kernel` with this
+  caveat: the two stop-gaps block every attack in the test suite, but they are not a proof, and
+  `wrong` versus `verified` is the only distinction that holds unconditionally against adversarial
+  code.
 
 ## What the judge has been run on
 

@@ -23,7 +23,7 @@ After a pip install, the `ttsem` command is the same as `python -m ttsem`.
   python -m ttsem judge --manifest M.jsonl --out DIR [--jobs N]
       A KernelBench answer written with Triton, judged by KernelBench's own correctness
       rule with every launch executed by the semantics: verified, wrong, unsafe (with the
-      kernel's line), no_kernel (PyTorch does the work), error, too_slow or not_judged.
+      kernel's line), no_kernel (no Triton kernel launched), error, too_slow or not_judged.
       Each answer runs in its own bwrap sandbox. Needs torch and Triton; no GPU.
       With --tritonbench, a TritonBench answer against its task's reference, by value.
 

@@ -109,7 +109,7 @@ labelled correct: the judge decides on N, verifies N (P%), and judges N wrong, u
 then the full-shape pass where it ran and, with `--by model`, the answers labelled correct by model.
 A v3 file that the release evaluated twice, once correct and once not, is labelled `ambiguous`. The
 verdicts are those of `python -m ttsem judge --help`: `verified`, `wrong`, `unsafe`, `no_kernel`
-(PyTorch does the work), `error`, `too_slow`, `not_judged` (the tool cannot say). A verdict at
+(no Triton kernel launched), `error`, `too_slow`, `not_judged` (the tool cannot say). A verdict at
 reduced sizes says what the kernel does at those sizes: an answer that hard-codes the benchmark's
 shape can be right there and wrong at others, and an access out of bounds that only the real shape
 reaches is missed. Running the answers on a GPU through the benchmarks' own checks is not part of

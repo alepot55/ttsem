@@ -252,7 +252,7 @@ CPU, by KernelBench's own rule (five seeded trials, `allclose` at 1e-2), with ev
 by ttsem. With `--tritonbench` it judges a [TritonBench][tb] answer against its task's reference, by
 value. The verdict is `verified` (exit 0), `wrong` (where memory nobody wrote shows up, as NaN in
 the values), `unsafe` (an out-of-bounds access, a race, or an operation with an undefined result,
-at the answer's line), `no_kernel` (PyTorch does the work), `error`, `too_slow` or `not_judged`.
+at the answer's line), `no_kernel` (no Triton kernel launched), `error`, `too_slow` or `not_judged`.
 Each answer is model-written code and runs in its own `bwrap` sandbox, and the verdict is computed
 outside it, from the run's raw outputs. `wrong` versus `verified` tells whether the values are
 right and holds against an adversarial answer, since the comparison rests on a reference the answer
