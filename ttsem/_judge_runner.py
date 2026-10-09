@@ -209,7 +209,7 @@ class Raw:
         """The account and the arrays, to the run's directory. Both are plain data the runner
         built (strings, numbers, uint8 arrays): writing them runs no code of the answer's, so
         nothing can change between the run's last integrity check and what the judge reads."""
-        np.savez(self.work / "run.npz", **self.arrays)
+        np.savez(self.work / "run.npz", allow_pickle=False, **self.arrays)
         (self.work / "run.json").write_text(json.dumps(self.data, indent=1, default=opaque))
 
 
