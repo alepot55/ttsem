@@ -869,14 +869,26 @@ def run_pytest(args: list[str], cc: int = harness.DEFAULT_CC) -> int:
 
 
 def main() -> int:
-    """`sanitize.py script.py [args]`, or `sanitize.py pytest [pytest args]`."""
+    """`python -m ttsem.sanitize script.py [args]`, or `python -m ttsem.sanitize pytest [pytest
+    args]`."""
     argv = sys.argv[1:]
     if argv and argv[0] == "pytest":
         return run_pytest(argv[1:])
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "")
-    ap.add_argument("program", type=Path)
-    ap.add_argument("--cc", type=int, default=harness.DEFAULT_CC)
-    ap.add_argument("--json", type=Path, default=None)
+    ap = argparse.ArgumentParser(
+        prog="python -m ttsem.sanitize",
+        description=__doc__.splitlines()[0] if __doc__ else "",
+        epilog="python -m ttsem.sanitize pytest [PYTEST ARGS] runs a test suite the same way.",
+    )
+    ap.add_argument(
+        "program", type=Path, help="the script: its main() if it defines one, else the whole file"
+    )
+    ap.add_argument(
+        "--cc",
+        type=int,
+        default=harness.DEFAULT_CC,
+        help=f"the compute capability the kernels are compiled for (default {harness.DEFAULT_CC})",
+    )
+    ap.add_argument("--json", type=Path, default=None, help="also write the report to this file")
     ap.add_argument("rest", nargs=argparse.REMAINDER, help="arguments of the program, after --")
     args = ap.parse_args()
     rest = [a for a in args.rest if a != "--"]

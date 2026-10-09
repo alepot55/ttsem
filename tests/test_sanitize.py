@@ -97,6 +97,24 @@ def test_a_session_tells_its_caller_of_each_launch_too_large_for_the_race_check(
     assert (state.launches, state.races_unchecked, len(heard)) == (2, 2, 2)
 
 
+def test_the_command_line_names_itself_and_its_options() -> None:
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    done = subprocess.run(
+        [sys.executable, "-m", "ttsem.sanitize", "--help"],
+        capture_output=True,
+        text=True,
+        cwd=root,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.startswith("usage: python -m ttsem.sanitize ")
+    assert "--cc CC      the compute capability the kernels are compiled for" in done.stdout
+    assert "python -m ttsem.sanitize pytest" in done.stdout
+
+
 def test_memory_from_torch_empty_is_poisoned_so_reading_it_shows(capsys) -> None:
     """`torch.empty` returns zero pages often enough, on a GPU too, that a kernel accumulating
     into it passes its tests. Here such memory holds NaN (a loud pattern for integers), so the
