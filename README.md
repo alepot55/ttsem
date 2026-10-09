@@ -211,8 +211,8 @@ companion tools that are not; [LEDGER.md][ledger] describes each.
   finds 220 of the 816 answers it ran and compared wrong (27%, audit of 19-20 Sep); ttsem, with no
   GPU, finds 147 wrong and 98 unsafe of 763 and names the fault and its line
   ([audits/tritonbench][audit-tb]).
-- How long does a verdict take? About 12 s for a small KernelBench answer on the machine of "Limits"
-  (11.4 s to 11.8 s over two runs each of `tests/fixtures/judge/task_relu.py` with
+- How long does a verdict take? About 13 s for a small KernelBench answer on the machine of "Limits"
+  (13.0 s to 13.9 s over two runs each of `tests/fixtures/judge/task_relu.py` with
   `answer_unsafe.py` and with `answer_ok.py`): two sandboxed processes, the task's reference and the
   answer. The 7,752 TritonBench answers took about 2 hours under `python -m ttsem judge
   --tritonbench` on a 4-vCPU cloud VM (7 Oct, 2 jobs, then 4), and about 75 minutes under the
