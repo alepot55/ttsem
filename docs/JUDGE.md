@@ -71,7 +71,7 @@ home directory and the host's sockets in /run hidden, of your environment only t
 run needs, no network, its own pid namespace, no capabilities, and a session of its own with no
 controlling terminal. Without `bwrap` the judge refuses to run unless given `--no-sandbox`.
 
-The verdict is not the answer's to write. The answer and the task's reference run in separate
+The answer does not write its verdict. The answer and the task's reference run in separate
 sandboxes; each writes only raw outputs, in a directory of its own, and the judge compares them in
 the parent process. A kernel fault reaches the judge on a pipe opened before the answer is
 imported, and the run ends there, so an answer cannot catch the fault and fall back on PyTorch to

@@ -5,9 +5,9 @@ levels work, and where it stops.
 
 `ttsem` is an executable semantics of Triton's tile IR. It parses TTIR and TTGIR in generic MLIR
 form, runs a kernel on the CPU **from its IR** rather than from the Python source, and compares the
-result with what the GPU actually produced. Because the semantics runs on IR, it can be run on the
-IR after *every* compiler pass, on the same inputs, and the first pass whose output stops agreeing
-is named. Triton has a large test suite and no written definition of what a pass must preserve;
+result with what the GPU actually produced. Because the semantics runs on IR, it can run the module
+every compiler pass receives, on the same inputs, and name the first pass whose output stops
+agreeing. Triton has a large test suite and no written definition of what a pass must preserve;
 this package writes one down as an interpreter. The values of a tile IR are distributed tensors:
 here layouts are erased (level 1), then modelled (level 2), then the warps are made concurrent and
 shared-memory races are reported (level 3). All three levels ship in this package.
@@ -21,8 +21,8 @@ for the CI action) and one recording among them, the per-pass verdicts the demo 
 methods are in `docs/RESULTS.md`, and each class of device deviation is described in
 `docs/SEMANTICS.md`.
 
-A semantics is only worth what it has been checked against. The calibration corpus is Triton's own
-language test suite, run under the pytest plugin, which validates every launch the suite makes.
+The calibration corpus is Triton's own language test suite, run under the pytest plugin, which
+validates every launch the suite makes.
 
 - **The whole upstream `test_core.py`, 14,235 launches**, validated at the final TTGIR:
   **12,548 `match`** (bit for bit against the device), **1,484 `approx`** (inside the float policy
@@ -31,20 +31,24 @@ language test suite, run under the pytest plugin, which validates every launch t
   No launch errors, and **no unexplained mismatch**: every one of the 173 falls in a class of
   device deviation described at the end of `SEMANTICS.md`, most of them the permutation of old
   values a `tt.atomic_rmw` returns, which depends on the order lanes arrive in.
-- **13,396 of 14,234 launches are decided and consistent all the way down to the last LLVM stage**,
-  through a companion lock-step LLVM interpreter, not shipped in this package, that takes over at
-  the first `llvm.func` (11,872 bit-exact plus 1,027 inside the float policy, plus the launches both
-  levels grade the same way). No launch mismatches under a green TTGIR. The 152 that do mismatch are
-  the same device deviations, read the same way by two semantics written from the two ends of the
-  pipeline.
+- **Down to the last LLVM stage**, through a companion lock-step LLVM interpreter, not shipped in
+  this package, that takes over at the first `llvm.func`. That check compiles every launch once more
+  with the IR dump on, so it is a separate run of the suite, and its run recorded 14,234 launches,
+  one fewer than the run above. **13,396 of them are decided and agree with the device, bit for bit
+  or inside the float policy, at the last LLVM stage, and at the final TTGIR whenever the tile level
+  runs them** (the sixth pass in `docs/RESULTS.md`): 11,872 `match` at both levels, 1,027 `approx`
+  at both, 466 `match` at one level and `approx` at the other, 28 the tile level leaves
+  `unsupported` and the LLVM level decides, and 3 of the 5 in that table's last row. No launch
+  mismatches under a green TTGIR. The 152 that mismatch at both levels are the same device
+  deviations, read the same way by two semantics written from the two ends of the pipeline.
 - **Per-pass validation over the fuzzer corpus: 74,451 stage evaluations, 72,955 decided,
   0 mismatches.** On the programs of three fuzzer families, no pass changed any result with respect
   to the device.
 - **Level 2 (layouts): 28,483 ops checked over the corpus, 0 violations, 0 coverage gaps**, plus 57
   cases of Triton's own C++ unit tests for `LinearLayoutConversions.cpp` reproduced exactly.
-- **Level 3 (races): 0 races with Membar's barriers in place over the 9,372 distinct modules of the
-  test suite that ran, 1,435 races with every barrier stripped.** No module raced with Membar's
-  barriers in place, and about one module in six needs at least one of them.
+- **Level 3 (races): of the 9,372 distinct modules of the test suite that ran, none races with
+  Membar's barriers in place and 1,435 race with every barrier stripped.** So about one module in
+  six needs at least one of Membar's barriers.
 
 ## How it works
 
@@ -57,32 +61,33 @@ region, a function, or a whole grid, and raises `Unsupported` by name on anythin
 so coverage is measurable instead of silent. `ttsem/harness.py` records real launches, copies the
 arguments to the host at their device addresses, runs the grid, and compares every output buffer:
 bitwise, always, for the verdict `match`, and under a documented float policy for `approx`.
-`ttsem/validate.py` splits an `MLIR_ENABLE_DUMP=1` trace into one module per pass, runs each on the
-same inputs, and names the first pass after which the answer changes; `ttsem/minimize.py` then
-shrinks that module while the pass still changes its meaning, with no GPU and no `triton-opt`
-involved, because the property is a disagreement between two interpretations of the same input.
+`ttsem/validate.py` splits an `MLIR_ENABLE_DUMP=1` trace into the module each pass receives, runs
+each on the same inputs, and names the first pass after which the answer changes;
+`ttsem/minimize.py` then shrinks that module while the pass still changes its meaning, with no GPU
+and no `triton-opt` involved, because the property is a disagreement between two interpretations of
+the same input.
 
-**Level 2: distributed values.** Level 1 answers "does this kernel compute the right array".
-Level 2 answers "and does each thread hold the right part of it". `ttsem/linear_layout.py` is a port of
-Triton's GF(2) linear layout algebra and `ttsem/layouts.py` a port of its encoding-to-layout map, so a
-distributed value is a pair of the same logical array and a layout saying that register `r` of lane
-`l` in warp `w` holds `array[layout.apply(...)]`. Every op implementation is untouched: level 2 adds
-an assertion about the layout, not a different value. `ttsem/layout_checks.py` states the properties a
-lowering must keep, `ttg.convert_layout` being a bijection on the non-broadcast part, a shared
-store-then-load under swizzling being the identity, a gather being warp local exactly when its
-layout says so, a reduction's result carrying the slice of its operand's layout. These are the
+**Level 2: distributed values.** Level 1 answers "does this kernel compute the right array". Level 2
+answers "and does each thread hold the right part of it". `ttsem/linear_layout.py` is a port of
+Triton's GF(2) linear layout algebra and `ttsem/layouts.py` a port of its encoding-to-layout map, so
+a distributed value is a pair of the same logical array and a layout saying that register `r` of
+lane `l` in warp `w` holds `array[layout.apply(...)]`. Every op implementation is untouched: level 2
+adds an assertion about the layout, not a different value. `ttsem/layout_checks.py` states the
+properties a lowering must keep, `ttg.convert_layout` being a bijection on the non-broadcast part, a
+shared store-then-load under swizzling being the identity, a gather being warp local exactly when
+its layout says so, a reduction's result carrying the slice of its operand's layout. These are the
 classes level 1 is blind to, because the element still reaches memory once through some other lane,
 or because a plain buffer makes two disagreeing swizzles cancel.
 
-**Level 3: agents, shared memory and races.** The warps of a CTA are concurrent and shared memory
-is where they meet. `ttsem/races.py` replays one execution and logs, for every shared-memory op and every
-warp, the byte set that warp touches, computed from the layouts and not from an alias model, tagged
-with the warp's epoch, the number of barriers its group has passed. Two accesses from different
-warps, overlapping bytes, at least one a write, same epoch: a race. Asynchronous copies are pending
-from the op that issues them to the op that completes them and race with anything that touches
-their bytes in between. Across groups (`warp_specialize` partitions, the TMA engine) the ordering
-goes through mbarrier phases and vector clocks. This is Membar's question, asked dynamically, on
-kernels rather than on an abstraction of them.
+**Level 3: concurrency, shared memory and races.** The warps of a CTA are concurrent and shared
+memory is where they meet. `ttsem/races.py` replays one execution and logs, for every shared-memory
+op and every warp, the byte set that warp touches, computed from the layouts and not from an alias
+model, tagged with the warp's epoch, the number of barriers its group has passed. Two accesses from
+different warps, overlapping bytes, at least one a write, same epoch: a race. Asynchronous copies
+are pending from the op that issues them to the op that completes them and race with anything that
+touches their bytes in between. Across groups (`warp_specialize` partitions, the TMA engine) the
+ordering goes through mbarrier phases and vector clocks. Membar answers the same question
+statically; this answers it on one execution.
 
 ## Limits
 
@@ -96,8 +101,8 @@ kernels rather than on an abstraction of them.
 - **Clusters of more than one CTA** are declared unsupported rather than judged, at both levels.
 - **`nvvm.ldmatrix` / `stmatrix`** in the m16n16 forms, and a small residue of NVVM intrinsics,
   are outside the companion LLVM continuation's fragment.
-- **Everything below the LLVM conversion** is outside level 1; `ttsem/validate.py` stops at the first
-  module containing `llvm.func` and reports "past lowering" once.
+- **Everything below the LLVM conversion** is outside level 1; `ttsem/validate.py` stops at the
+  first module containing `llvm.func` and reports "past lowering" once.
 - **Device deviations** stay mismatches. `SEMANTICS.md` describes each class: the `tt.clampf` NaN
   sign, decided by whether a peephole matched; a non-associative `tt.reduce` combiner, whose answer
   depends on the association the lowering picks; a left fold of narrow floats saturating where a
