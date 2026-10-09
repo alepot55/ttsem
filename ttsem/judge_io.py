@@ -40,7 +40,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import IO, Any, NoReturn
 
@@ -61,8 +61,13 @@ ARRAYS_LIMIT = 4 << 30
 
 class Channel:
     """The runner's end of the pipe to the judge (`--events FD`), and the way out of the process.
-    Both are taken when the runner starts, before any code under test is imported, so that a
-    later `os.write = ...` or `os._exit = ...` of that code does not reach them.
+
+    Everything it does is a closure built here, when the runner starts and before any code under
+    test is imported: `send`, `launch`, `stop`, `finish` and `end` are attributes of the instance,
+    each holding the `os.write`, the `os._exit` and the encoder it was built with. A later
+    `os.write = ...`, `json.dumps = ...` or `Channel.stop = ...` reaches none of them, and a runner
+    that keeps them in its own variables right after building the channel is out of reach of a
+    rebinding of the instance too.
 
     A random `token`, picked here before the answer is imported, is stamped on every event and
     announced in the first one (`hello`). The judge takes the first `hello`'s token as the
@@ -72,47 +77,125 @@ class Channel:
 
     def __init__(self, fd: int | None) -> None:
         self.fd = fd
-        self._write, self._exit = os.write, os._exit
         self.token = secrets.token_hex(8)
-        self.launches = 0
+        self.send: Send
+        self.launch: Launch
+        self.stop: Stop
+        self.finish: End
+        self.end: End
+        self.send, self.launch, self.stop, self.finish, self.end = _channel(fd, self.token)
         self.send({"event": "hello"})  # first, before any code under test runs
 
-    def send(self, event: Mapping[str, Any]) -> None:
+
+Send = Callable[[Mapping[str, Any]], None]
+Launch = Callable[[int], None]
+Stop = Callable[..., NoReturn]
+End = Callable[[int], NoReturn]
+
+
+def _channel(fd: int | None, token: str) -> tuple[Send, Launch, Stop, End, End]:
+    """The channel's five functions, as closures over what they use (`Channel`)."""
+    write, leave, encode = os.write, os._exit, _encoder()
+    count = [0]  # the launches executed, kept here (not a value the answer can set)
+
+    def send(
+        event: Mapping[str, Any], _write: Any = write, _encode: Any = encode, _fd: Any = fd
+    ) -> None:
         """One event, as a line of JSON, with this run's token. The newline before it ends
         whatever partial line the code under test may have written to the same pipe."""
-        if self.fd is None:
+        if _fd is None:
             return
-        stamped = {**dict(event), "token": self.token}
-        data = b"\n" + json.dumps(stamped, default=str).encode() + b"\n"
-        with contextlib.suppress(OSError):
+        data = b"\n" + _encode({**event, "token": token}).encode() + b"\n"
+        try:
             while data:
-                data = data[self._write(self.fd, data) :]
+                data = data[_write(_fd, data) :]
+        except OSError:
+            pass
 
-    def launch(self, n: int) -> None:
-        """One launch executed, with the running count kept in the checker's state (not a value
-        the answer can set): the judge cross-checks it against the count the run's account claims.
-        Beyond `LAUNCH_EVENT_CAP` events the per-launch line is dropped; the final count still
-        rides on `done`."""
-        self.launches = int(n)
-        if self.launches <= LAUNCH_EVENT_CAP:
-            self.send({"event": "launch", "n": self.launches})
+    def launch(n: int, _int: Any = int, _cap: int = LAUNCH_EVENT_CAP) -> None:
+        """One launch executed, with the running count kept in the checker's state: the judge
+        cross-checks it against the count the run's account claims. Beyond `LAUNCH_EVENT_CAP`
+        events the per-launch line is dropped; the final count still rides on `done`."""
+        count[0] = _int(n)
+        if count[0] <= _cap:
+            send({"event": "launch", "n": count[0]})
 
-    def finish(self, code: int = 0) -> NoReturn:
-        """`done` (with the launch count the checker counted), then out of the process without
-        running anything else (no exit handler, no finalizer, no thread of the code under test)."""
-        self.send({"event": "done", "launches": self.launches})
-        self.end(code)
-
-    def stop(self, event: Mapping[str, Any]) -> NoReturn:
-        """A `stop` event (a fault, a launch that cannot be judged), then out of the process."""
-        self.send({**event, "event": "stop", "launches": self.launches})
-        self.end(EXIT_STOPPED)
-
-    def end(self, code: int) -> NoReturn:
-        for stream in (sys.stdout, sys.stderr):
-            with contextlib.suppress(Exception):
+    def end(code: int, _sys: Any = sys, _leave: Any = leave) -> NoReturn:
+        """Out of the process, with no exit handler, finalizer or thread of the code under test
+        running after the runner's last word."""
+        for stream in (_sys.stdout, _sys.stderr):
+            try:
                 stream.flush()
-        self._exit(code)
+            except BaseException:  # noqa: BLE001, S110  whatever the code under test left there
+                pass
+        _leave(code)
+        raise AssertionError("unreachable")  # os._exit does not return
+
+    def stop(event: Mapping[str, Any], then: Any = None, _stopped: int = EXIT_STOPPED) -> NoReturn:
+        """A `stop` event (a fault, a launch that cannot be judged), then out of the process. The
+        event goes first; `then` (writing what the run did so far) runs after it, and whatever it
+        does, raises or rebinds cannot take the event back."""
+        send({**event, "event": "stop", "launches": count[0]})
+        if then is not None:
+            try:
+                then()
+            except BaseException:  # noqa: BLE001, S110  the event is sent; the rest is a courtesy
+                pass
+        end(_stopped)
+
+    def finish(code: int = 0) -> NoReturn:
+        """`done` (with the launch count the checker counted), then out of the process."""
+        send({"event": "done", "launches": count[0]})
+        end(code)
+
+    return send, launch, stop, finish, end
+
+
+def _encoder() -> Any:
+    """`json.dumps` for an event (a dict of strings, numbers, booleans, None and lists), as a
+    closure over the C string escaper and the builtins it calls: the channel does not go through
+    the `json` module, whose functions the code under test can rebind."""
+    escape = json.encoder.encode_basestring_ascii
+    inf = float("inf")
+
+    def encode(
+        value: Any,
+        _isinstance: Any = isinstance,
+        _str: Any = str,
+        _int: Any = int,
+        _float: Any = float,
+        _dict: Any = dict,
+        _seq: Any = (list, tuple),
+        _escape: Any = escape,
+        _irepr: Any = int.__repr__,
+        _frepr: Any = float.__repr__,
+        _join: Any = ",".join,
+        _items: Any = dict.items,
+        _type: Any = type,
+    ) -> str:
+        if value is None:
+            return "null"
+        if value is True or value is False:
+            return "true" if value else "false"
+        if _isinstance(value, _str):
+            return _escape(value)
+        if _isinstance(value, _int):
+            return _irepr(value)
+        if _isinstance(value, _float):
+            if value != value:
+                return "NaN"
+            if value == inf or value == -inf:
+                return "Infinity" if value > 0 else "-Infinity"
+            return _frepr(value)
+        if _isinstance(value, _dict):
+            pairs = [_escape(k if _isinstance(k, _str) else "?") + ":" + encode(v)
+                     for k, v in _items(value)]  # fmt: skip
+            return "{" + _join(pairs) + "}"
+        if _isinstance(value, _seq):
+            return "[" + _join([encode(v) for v in value]) + "]"
+        return _escape("<" + _type(value).__name__ + ">")
+
+    return encode
 
 
 def tensor_bytes(value: Any) -> tuple[dict[str, Any], np.ndarray | None]:
@@ -121,7 +204,7 @@ def tensor_bytes(value: Any) -> tuple[dict[str, Any], np.ndarray | None]:
     import torch
 
     if not isinstance(value, torch.Tensor):
-        return {"type": type(value).__name__}, None
+        return {"type": str.__str__(str(type(value).__name__))}, None  # a plain str
     name = str(value.dtype).removeprefix("torch.")
     try:
         flat = value.detach().cpu().contiguous().reshape(-1)

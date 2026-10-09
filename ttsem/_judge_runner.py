@@ -51,12 +51,12 @@ an internal error, the memory cap, a full /tmp, a broken task).
 from __future__ import annotations
 
 import argparse
-import contextlib
 import errno
 import importlib.util
 import json
 import os
 import resource
+import signal
 import sys
 import time
 import traceback
@@ -70,9 +70,8 @@ from torch.overrides import TorchFunctionMode
 from triton.compiler.errors import CompileTimeAssertionFailure
 from triton.runtime.errors import OutOfResources, PTXASError
 
-from ttsem import _guard, harness, pidraces, sanitize
+from ttsem import _guard, sanitize
 from ttsem import judge_shapes as shapes
-from ttsem import memory as memory_mod
 from ttsem.judge_io import Channel, compare, tensor_bytes, v3_precision
 
 PACKAGE = Path(__file__).resolve().parent
@@ -207,8 +206,16 @@ class Raw:
         return spec
 
     def write(self) -> None:
+        """The account and the arrays, to the run's directory. Both are plain data the runner
+        built (strings, numbers, uint8 arrays): writing them runs no code of the answer's, so
+        nothing can change between the run's last integrity check and what the judge reads."""
         np.savez(self.work / "run.npz", **self.arrays)
-        (self.work / "run.json").write_text(json.dumps(self.data, indent=1, default=str))
+        (self.work / "run.json").write_text(json.dumps(self.data, indent=1, default=opaque))
+
+
+def opaque(value: Any) -> str:
+    """What the account says of a value that is not plain data: nothing the value itself says."""
+    return "<object>"
 
 
 def load_task(args: argparse.Namespace, report: dict[str, Any]) -> tuple[Any, ...]:
@@ -276,8 +283,16 @@ def same_locally(want: Any, got: Any, inputs: list[Any], args: argparse.Namespac
     return bool(row["pass"])
 
 
-def run_answer(args: argparse.Namespace, raw: Raw, channel: Channel, own: set[Path]) -> None:
-    """The answer's run: the rule's trials, then the sweep, every output kept."""
+def run_answer(
+    args: argparse.Namespace,
+    raw: Raw,
+    channel: Channel,
+    own: set[Path],
+    guards: dict[str, Any],
+) -> None:
+    """The answer's run: the rule's trials, then the sweep, every output kept. `guards` receives,
+    at the snapshot, the integrity check bound to the channel (`enforce`) and the last check
+    before the account is written (`seal`)."""
     report = raw.data
     Model, get_init_inputs, get_inputs, overrides, original = load_task(args, report)
     # an answer that keeps its own copy of the task's sizes gets the scaled ones too, in a copy
@@ -294,26 +309,19 @@ def run_answer(args: argparse.Namespace, raw: Raw, channel: Channel, own: set[Pa
         answer.write_text(answer_run, encoding="utf-8")
     precision = "keep" if args.rule == "v3" else args.precision
     live: dict[str, Any] = {}  # what the account reads at any point: the session, the op counts
-    from triton.runtime.jit import JITFunction
-
-    guard = _guard.checker_integrity(
-        memory=memory_mod,
-        harness=harness,
-        pidraces=pidraces,
-        jitfunction=JITFunction,
-        os_module=os,
-    )
+    stop, launch = channel.stop, channel.launch  # the channel's own closures, held here
 
     def on_launch(n: int) -> None:
         """Before the semantics run this launch: the count over the channel (where a forged
-        run.json cannot reach it), and a check that the answer did not swap the checker's own
-        code since it ran."""
-        bad = guard.breach(skip=_guard.HOOK)
-        if bad is not None:
-            raise sanitize.Unjudged(
-                "tampered", f"the answer changed the judge's own code ({bad})", []
-            )
-        channel.launch(n)
+        run.json cannot reach it)."""
+        launch(n)
+
+    def on_check() -> None:
+        """Around the semantics' run of each launch: the checker's own code is the code it was
+        before the answer was imported, or the judge hears `tampered` and the run ends there."""
+        enforce = guards.get("enforce")
+        if enforce is not None:
+            enforce()
 
     def account() -> None:
         """What the run did so far, into its account."""
@@ -329,100 +337,105 @@ def run_answer(args: argparse.Namespace, raw: Raw, channel: Channel, own: set[Pa
         if TUNERS:  # whatever the outcome: under which config it was reached, what was skipped
             report["autotune"] = tuned()
 
-    def on_stop(stop: sanitize.KernelFault | sanitize.Unjudged) -> None:
+    def on_stop(fault: sanitize.KernelFault | sanitize.Unjudged) -> None:
         """A launch faulted, or cannot be judged: the judge hears it now, and the answer never
         gets control back. The tool's own exception raised by the answer's code is the answer's
         error, and goes on as any other."""
-        if isinstance(stop, sanitize.Unjudged) and raised_by_answer(stop, own):
+        if isinstance(fault, sanitize.Unjudged) and raised_by_answer(fault, own):
             return
-        if isinstance(stop, sanitize.KernelFault):
-            event = {"kind": "fault", **fault_fields(stop.fault, args)}
+        if isinstance(fault, sanitize.KernelFault):
+            event = {"kind": "fault", **fault_fields(fault.fault, args)}
         else:
-            event = {"kind": "unjudged", "why": stop.verdict, "message": stop.detail[:300]}
-        try:
+            event = {"kind": "unjudged", "why": fault.verdict, "message": fault.detail[:300]}
+
+        def written() -> None:
             account()
             raw.write()
-        finally:
-            channel.stop(event)
 
-    with sanitize.session(source=str(answer), on_stop=on_stop, on_launch=on_launch) as state:
-        live["state"] = state
-        watch_launches(state, GPUS.get(args.gpu, DEFAULT_GPU))
-        report["stage"] = "reference"
+        stop(event, then=written)  # the event first: what the account says after it is a courtesy
+
+    session = sanitize.session(
+        source=str(answer), on_stop=on_stop, on_launch=on_launch, on_check=on_check
+    )
+    # held to the end: the process leaves by the channel, never through the session's
+    # exit, so the snapshot below (which includes what the session installed) holds
+    guards["session"] = session
+    state = session.__enter__()
+    live["state"] = state
+    watch_launches(state, GPUS.get(args.gpu, DEFAULT_GPU))
+    report["stage"] = "reference"
+    torch.manual_seed(args.seed)
+    init_inputs = [cast(x, precision) for x in get_init_inputs()]
+    with torch.no_grad():
         torch.manual_seed(args.seed)
-        init_inputs = [cast(x, precision) for x in get_init_inputs()]
-        with torch.no_grad():
+        reference = Model(*init_inputs)
+
+    # every legitimate install (the session hook, then watch_launches' wrappers) is now in
+    # place: snapshot the checker before the answer is imported (`_guard`)
+    from triton.runtime.autotuner import Autotuner
+    from triton.runtime.jit import JITFunction
+
+    hooks = {
+        "JITFunction.run": JITFunction.run,
+        "Autotuner.run": Autotuner.run,
+        "Autotuner.prune_configs": Autotuner.prune_configs,
+    }
+    guard = _guard.checker_integrity(roots=[PACKAGE], hooks=hooks)
+    tampered = {"kind": "unjudged", "why": "tampered"}
+    guards["enforce"] = _guard.enforcer(guard.arm(), stop, tampered)
+    guards["seal"] = _guard.sealer(guards["enforce"])
+    report["stage"] = "load"
+    module = load_answer(answer)
+    entry = "ModelNew" if hasattr(module, "ModelNew") else "Model"
+    report["entry"] = entry
+
+    report["stage"] = "init"
+    with torch.no_grad():
+        if args.rule != "v3":  # KernelBench seeds both models alike; the v3 harness does not
             torch.manual_seed(args.seed)
-            reference = Model(*init_inputs)
+        candidate = getattr(module, entry)(*init_inputs)
+        if args.rule == "v3":  # the v3 harness copies the reference's weights over, by name
+            reference, candidate = reference.eval(), candidate.eval()
+            try:
+                keys = candidate.load_state_dict(reference.state_dict(), strict=False)
+                report["not_copied"] = sorted(keys.missing_keys)
+            except Exception as exc:  # noqa: BLE001  as the harness: a mismatch is ignored
+                report["not_copied"] = [f"load_state_dict failed: {type(exc).__name__}"]
+        elif precision == "fp32":
+            reference = reference.to(dtype=torch.float32)
+            candidate = candidate.to(dtype=torch.float32)
+    report["launches_init"] = state.launches
 
-        # every legitimate install (the session hook, then watch_launches' wrapper on it) is now
-        # in place: snapshot the checker's own code before the answer is imported
-        guard.arm()
-        report["stage"] = "load"
-        module = load_answer(answer)
-        entry = "ModelNew" if hasattr(module, "ModelNew") else "Model"
-        report["entry"] = entry
-
-        report["stage"] = "init"
-        with torch.no_grad():
-            if args.rule != "v3":  # KernelBench seeds both models alike; the v3 harness does not
-                torch.manual_seed(args.seed)
-            candidate = getattr(module, entry)(*init_inputs)
-            if args.rule == "v3":  # the v3 harness copies the reference's weights over, by name
-                reference, candidate = reference.eval(), candidate.eval()
-                try:
-                    keys = candidate.load_state_dict(reference.state_dict(), strict=False)
-                    report["not_copied"] = sorted(keys.missing_keys)
-                except Exception as exc:  # noqa: BLE001  as the harness: a mismatch is ignored
-                    report["not_copied"] = [f"load_state_dict failed: {type(exc).__name__}"]
-            elif precision == "fp32":
-                reference = reference.to(dtype=torch.float32)
-                candidate = candidate.to(dtype=torch.float32)
-        report["launches_init"] = state.launches
-
-        report["stage"] = "forward"
-        ops = TorchOps()
-        live["ops"] = ops
-        trials: list[dict[str, Any]] = []
-        report["trials"] = trials
-        seeds = V3_SEEDS if args.rule == "v3" else trial_seeds(args.seed, args.trials)
-        alike = True
-        with torch.no_grad():
-            for index, seed in enumerate(seeds):
-                start = time.time()
-                torch.manual_seed(seed)
-                inputs = [cast(x, precision) for x in get_inputs()]
-                torch.manual_seed(seed)
-                want = reference(*inputs)
-                torch.manual_seed(seed)
-                before = state.launches
-                with ops:
-                    got = candidate(*inputs)
-                row: dict[str, Any] = {"seed": seed, "launches": state.launches - before}
-                row["output"] = raw.output(f"trial{index}", got)
-                row["seconds"] = round(time.time() - start, 1)
-                trials.append(row)
-                alike = same_locally(want, got, inputs, args)
-                if not alike:
-                    break
-            if alike and TUNERS:
-                report["stage"] = "configs"
-                report["sweep"] = {"runs": []}
-                sweep_configs(reference, candidate, get_inputs, seeds, args, report["sweep"], raw)
-        account()
-        # before the account is trusted: a last check that the checker's own code (the launch hook
-        # included now) is the code it was, so an answer that swapped it without going through a
-        # watched launch is caught rather than believed
-        bad = guard.breach()
-        if bad is not None:
-            raw.write()
-            channel.stop(
-                {
-                    "kind": "unjudged",
-                    "why": "tampered",
-                    "message": f"the answer changed the judge's own code ({bad})",
-                }
-            )
+    report["stage"] = "forward"
+    ops = TorchOps()
+    live["ops"] = ops
+    trials: list[dict[str, Any]] = []
+    report["trials"] = trials
+    seeds = V3_SEEDS if args.rule == "v3" else trial_seeds(args.seed, args.trials)
+    alike = True
+    with torch.no_grad():
+        for index, seed in enumerate(seeds):
+            start = time.time()
+            torch.manual_seed(seed)
+            inputs = [cast(x, precision) for x in get_inputs()]
+            torch.manual_seed(seed)
+            want = reference(*inputs)
+            torch.manual_seed(seed)
+            before = state.launches
+            with ops:
+                got = candidate(*inputs)
+            row: dict[str, Any] = {"seed": seed, "launches": state.launches - before}
+            row["output"] = raw.output(f"trial{index}", got)
+            row["seconds"] = round(time.time() - start, 1)
+            trials.append(row)
+            alike = same_locally(want, got, inputs, args)
+            if not alike:
+                break
+        if alike and TUNERS:
+            report["stage"] = "configs"
+            report["sweep"] = {"runs": []}
+            sweep_configs(reference, candidate, get_inputs, seeds, args, report["sweep"], raw)
+    account()
     report.pop("stage")
 
 
@@ -665,9 +678,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--events", type=int, help="the pipe to the judge (`judge_io.Channel`)")
     args = ap.parse_args(argv)
     channel = Channel(args.events)  # before anything of the answer's is imported
+    stop, finish = channel.stop, channel.finish  # its closures, held here
+    # a SIGINT in the middle of a launch would raise KeyboardInterrupt into the answer, which
+    # could catch it and go on without the launch's verdict; nothing interrupts a judged run
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     cap_memory()
     raw = Raw(args.work)
     report = raw.data
+    guards: dict[str, Any] = {}  # the integrity checks, once armed, and the session
     own: set[Path] = set()  # the answer's own code: its file, and its copy at the scaled sizes
     if args.answer is not None:
         own = {args.answer.resolve(), scaled_copy(args.work, args.answer).resolve()}
@@ -710,11 +728,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.answer is None:
             run_reference(args, raw)
         else:
-            run_answer(args, raw, channel, own)
-    except sanitize.KernelFault as stop:  # out of a launch the session does not watch
-        with contextlib.suppress(Exception):
-            raw.write()
-        channel.stop({"kind": "fault", **fault_fields(stop.fault, args)})
+            run_answer(args, raw, channel, own, guards)
+    except sanitize.KernelFault as fault:  # out of a launch the session does not watch
+        stop({"kind": "fault", **fault_fields(fault.fault, args)}, then=raw.write)
     except sanitize.SharedOverLimit as exc:
         # every config of an autotuner skipped, then its launch with the config it falls back
         # to needs more shared memory than the GPU has: on the GPU, with this Triton, it fails
@@ -736,12 +752,12 @@ def main(argv: list[str] | None = None) -> int:
         if frame is not None:
             failure["where"] = where(frame)
         report["failure"] = failure
-    except sanitize.Unjudged as stop:
-        if raised_by_answer(stop, own):  # the tool's own exception, raised by the answer
-            report["failure"] = failed(stop)
+    except sanitize.Unjudged as unjudged:
+        if raised_by_answer(unjudged, own):  # the tool's own exception, raised by the answer
+            report["failure"] = failed(unjudged)
         else:
             report["failure"] = {
-                "verdict": "not_judged", "why": stop.verdict, "message": stop.detail[:300]
+                "verdict": "not_judged", "why": unjudged.verdict, "message": unjudged.detail[:300]
             }  # fmt: skip
     except MemoryError as exc:
         if raised_by_answer(exc, own):
@@ -755,8 +771,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.answer is not None and TUNERS:
         report["autotune"] = tuned()
     report["seconds"] = round(time.time() - start, 1)
+    seal = guards.get("seal")
+    if seal is not None:
+        # the last code of the answer's has run (its objects' finalizers too): the checker must
+        # still be the one snapshotted, or the judge hears `tampered` and the account is not written
+        seal()
     raw.write()
-    channel.finish(0)
+    finish(0)
 
 
 if __name__ == "__main__":

@@ -108,7 +108,7 @@ def test_the_tamper_scan_flags_an_answer_that_reaches_into_the_judge() -> None:
 
 def test_the_tamper_scan_passes_ordinary_kernels_and_pytorch() -> None:
     """Narrow enough that a real Triton answer passes: imports, torch and triton calls, os.environ
-    and os.path, a bare globals(), reading an attribute that is not being rewritten."""
+    and os.path, reading an attribute that is not being rewritten."""
     forbidden = judge.FORBIDDEN_MODULES
     for name in ("ok", "wrong", "unsafe", "no_kernel", "swallows", "forges", "prewrites"):
         source = (KB / f"answer_{name}.py").read_text()
@@ -120,13 +120,52 @@ def test_the_tamper_scan_passes_ordinary_kernels_and_pytorch() -> None:
         "import triton.language as tl\n"
         "p = os.environ.get('X')\n"
         "d = os.path.dirname(__file__)\n"
-        "g = globals()\n"
         "@triton.jit\n"
         "def k(x, n, B: tl.constexpr):\n"
         "    o = tl.program_id(0) * B + tl.arange(0, B)\n"
         "    tl.store(x + o, tl.load(x + o, mask=o < n), mask=o < n)\n"
     )
     assert _guard.tamper_scan(ordinary, forbidden) is None
+
+
+# The round-3 evasions: every way an answer was seen (or imagined) reaching the checker without
+# naming it. Each must be refused by the scan, before it runs, whatever rule fires.
+ROUND_THREE = {
+    "getattr_chain": "import torch\ng = getattr\nm = g(g(torch, 'jit'), 'script')\n",
+    "builtins_import_attr": "import builtins\nM = builtins.__import__('ttsem.memory')\n",
+    "dunder_builtins_subscript": "imp = __builtins__['__imp' + 'ort__']\n",
+    "vars_sys_modules": "import sys\nm = vars(sys)['modules']\n",
+    "importlib_computed": "import importlib\nM = importlib.import_module('tt' + 'sem')\n",
+    "subclasses_walk": (
+        "for c in type('x', (), {}).__class__.__base__.__subclasses__():\n    pass\n"
+    ),
+    "func_globals": "def f():\n    pass\nns = f.__globals__\n",
+    "tb_frame": (
+        "try:\n    raise ValueError\nexcept ValueError as e:\n"
+        "    g = e.__traceback__.tb_frame.f_globals\n"
+    ),
+    "numpy_rebind": "import numpy as np\nnp.searchsorted = lambda *a, **k: 0\n",
+    "numpy_setattr_computed": "import numpy as np\nsetattr(np, 'search' + 'sorted', None)\n",
+    "os_write_split": "import os\nw = getattr(os, 'wri' + 'te')\n",
+    "base64_exec": "import base64\nexec(base64.b64decode('cGFzcw==').decode())\n",
+    "marshal_code": "import marshal\nexec(marshal.loads(b''))\n",
+    "types_functiontype": "import types\nF = types.FunctionType\n",
+    "utf7_coding": "# -*- coding: utf-7 -*-\nimport torch\n",
+    "ctypes": "import ctypes\nctypes.memmove(0, 0, 0)\n",
+    "gc_objects": "import gc\nxs = gc.get_objects()\n",
+    "inspect_stack": "import inspect\nf = inspect.stack()\n",
+    "proc_mem": "data = open('/proc/self/mem', 'rb')\n",
+    "threading": "import threading\nthreading.Thread(target=len).start()\n",
+    "setattr_code_computed": "def f():\n    pass\nsetattr(f, '__co' + 'de__', None)\n",
+    "signal": "import signal\nsignal.signal(signal.SIGTERM, None)\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(ROUND_THREE))
+def test_the_scan_refuses_the_round_three_evasions(name: str) -> None:
+    """The run-time name tricks of round 2 and the fresh variants of round 3: each is refused by
+    the scan, before the answer runs."""
+    assert _guard.tamper_scan(ROUND_THREE[name], judge.FORBIDDEN_MODULES) is not None, name
 
 
 def test_the_integrity_snapshot_catches_a_swapped_or_recoded_callable() -> None:
@@ -143,8 +182,8 @@ def test_the_integrity_snapshot_catches_a_swapped_or_recoded_callable() -> None:
     holder["f"] = original
     guard = _guard.Integrity()
     guard.watch("f", lambda: holder["f"])
-    guard.arm()
-    assert guard.breach() is None
+    check = guard.arm()
+    assert check() is None and guard.breach() is None
     holder["f"] = replacement
     assert guard.breach() == "f"
     # the same object, with its code object swapped
@@ -153,6 +192,97 @@ def test_the_integrity_snapshot_catches_a_swapped_or_recoded_callable() -> None:
     assert guard.breach() is None
     original.__code__ = replacement.__code__
     assert guard.breach() == "f"
+
+
+def test_the_package_snapshot_catches_a_whole_module_and_a_library_and_the_environment() -> None:
+    """`checker_integrity` over the ttsem package catches a rebind of any function of any of its
+    modules (not only a hand-picked list: round 2 broke that by patching `Memory._read`, which
+    was not watched), a rebind of a numpy function the checker calls, a module swapped in
+    `sys.modules`, and a thread started after the snapshot. The check is a closure that holds
+    everything it reads, so rebinding this module's or the class's own names does not disarm it."""
+    import threading
+
+    import numpy as np
+
+    from ttsem import memory as memory_mod
+
+    root = Path(_guard.__file__).resolve().parent
+    guard = _guard.checker_integrity(roots=[root])
+    check = guard.arm()
+    assert check() is None
+
+    original = memory_mod.Memory._read
+    memory_mod.Memory._read = lambda self, addrs, dtype: None  # not on any hand-picked list
+    assert check() == "ttsem.memory.Memory._read"
+    memory_mod.Memory._read = original
+    assert check() is None
+
+    saved = np.searchsorted
+    np.searchsorted = lambda *a, **k: 0  # type: ignore[assignment]
+    assert check() == "numpy.searchsorted"
+    np.searchsorted = saved  # type: ignore[assignment]
+    assert check() is None
+
+    stolen = sys.modules["ttsem.memory"]
+    sys.modules["ttsem.memory"] = object()  # type: ignore[assignment]
+    assert check() == "sys.modules['ttsem.memory']"
+    sys.modules["ttsem.memory"] = stolen
+    assert check() is None
+
+    done = threading.Event()
+    thread = threading.Thread(target=done.wait)
+    thread.start()
+    try:
+        assert check() == "a thread started after the snapshot"
+    finally:
+        done.set()
+        thread.join()
+
+
+def test_the_check_is_a_closure_the_guard_module_cannot_be_disarmed() -> None:
+    """The check holds everything it reads, builtins included: rebinding this module's own
+    `_code_of` neither crashes it nor blinds it. And `_code_of` is itself a watched function of
+    the package, so rebinding it is a breach the held check reports on its own."""
+    root = Path(_guard.__file__).resolve().parent
+    guard = _guard.checker_integrity(roots=[root])
+    check = guard.arm()
+    assert check() is None
+    saved = _guard._code_of
+    _guard._code_of = lambda obj: None  # type: ignore[assignment]
+    try:
+        assert check() == "ttsem._guard._code_of"  # the held check still runs, and catches this
+    finally:
+        _guard._code_of = saved
+    assert check() is None
+
+
+def test_the_channel_exit_is_bound_at_creation() -> None:
+    """The channel's way out is a closure built when it is created; the class carries no `stop`,
+    `finish` or `end` attribute to rebind, so an answer cannot reach the exit of the instance in
+    use by assigning to `Channel.stop` (the round-2 mute)."""
+    from ttsem import judge_io
+
+    for name in ("stop", "finish", "end", "send", "launch"):
+        assert not hasattr(judge_io.Channel, name), name
+    channel = judge_io.Channel(None)  # no fd: sends nothing
+    for name in ("stop", "finish", "end", "send", "launch"):
+        assert callable(getattr(channel, name)), name
+
+
+def test_the_scan_allows_a_relative_import_and_ordinary_dunders() -> None:
+    """The scan is narrow: a relative import (an answer with no package: it fails when it runs),
+    `super().__init__()`, `self.__class__.__name__`, `torch.__version__`, a `getattr` with a
+    string constant, a settable config flag."""
+    forbidden = judge.FORBIDDEN_MODULES
+    for source in (
+        "from . import helper\n",
+        "import torch\nx = torch.__version__\n",
+        "class M(torch.nn.Module):\n    def __init__(self):\n        super().__init__()\n",
+        "import torch\nname = self.__class__.__name__\n",
+        "import torch\nf = getattr(torch, 'relu')\n",
+        "import torch\ntorch.backends.cuda.matmul.allow_tf32 = True\n",
+    ):
+        assert _guard.tamper_scan(source, forbidden) is None, source
 
 
 def test_a_ttsem_importing_answer_is_not_judged_before_it_runs(tmp_path: Path) -> None:
@@ -222,6 +352,21 @@ def test_a_fault_a_tritonbench_answer_catches_is_still_unsafe(tmp_path: Path) ->
     got = tb.judge_item(item, tmp_path, 300, sandbox=True)[tb.RECORD]
     assert (got["verdict"], got["class"]) == ("unsafe", "oob_read"), got
     assert (got["file"], got["line"]) == ("answer_swallows.py", 14)
+
+
+@needs_sandbox
+@pytest.mark.parametrize("answer", ["answer_patch_restore.py", "answer_thread_flip.py"])
+def test_a_runtime_patch_of_the_checker_is_not_judged(tmp_path: Path, answer: str) -> None:
+    """Two answers that patch a watched function of the checker at run time, with the static scan
+    off in the parent (the runtime integrity check alone): one restores the patch around the
+    launch, one flips it from a background thread between launches. Each is caught (`tampered`),
+    never `verified`. With the scan on (the default) they are refused before they run."""
+    import unittest.mock as mock
+
+    with mock.patch.object(judge, "tamper_reason", lambda answer: None):
+        got = judge.judge_one(KB / "task_relu.py", KB / answer, tmp_path / "a.json", 300)
+    assert (got["verdict"], got["why"]) == ("not_judged", "tampered"), got
+    assert "changed the judge's own code" in got["message"]
 
 
 @needs_sandbox

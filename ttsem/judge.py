@@ -557,6 +557,20 @@ def verdict_of(
                 "message": f"the run claims {claimed} launch(es); the judge counted {confirmed} "
                 "over its own channel",
             }  # fmt: skip
+        trials = account.get("trials") if account is not None else None
+        per_trial = sum(
+            t["launches"]
+            for t in (trials if isinstance(trials, list) else [])
+            if isinstance(t, dict) and isinstance(t.get("launches"), int)
+        )
+        if confirmed is not None and per_trial > confirmed:
+            # the trials' own counts decide `no_kernel`: together they cannot exceed the count
+            # the judge heard
+            return {
+                **head, "verdict": "not_judged", "why": "forged",
+                "message": f"the run's trials claim {per_trial} launch(es); the judge counted "
+                f"{confirmed} over its own channel",
+            }  # fmt: skip
     try:
         if account is not None:
             arrays = load_npz(work / "run.npz") if (work / "run.npz").exists() else {}

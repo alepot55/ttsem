@@ -39,7 +39,11 @@ dependencies = ["numpy"]
 # the tests and `python -m ttsem demo --torch` run on, and a later torch may carry the fixes for
 # the races that demo shows. The pin matches the CPU build too (2.14.0+cpu), so the install line
 # with PyTorch's CPU index keeps working.
-triton = ["triton==3.8.0", "torch==2.14.0"]
+# pytest is here, not only in `test`, because `python -m ttsem.sanitize pytest` runs a GPU test
+# suite under the semantics: for that mode, installed from a wheel, pytest is a run-time need
+# alongside Triton and torch, and the mode prints an install hint rather than a traceback without
+# it. `test` keeps pytest-xdist, which only ttsem's own suite uses.
+triton = ["triton==3.8.0", "torch==2.14.0", "pytest"]
 test = ["pytest", "pytest-xdist"]
 
 [project.scripts]

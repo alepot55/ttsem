@@ -32,18 +32,18 @@ from __future__ import annotations
 import argparse
 import ast
 import json
-import os
 import runpy
+import signal
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
-from ttsem import _guard, harness, pidraces, sanitize
-from ttsem import memory as memory_mod
+from ttsem import _guard, sanitize
 from ttsem._judge_runner import answer_frame, blame, cap_memory, first_line, raised_by_answer
 from ttsem.judge_io import Channel
 
@@ -51,7 +51,11 @@ from ttsem.judge_io import Channel
 def plain(value: Any, arrays: list[np.ndarray]) -> Any:
     """`value` with every tensor or array replaced by `{"array": i}`, the array appended to
     `arrays`; containers kept (tuples as lists), NumPy scalars as Python ones, other objects by
-    their type's name (which the judge does not compare)."""
+    their type's name (which the judge does not compare).
+
+    Everything it returns is of the exact built-in types (an array is a plain ndarray, a string a
+    plain str): this is the last time the run reads the file's objects, and writing the result
+    afterwards runs none of their methods."""
     if isinstance(value, torch.Tensor):
         tensor = value.detach()
         if tensor.dtype.is_floating_point and tensor.dtype not in (torch.float32, torch.float64):
@@ -63,15 +67,26 @@ def plain(value: Any, arrays: list[np.ndarray]) -> Any:
             return plain(item, arrays)
         value = np.asarray(value)  # a longdouble has no Python scalar: an array of one
     if isinstance(value, np.ndarray) and not value.dtype.hasobject:
-        arrays.append(value)
+        arrays.append(np.array(value, copy=True, subok=False))
         return {"array": len(arrays) - 1}
     if isinstance(value, dict):
-        return {"dict": [[str(k), plain(v, arrays)] for k, v in value.items()]}
+        return {"dict": [[exact_str(k), plain(v, arrays)] for k, v in value.items()]}
     if isinstance(value, (list, tuple)):
         return {"list": [plain(v, arrays) for v in value]}
-    if value is None or isinstance(value, (bool, int, float, str)):
+    if value is None or isinstance(value, bool):
         return value
-    return {"object": type(value).__name__}
+    if isinstance(value, int):
+        return int.__int__(value)
+    if isinstance(value, float):
+        return float.__float__(value)
+    if isinstance(value, str):
+        return str.__str__(value)
+    return {"object": exact_str(type(value).__name__)}
+
+
+def exact_str(value: Any) -> str:
+    """`str(value)` as a plain str (not a subclass with methods of its own)."""
+    return str.__str__(str(value))
 
 
 def results_name(script: Path) -> str:
@@ -116,87 +131,101 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--events", type=int, help="the pipe to the judge (`judge_io.Channel`)")
     args = ap.parse_args(argv)
     channel = Channel(args.events)  # before anything of the file's is imported
+    stop, launch, finish = channel.stop, channel.launch, channel.finish  # its closures, held here
+    # a SIGINT in the middle of a launch would raise KeyboardInterrupt into the file, which could
+    # catch it and go on without the launch's verdict; nothing interrupts a judged run
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     cap_memory()
     script: Path = args.script
     report: dict[str, Any] = {"file": script.name, "run": "ok", "launches": 0}
     own = {script.resolve()}
     live: dict[str, Any] = {}
+    guards: dict[str, Callable[[], None]] = {}  # the integrity checks, once armed
     start = time.time()
     torch.manual_seed(0)
     sys.argv = [str(script)]
     results: Any = None
-    from triton.runtime.jit import JITFunction
-
-    guard = _guard.checker_integrity(
-        memory=memory_mod, harness=harness, pidraces=pidraces, jitfunction=JITFunction, os_module=os
-    )
 
     def on_launch(n: int) -> None:
-        """The count over the channel (out of a forged report's reach), and a check the file did
-        not swap the checker's own code before the semantics ran this launch."""
-        bad = guard.breach(skip=_guard.HOOK)
-        if bad is not None:
-            raise sanitize.Unjudged(
-                "tampered", f"the file changed the judge's own code ({bad})", []
-            )
-        channel.launch(n)
+        """The count over the channel, out of a forged report's reach."""
+        launch(n)
 
-    def on_stop(stop: sanitize.KernelFault | sanitize.Unjudged) -> None:
+    def on_check() -> None:
+        """Around the semantics' run of each launch: the checker's own code is the code it was
+        before the file ran, or the judge hears `tampered` and the run ends there."""
+        enforce = guards.get("enforce")
+        if enforce is not None:
+            enforce()
+
+    def on_stop(fault: sanitize.KernelFault | sanitize.Unjudged) -> None:
         """A launch faulted, or cannot be judged: the judge hears it now, and the file never
         gets control back. The tool's own exception raised by the file's code is its error."""
-        if isinstance(stop, sanitize.Unjudged) and raised_by_answer(stop, own):
+        if isinstance(fault, sanitize.Unjudged) and raised_by_answer(fault, own):
             return
-        if isinstance(stop, sanitize.KernelFault):
-            event = fault_event(stop.fault)
+        if isinstance(fault, sanitize.KernelFault):
+            event = fault_event(fault.fault)
         else:
-            event = {"kind": "unjudged", "run": stop.verdict, "message": stop.detail[:300]}
-            event["ops"] = stop.unsupported
+            event = {"kind": "unjudged", "run": fault.verdict, "message": fault.detail[:300]}
+            event["ops"] = fault.unsupported
         state = live.get("state")
         if state is not None:
             event |= {"launches": state.launches, "races_unchecked": state.races_unchecked}
-        channel.stop(event)
+        stop(event)
 
     if "_inductor" in script.read_text(encoding="utf-8", errors="replace"):
         sanitize.inductor_names()  # code in Inductor's style: `grid`, `_empty_strided_cuda`
-    with sanitize.session(source=str(script), on_stop=on_stop, on_launch=on_launch) as state:
-        live["state"] = state
-        guard.arm()  # the session hook is in place; snapshot before the file runs
-        try:
-            scope = runpy.run_path(str(script), run_name="__main__")
-            results = scope.get(results_name(script))
-        except sanitize.KernelFault as stop:  # raised outside a launch: the file's own doing
-            channel.stop({**fault_event(stop.fault), "launches": state.launches})
-        except MemoryError:
-            report.update(run="memory", message="more memory than this run is allowed")
-        except BaseException as exc:  # noqa: BLE001  the file under test may raise anything
-            if isinstance(exc, sanitize.Unjudged) and not raised_by_answer(exc, own):
-                # the semantics' own, out of a launch the session does not watch
-                report.update(run=exc.verdict, message=exc.detail[:300], ops=exc.unsupported)
-            else:
-                inside, frame = blame(exc, own)
-                where = answer_frame(exc, own) or frame  # a compile error: the file's own launch
-                lines = [ln.strip() for ln in str(exc).strip().splitlines() if ln.strip()]
-                # a compilation error says what went wrong last
-                report.update(
-                    run="tool_error" if inside else "call_error",
-                    message=first_line(exc),
-                    detail=" | ".join(lines[-2:])[:300],
-                    where=f"{Path(where.filename).name}:{where.lineno}",
-                )
-        report["launches"] = state.launches
-        report["races_unchecked"] = state.races_unchecked
-        # before the account is trusted: the launch hook included now, a last check the file did
-        # not swap the checker's own code without a watched launch seeing it
-        bad = guard.breach()
-        if bad is not None:
-            report.update(run="tampered", message=f"the file changed the judge's own code ({bad})")
+    # the session stays open to the end: the process leaves by the channel, and the snapshot
+    # below includes what the session installed
+    session = sanitize.session(
+        source=str(script), on_stop=on_stop, on_launch=on_launch, on_check=on_check
+    )
+    state = session.__enter__()
+    live["state"] = state
+    from triton.runtime.jit import JITFunction
+
+    guard = _guard.checker_integrity(
+        roots=[Path(_guard.__file__).resolve().parent],
+        hooks={"JITFunction.run": JITFunction.run},
+    )
+    guards["enforce"] = _guard.enforcer(
+        guard.arm(), stop, {"kind": "unjudged", "run": "tampered"}
+    )  # the session hook is in place; the snapshot is taken before the file runs
+    seal = _guard.sealer(guards["enforce"])
+    try:
+        scope = runpy.run_path(str(script), run_name="__main__")
+        results = scope.get(results_name(script))
+    except sanitize.KernelFault as fault:  # raised outside a launch: the file's own doing
+        stop({**fault_event(fault.fault), "launches": state.launches})
+    except MemoryError:
+        report.update(run="memory", message="more memory than this run is allowed")
+    except BaseException as exc:  # noqa: BLE001  the file under test may raise anything
+        if isinstance(exc, sanitize.Unjudged) and not raised_by_answer(exc, own):
+            # the semantics' own, out of a launch the session does not watch
+            report.update(run=exc.verdict, message=exc.detail[:300], ops=exc.unsupported)
+        else:
+            inside, frame = blame(exc, own)
+            where = answer_frame(exc, own) or frame  # a compile error: the file's own launch
+            lines = [ln.strip() for ln in str(exc).strip().splitlines() if ln.strip()]
+            # a compilation error says what went wrong last
+            report.update(
+                run="tool_error" if inside else "call_error",
+                message=first_line(exc),
+                detail=" | ".join(lines[-2:])[:300],
+                where=f"{Path(where.filename).name}:{where.lineno}",
+            )
+    report["launches"] = state.launches
+    report["races_unchecked"] = state.races_unchecked
+    arrays: list[np.ndarray] = []
     if report["run"] == "ok":
-        arrays: list[np.ndarray] = []
-        report["results"] = plain(results, arrays)
-        np.savez(args.out_npz, *arrays)
+        report["results"] = plain(results, arrays)  # the file's objects, read for the last time
     report["seconds"] = round(time.time() - start, 1)
+    # the last code of the file's has run (its objects' finalizers too): the checker must still be
+    # the one snapshotted, or the judge hears `tampered` and no report is written
+    seal()
+    if report["run"] == "ok":
+        np.savez(args.out_npz, *arrays)
     args.out_json.write_text(json.dumps(report, indent=1))
-    channel.finish(0)
+    finish(0)
 
 
 if __name__ == "__main__":

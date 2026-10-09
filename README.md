@@ -238,10 +238,14 @@ value. The verdict is `verified` (exit 0), `wrong` (where memory nobody wrote sh
 the values), `unsafe` (an out-of-bounds access, a race, or an operation with an undefined result,
 at the answer's line), `no_kernel` (PyTorch does the work), `error`, `too_slow` or `not_judged`.
 Each answer is model-written code and runs in its own `bwrap` sandbox, and the verdict is computed
-outside it, from the run's raw outputs. The comparison of values that tells `wrong` from
-`verified` is robust against an adversarial answer; the fault and launch checks behind `unsafe` and
-`no_kernel` hold against an answer that does not tamper with the judge inside its own process. The
-rules, the batch mode, the classes, the sandbox and what each verdict guarantees are in
+outside it, from the run's raw outputs. `wrong` versus `verified` tells whether the values are
+right and holds against an adversarial answer, since the comparison rests on a reference the answer
+cannot touch (`verified` means right values; a kernel launched with the work then done in PyTorch
+still verifies). `unsafe` and `no_kernel` rest on two stop-gaps, a source scan and a run-time
+integrity check of the whole checker, that block every attack in the test suite but are not a
+proof: until the answer and the checker run in separate processes (planned for 0.2), use the judge
+as an auditor and an evaluation tool, and as an RL reward against adversarial optimisation with that
+caveat. The rules, the batch mode, the classes, the sandbox and what each verdict guarantees are in
 [docs/JUDGE.md][judge].
 
 ## How it was built

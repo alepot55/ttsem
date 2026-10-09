@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import gc
 import json
 import os
 import re
@@ -628,6 +629,7 @@ def session(
     on_stop: Callable[[KernelFault | Unjudged], object] | None = None,
     on_launch: Callable[[int], object] | None = None,
     races: str = "raise",
+    on_check: Callable[[], object] | None = None,
 ) -> Iterator[Session]:
     """While open, every Triton launch of this process is executed by the semantics on the CPU
     tensors it was given and written back into them. A launch that faults raises
@@ -645,8 +647,17 @@ def session(
 
     ``on_launch`` is called with the launch count (``Session.launches`` after this launch) once
     the launch is recorded and before its IR is read or executed: a judge sends the count to its
-    parent over a channel the answer cannot reach, and checks the checker's own code is unchanged
-    before the semantics run it; it may raise :class:`Unjudged` to stop the run there."""
+    parent over a channel the answer cannot reach; it may raise :class:`Unjudged` to stop the run
+    there.
+
+    ``on_check`` is called twice per launch: once the kernel is compiled and before the semantics
+    run it, and after they ran it and looked for races, before what it computed is written back.
+    Code of the program can run before the first (Triton's binder and compiler call into the
+    objects it passed) and after the second (the write-back goes through torch), never between:
+    what the semantics read of the program's objects is read before the first, as plain values,
+    and the garbage collector is off in between, so no finalizer of the program's runs there. A
+    judge checks at both points that the checker's own code is the code it snapshotted
+    (`ttsem._guard`), and ends the run if not."""
     if races not in ("raise", "record", "off"):
         raise ValueError(f"races: {races!r}")
     harness._install_fake_driver(cc)
@@ -679,13 +690,34 @@ def session(
             kernel_file = self.fn.__code__.co_filename
         except (AttributeError, TypeError):
             pass
-        # before the IR is read or the semantics run it: the judge's count over its own channel,
-        # and a check that the checker's own code was not swapped by the answer (may raise Unjudged)
+        # before the IR is read or the semantics run it: the judge's count over its own channel
         if on_launch is not None:
             on_launch(state.launches)
         ir_text = harness.ir_for_launch(record, "ttir", target)
+        # what the semantics read of the program's objects, read now, as plain values: nothing of
+        # the program's runs from the first check of `on_check` to the second
+        many = int(np.prod([int(g) for g in record.grid])) > 1 and races != "off"
+        src = getattr(self, "src", "") or ""
+        src = src if type(src) is str else ""
+        collecting = gc.isenabled()
+        gc.disable()  # no finalizer of the program's runs while the semantics do
         try:
-            many = int(np.prod([int(g) for g in record.grid])) > 1 and races != "off"
+            judged = _judged(record, ir_text, kernel_file, launch, many, src)
+        finally:
+            if collecting:
+                gc.enable()
+        _write_back(record, judged)
+        return None
+
+    def _judged(
+        record: Any, ir_text: str, kernel_file: str, launch: int, many: bool, src: str
+    ) -> harness.Execution:
+        """The launch executed by the semantics and checked for races, between the two checks of
+        `on_check`; a fault or a race raises :class:`KernelFault`."""
+        __tracebackhide__ = True
+        if on_check is not None:
+            on_check()  # compiled; the program's objects ran what they could, the semantics not yet
+        try:
             execution = harness.execute(record, ir_text, raise_faults=True, trace_access=many)
         except MemoryFault as exc:
             buffer, past, before = _locate(record, exc)
@@ -703,13 +735,12 @@ def session(
         if execution.failure is not None:
             failure = execution.failure
             raise Unjudged(failure.verdict, failure.message, list(failure.unsupported or []))
-        _write_back(record, execution)
         if execution.memory.access_overflow:
             state.races_unchecked += 1
-        log = _without_protocol_buffers(
-            record, getattr(self, "src", "") or "", execution.memory.access_log
-        )
+        log = _without_protocol_buffers(record, src, execution.memory.access_log)
         race = pidraces.find_race(log) if many else None
+        if on_check is not None:
+            on_check()  # the semantics and the race finder ran with the checker's own code
         if race is not None:
             fault = _with_source(
                 _race_fault(record, race, launch, ir_text, kernel_file), ir_text, kernel_file
@@ -717,7 +748,7 @@ def session(
             if races == "raise":
                 raise KernelFault(fault)
             state.races.append(fault)
-        return None
+        return execution
 
     def stopping(self: JITFunction, *args: Any, grid: Any, warmup: bool, **kwargs: Any) -> Any:
         __tracebackhide__ = True
@@ -811,8 +842,19 @@ def run_pytest(args: list[str], cc: int = harness.DEFAULT_CC) -> int:
     is the failure of the test that launched it, with the message for the author as its text.
     A launch too large for the race check is run and compared all the same; its count is printed
     once at the end of the session (`_RaceSummary`), in the terminal summary, never dropped without
-    a word (a run with no terminal reporter gets the same line on stderr)."""
-    import pytest
+    a word (a run with no terminal reporter gets the same line on stderr).
+
+    pytest is a run-time need of this mode, not of the package, so it is in the `triton` extra
+    with Triton and torch; without it this prints one line saying how to install it, rather than
+    a traceback."""
+    try:
+        import pytest
+    except ModuleNotFoundError:
+        sys.stderr.write(
+            "ttsem: `ttsem.sanitize pytest` needs pytest; install it with `pip install pytest` "
+            "(it ships in ttsem's `triton` extra: `pip install ttsem[triton]`).\n"
+        )
+        return 2
 
     with session(cc, "<pytest>") as state:
         summary = _RaceSummary(state)

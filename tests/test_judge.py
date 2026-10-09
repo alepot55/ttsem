@@ -588,17 +588,25 @@ def test_a_limit_of_the_machine_is_the_answers_error_when_it_raises_it_itself(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    def fake_run(args: Any, raw: Any, channel: Any, own: Any) -> None:
+    def fake_run(args: Any, raw: Any, channel: Any, own: Any, guards: Any) -> None:
         raw.data["stage"] = "forward"
         (module.forward if by_answer else raise_here)(exc)
 
     class Leaves(runner.Channel):
-        def end(self, code: int) -> Any:
-            raise SystemExit(code)
+        """The channel's way out (closures built with it) replaced by an exception."""
+
+        def __init__(self, fd: int | None) -> None:
+            super().__init__(fd)
+
+            def leave(code: int = 0, *rest: Any, **named: Any) -> Any:
+                raise SystemExit(code)
+
+            self.finish = self.end = leave
 
     monkeypatch.setattr(runner, "run_answer", fake_run)
     monkeypatch.setattr(runner, "cap_memory", lambda: None)
     monkeypatch.setattr(runner, "Channel", Leaves)
+    monkeypatch.setattr(runner.signal, "signal", lambda *args: None)  # this process's SIGINT
     work = tmp_path / "work"
     work.mkdir()
     with pytest.raises(SystemExit) as left:
