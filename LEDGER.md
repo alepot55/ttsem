@@ -1,8 +1,9 @@
 # Bug ledger
 
-One row per upstream defect found in this project: the reproducer, the compiler, the guilty pass
-or rewrite, the state, the commit of the fix. Nothing enters without a minimal reproducer and a
-verdict from the semantics.
+One row per upstream defect found in this project: the compiler, the guilty pass or rewrite, the
+symptom, how it was found, the state and the fix. Where the first column links an issue or a pull
+request, that report holds the reproducer. Nothing enters without a minimal reproducer; the "found
+by" column says where the semantics was involved.
 
 The state column is the state on 8 October 2026, in words: filed (an issue or PR is open),
 confirmed by a maintainer, fixed by an upstream commit, closed without a fix, or not reported.
@@ -11,8 +12,14 @@ Tools referred to in the "found by" column:
 
 - **validator**: `ttsem/validate.py`, the per-pass validator that names the culprit pass.
 - **minimiser**: `ttsem/minimize.py`, the delta minimiser (`--reads` and `--crash` variants).
-- **race detector**: `ttsem/races.py`, level 3.
+- **race detector**: two checks under one name. `ttsem/races.py` (level 3) finds races between the
+  warps of a CTA in shared memory; `ttsem/pidraces.py` finds races between the program instances of
+  a launch, the check behind the PyTorch rows.
+- **memory model**: `ttsem/memory.py`, the flat memory of the semantics, which reports every access
+  outside a bound buffer.
 - **layout fuzzer**: the companion differential fuzzer over layouts, dtypes and descriptors.
+- **static witness**: the companion static check of whether code motion keeps the mask or guard a
+  load had in the source.
 - **program fuzzer**: the companion generator of well-formed SIMT and tile programs with a
   lock-step interpreter as oracle.
 - **LLVM continuation**: the companion lock-step interpreter of the LLVM dialect and NVVM, which
@@ -25,8 +32,8 @@ Tools referred to in the "found by" column:
 - **OpInfo sweep**: the companion sweep of PyTorch's OpInfo samples with transposed and gapped
   layouts and other scalar values, compiled and compared with eager.
 
-The validator, the minimiser and the race detector ship in this package; the other tools above do
-not.
+The validator, the minimiser, both race detectors and the memory model ship in this package; the
+other tools above do not.
 
 ## Upstream defects
 
@@ -40,7 +47,7 @@ not.
 | [triton#11404](https://github.com/triton-lang/triton/issues/11404) | 2026-08-23 | Triton `main` | `Membar`, `ttng.cluster_barrier {relaxed}` | a relaxed `cluster_barrier` was treated as a full sync and cleared the memory state, while 25 lines above in the same file a fence is placed before the relaxed one: the pass contradicted itself | by hand | fixed, closed by lezcano on 26 Aug | [#11462](https://github.com/triton-lang/triton/pull/11462) by gaoxiaomo, `c0901bf1c` |
 | [triton#11405](https://github.com/triton-lang/triton/issues/11405) | 2026-08-23 | Triton `main` | `ttg.warp_specialize` capturing a tensor | `report_fatal_error` with no diagnostic on valid IR, reachable from Gluon | by hand | filed, open, 9 comments, has an owner | candidate: [#11457](https://github.com/triton-lang/triton/pull/11457) by Sadik00789, a verifier for `WarpSpecializeOp`, open |
 | [triton#11407](https://github.com/triton-lang/triton/issues/11407) | 2026-08-22 | Triton `main` and the 3.8.0 wheel | `tritongpu-pipeline`, `predicateOp` | the pipeliner moves the next iteration's address arithmetic into the current one and predicates the load but not the `arith.divsi` that computes its address, so `(i * BLOCK) // (n - i)` divides by zero on a trip the source never takes | by hand, then the validator on the reproducer: `match` up to the pipeliner, `poison` (integer division by zero) from pipeliner step 2 to the final TTGIR, `match` again with the fix re-applied | **fixed and then reverted**: closed by lezcano on 23 Aug, reverted on 24 Aug as "causes regressions and doesn't really solve any practical problem"; the UB is on `main` today and the issue stays closed. Still reproducible on 8 Sep at `27964b601`: 33 `match` up to the pipeliner, 30 `poison` after it | [#11410](https://github.com/triton-lang/triton/pull/11410) by FU-max-boop, `ad81746db`, reverted by [#11427](https://github.com/triton-lang/triton/pull/11427) by ThomasRaoux, `bf9ad8723` |
-| [triton#11519](https://github.com/triton-lang/triton/issues/11519) | 2026-08-30 | Triton `main` (`e1f944a7a`) | `tritongpu-fuse-nested-loops`, `matchPositiveTripCount` | accepts an `llvm.assume` that does not dominate the loop: on `m=4, n=0` the device writes 256 elements into a buffer the source never touches (`out = [4, 8, 12, ...]` instead of zeros) | hand analysis, then the validator named the pass on its own (320 elements mismatching in every dump up to "Before FuseNestedLoops", `match` after it); the minimiser produced a 39-line witness in 14 s | **fixed**, closed by peterbell10 on 8 Sep | [#11521](https://github.com/triton-lang/triton/pull/11521) by LiRunGuo, merged 8 Sep, `8f80860f1` |
+| [triton#11519](https://github.com/triton-lang/triton/issues/11519) | 2026-08-30 | Triton `main` (`e1f944a7a`) | `tritongpu-fuse-nested-loops`, `matchPositiveTripCount` | accepts an `llvm.assume` that does not dominate the loop: on `m=4, n=0` the device writes 256 elements into a buffer the source never touches (`out = [4, 8, 12, ...]` instead of zeros) | hand analysis, then the validator named the pass on its own (320 elements mismatching in every dump up to "Before FuseNestedLoops", `match` from the next decided dump on); the minimiser produced a 39-line witness in 14 s | **fixed**, closed by peterbell10 on 8 Sep | [#11521](https://github.com/triton-lang/triton/pull/11521) by LiRunGuo, merged 8 Sep, `8f80860f1` |
 | [triton#11544](https://github.com/triton-lang/triton/issues/11544) | 2026-09-02 | Triton `main` (`d4eb2dd39`) | `AxisInfo`, `remsi` / `remui` visitor | the divisibility of a remainder is declared on every element instead of on the group bases: `misaligned address` from a valid kernel | AxisInfo oracle: transfer-function sweep, then a device witness | **fixed**, closed by lezcano three hours after the issue | [#11546](https://github.com/triton-lang/triton/pull/11546) by lezcano, `4af25c84e` |
 | [triton#11548](https://github.com/triton-lang/triton/pull/11548) | 2026-09-02 | Triton `main` (`d4eb2dd39`) | `AxisInfo`, constancy of `tt.load` with `other` | a masked load inherits the pointer's constancy and ignores `other`; the following `addi` deduplication copies registers and the device writes `[65,65,65,65,69,...]` for `[65,66,67,68,69,...]`, 48 elements of 128 | AxisInfo oracle: sweep plus a device witness | **fixed before our report went out**: lezcano found and fixed it the same afternoon, an hour after our neighbouring issue | [#11548](https://github.com/triton-lang/triton/pull/11548) by lezcano, `36cb2499e` |
 | [triton#7749](https://github.com/triton-lang/triton/issues/7749) | 2026-09-02 (issue opened 2025-08-02) | Triton `main` (`d4eb2dd39`) | `AxisInfo`, `divsi` / `remsi` visitors on negative dividends | the group rules for `divsi` / `remsi` hold only for non-negative dividends: with `x = offs - 64`, `x // 32` takes constancy 32 and register deduplication copies one register into four, 6 elements of 128 wrong; `x % 32` reads `x_ptr[0..3]` instead of `x_ptr[0], x_ptr[-31], x_ptr[-30], x_ptr[-29]` | matthias-springer's 2025 issue made observable on device by us, with a Lean witness showing the ungated rules are unsatisfiable on the kernel | confirmed, assignee Jokeren, label `bug` | in review: [#11569](https://github.com/triton-lang/triton/pull/11569) by alepot55 (a non-negativity bit in the lattice, gates on `divsi` / `remsi`, entry-block `assume`); the maintainer asked to keep it open without further commits, wanting the sign from a range analysis; our question about the acceptable shape is unanswered |
@@ -95,8 +102,8 @@ not.
 
 ## Defects of our own tool, found by the same method
 
-These defects were in our own tools, and the same method found them. They are listed because how
-often the method misleads its user is part of what it is worth.
+These defects were in our own tools, and the same method found them. They are listed so a reader
+can see how often the method misled us.
 
 | what | found by | outcome |
 |---|---|---|
