@@ -104,17 +104,20 @@ depends on the order the lanes arrive in; each class of mismatch is described in
 [docs/RESULTS.md][results] has the method and the other corpora.
 
 **TritonBench, judged by value.** TritonBench's check compares printed output, and 342 of its 350
-tests print nothing. Judged by value with `python -m ttsem judge --tritonbench`, 245 of the 767
+tests print nothing. Judged by value with `python -m ttsem judge --tritonbench`, 245 of the 763
 published answers (models of 2024-25) that run and can be judged return wrong values (147) or are
 unsafe (98: 62 out-of-bounds reads, 23 out-of-bounds writes, 7 races, 6 undefined values), 32%. With
 no GPU, the public judge redid the whole audit from scratch on 7 Oct in about 2 hours on a 4-vCPU
-cloud VM (2 jobs, then 4); the private harness of 19 Sep had taken about 75 minutes on a 20-core
-desktop. The audit of 19-20 Sep 2026, with the judge of that date, ran the same files on an RTX 4070
-as a control: of the answers both sides ran and compared, 636 of 637 right or wrong decisions agree;
-of the 95 answers ttsem stops for a fault and the device decides, 86 crash on the device or return
-wrong values and 9 return the reference's values. The commands that redo the audit from a clone are
-in [audits/tritonbench][audit-tb]; those that judge two public sets of KernelBench answers the same
-way are in [audits/kernelbench][audit-kb].
+cloud VM (2 jobs, then 4), and found 245 of 767; on 9 Oct the 22 answers with a launch too large for
+the race check's access log were judged again by this release, which no longer calls such a run
+verified unless the launch's address ranges rule a race out, and 4 answers verified before are now
+`not_judged` (`races_unchecked`). The private harness of 19 Sep had taken about 75 minutes on a
+20-core desktop. The audit of 19-20 Sep 2026, with the judge of that date, ran the same files on an
+RTX 4070 as a control: of the answers both sides ran and compared, 636 of 637 right or wrong
+decisions agree; of the 95 answers ttsem stops for a fault and the device decides, 86 crash on the
+device or return wrong values and 9 return the reference's values. The commands that redo the audit
+from a clone are in [audits/tritonbench][audit-tb]; those that judge two public sets of KernelBench
+answers the same way are in [audits/kernelbench][audit-kb].
 
 **torch.compile.** On torch 2.14, over five families of generated in-place programs (3,292), an RTX
 4070 gets 856 wrong, 855 of them only at a large shape. Inductor emitted each program's Triton for
@@ -204,9 +207,9 @@ companion tools that are not; [LEDGER.md][ledger] describes each.
   chosen for two GPU runs, here against torch on the CPU; four files with 4096 x 32000 tensors did
   not finish.
 - What is the TritonBench denominator? 7,752 published answers, of which 1,002 ran under ttsem and
-  767 could be judged by value; the 32% is 245 of those 767. Comparing values on the RTX 4070 alone
+  763 could be judged by value; the 32% is 245 of those 763. Comparing values on the RTX 4070 alone
   finds 220 of the 816 answers it ran and compared wrong (27%, audit of 19-20 Sep); ttsem, with no
-  GPU, finds 147 wrong and 98 unsafe of 767 and names the fault and its line
+  GPU, finds 147 wrong and 98 unsafe of 763 and names the fault and its line
   ([audits/tritonbench][audit-tb]).
 - How long does a verdict take? About 12 s for a small KernelBench answer on the machine of "Limits"
   (11.4 s to 11.8 s over two runs each of `tests/fixtures/judge/task_relu.py` with

@@ -26,9 +26,11 @@ repository: not its data, not its answers, not a list of the answers flagged.
                 --extra-index-url https://pypi.org/simple -e '.[triton]' torch==2.14.0
   ```
 
-  The published numbers were made with Triton 3.8.0, torch 2.14.0+cpu, numpy 2.5.3, the judge as it
-  is on `main` since `bf51173` (27 Sep 2026), a memory cap of 6 GB per run (`TTSEM_MEM_GB`, the
-  default) and 300 s per run.
+  The published numbers were made with Triton 3.8.0, torch 2.14.0+cpu, numpy 2.5.3, a memory cap
+  of 6 GB per run (`TTSEM_MEM_GB`, the default) and 300 s per run: the whole audit with the judge
+  of `e9b2025` on 7 Oct 2026, then, on 9 Oct, the 22 answers with a launch too large for the race
+  check's access log again with this release's judge, which moved 4 of them from verified to not
+  compared (`races_unchecked`).
 - About 160 MB for the benchmark and 5 GB for the output (Triton caches and the arrays the tests keep).
 - The benchmark, at the commit the numbers were made on (Apache-2.0):
 
@@ -70,23 +72,24 @@ finer class, and for a fault the kernel, the buffer and the answer's line), the 
 ```text
 | model | answers | ran | verified | reduced precision | wrong | unsafe | not compared | not judged | wrong or unsafe |
 ...
-| **total** | **4,764** | **596** | **335** | **7** | **58** | **48** | **148** | **53** | **106 of 448** |
+| **total** | **4,764** | **596** | **331** | **7** | **58** | **48** | **152** | **53** | **106 of 444** |
 
-G: of the 448 answers that ran and could be judged, 106 (24%) return wrong values or are unsafe.
+G: of the 444 answers that ran and could be judged, 106 (24%) return wrong values or are unsafe.
 ...
-| **total** | **2,988** | **406** | **180** | **0** | **89** | **50** | **87** | **76** | **139 of 319** |
+| **total** | **2,988** | **406** | **180** | **0** | **89** | **50** | **87** | **72** | **139 of 319** |
 
 T: of the 319 answers that ran and could be judged, 139 (44%) return wrong values or are unsafe.
 
-All: 7,752 answers; of the 767 that ran and could be judged, 245 (32%) return wrong values (147) or are unsafe (98).
+All: 7,752 answers; of the 763 that ran and could be judged, 245 (32%) return wrong values (147) or are unsafe (98).
 ```
 
 "ran" is what TritonBench's own check sees: the file ran to the end, plus the answers the semantics
-stopped for a fault a GPU runs past. "not compared" is a task or answer that draws random numbers,
-a reference that cannot be compared with, a fault the task's own test causes in the reference too,
-or right values with no Triton kernel launched. "not judged" is what this machine or the tool
-lacks, a timeout or a crash. The verdicts and their classes are those of
-`python -m ttsem judge --help` and of the docstring of `ttsem/judge_tritonbench.py`.
+stopped for a fault a GPU runs past. "not compared" is a task or answer that draws random numbers, a
+reference that cannot be compared with, a fault the task's own test causes in the reference too,
+right values with no Triton kernel launched, or right values from a launch too large to be checked
+for races (`races_unchecked`). "not judged" is what this machine or the tool lacks, a timeout or a
+crash. The verdicts and their classes are those of `python -m ttsem judge --help` and of the
+docstring of `ttsem/judge_tritonbench.py`.
 
 ## The control on a GPU (optional)
 
