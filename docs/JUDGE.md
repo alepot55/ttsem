@@ -122,10 +122,11 @@ into the checker. What each verdict holds against is therefore worth stating pla
 - `verified` also means that every launch was checked for races between program instances. A
   launch of more than 4,000,000 memory accesses (`ttsem.memory.ACCESS_BUDGET`) is checked by the
   range of bytes each access touched: where no instance writes into a range another instance
-  touches, no race is possible. Where the ranges meet, the launch runs and its values are compared,
-  but no race is looked for, and a run with such a launch is `not_judged` (`races_unchecked`) where
-  it would have been `verified`; it is still `wrong` or `unsafe` where its values differ or a fault
-  was found. The record keeps the count of such launches, and the verdict line names it.
+  touches, no race is possible. Where the ranges meet, or one launch leaves more than 2,000,000 of
+  them (`ttsem.memory.SPAN_BUDGET`), the launch runs and its values are compared, but no race is
+  looked for, and a run with such a launch is `not_judged` (`races_unchecked`) where it would have
+  been `verified`; it is still `wrong` or `unsafe` where its values differ or a fault was found.
+  The record keeps the count of such launches, and the verdict line names it.
 - Full separation of the answer from the checker (running the semantics in a process the answer's
   code cannot reach at all) is planned for 0.2. Until then the judge is fit for auditing published
   answers and for evaluation, where the answers were not written to defeat it. Used as an RL reward
