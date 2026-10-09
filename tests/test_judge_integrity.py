@@ -168,6 +168,34 @@ def test_the_scan_refuses_the_round_three_evasions(name: str) -> None:
     assert _guard.tamper_scan(ROUND_THREE[name], judge.FORBIDDEN_MODULES) is not None, name
 
 
+@pytest.mark.parametrize("builtin", ["getattr", "hasattr", "setattr", "delattr"])
+@pytest.mark.parametrize("name", sorted(_guard._OS_FUNCTIONS))
+def test_an_os_function_is_refused_through_getattr_as_through_its_attribute(
+    name: str, builtin: str
+) -> None:
+    """Round 4: `getattr(os, "write")` with the name as a constant passed where `os.write` did not.
+    Each function of `os` the scan refuses by attribute is refused through the attribute builtins
+    too, under any name `os` is imported as."""
+    forbidden = judge.FORBIDDEN_MODULES
+    assert _guard.tamper_scan(f"import os\nos.{name}\n", forbidden) is not None
+    for source in (
+        f"import os\nf = {builtin}(os, '{name}')\n",
+        f"import os as o\nf = {builtin}(o, '{name}')\n",
+    ):
+        reason = _guard.tamper_scan(source, forbidden)
+        assert reason is not None and f"os.{name}" in reason, source
+
+
+def test_getattr_on_os_with_an_ordinary_name_still_passes() -> None:
+    forbidden = judge.FORBIDDEN_MODULES
+    for source in (
+        "import os\np = getattr(os, 'environ')\n",
+        "import os\nj = getattr(os.path, 'join')\n",
+        "import torch\nf = getattr(torch, 'float32')\n",
+    ):
+        assert _guard.tamper_scan(source, forbidden) is None, source
+
+
 def test_the_integrity_snapshot_catches_a_swapped_or_recoded_callable() -> None:
     """A watched attribute rebound to another object, or the same function given another function's
     code, is a breach; the untouched snapshot is not."""

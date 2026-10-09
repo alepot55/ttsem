@@ -362,6 +362,11 @@ class _Scan:
             target = self.resolve(node.args[0]) if node.args else None
             if write and target is not None and not self.settable(f"{target}.{name}"):
                 return f"it rebinds `{target}.{name}`, a library's own attribute"
+            # what `os.write` or `types.CodeType` is refused as, it is refused as through
+            # `getattr(os, "write")` too
+            reason = self.dotted_reason(f"{target}.{name}") if target is not None else None
+            if reason is not None:
+                return f"{reason} through `{func.id}`"
             return None
         if isinstance(func, ast.Name) and func.id == "open" and "open" not in self.aliases:
             path = node.args[0] if node.args else None
