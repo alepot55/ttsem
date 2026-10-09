@@ -78,7 +78,7 @@ check.
 
 | | needs a GPU | access out of bounds | race between program instances | read of memory nobody wrote | source |
 |---|---|---|---|---|---|
-| ttsem | no | fails at the kernel's line, counted against the tensor's real size | fails at the kernel's line; past 4,000,000 element accesses in one launch, checked by the address range of each access, and a launch where two instances' ranges meet is counted as not checked | `torch.empty` and its kin are filled with NaN (integers with a pattern), so the read shows in the values | measured here |
+| ttsem | no | fails at the kernel's line, counted against the tensor's real size | fails at the kernel's line; past 4,000,000 element accesses in one launch, checked by the address range of each access, and a launch where two instances' ranges meet, or that leaves more than 2,000,000 ranges, is counted as not checked | `torch.empty` and its kin are filled with NaN (integers with a pattern), so the read shows in the values | measured here |
 | `TRITON_INTERPRET=1` | no | not reported: on a copy of `suite_no_mask.py` with CPU tensors, the n = 1000 case corrupts the heap and the process dies of an abort (40 runs of 40 on 9 Oct, each after the n = 1024 case had passed); no run names the cause | not reported as a race: it runs the program instances one after the other | not reported: on a copy of `accumulate_into_empty.py` with CPU tensors, the read returns what the CPU allocator left there (wrong values in 3 runs of 3) | measured here; [Triton docs][interp] |
 | compute-sanitizer memcheck | yes | reported; an overflow into the next allocation only with `--padding`, and PyTorch's docs ask to turn its caching allocator off for memory checkers (`PYTORCH_NO_CUDA_MEMORY_CACHING=1`) | | | [NVIDIA][cs], [PyTorch][ptcuda] |
 | compute-sanitizer racecheck | yes | | shared memory only, not global memory | | [NVIDIA][cs] |
@@ -215,11 +215,11 @@ companion tools that are not; [LEDGER.md][ledger] describes each.
   (12.6 s to 14.1 s over two runs each of `tests/fixtures/judge/task_relu.py` with
   `answer_unsafe.py` and with `answer_ok.py`): two sandboxed processes, the task's reference and the
   answer. The 7,752 TritonBench answers took about 2 hours under `python -m ttsem judge
-  --tritonbench` on a 4-vCPU cloud VM (7 Oct, 2 jobs, then 4), and about 75 minutes under the
-  private harness of 19 Sep on a 20-core desktop.
-- Which targets and versions? Kernels are compiled for CUDA sm_90 (a script run can pick another
-  with `--cc`; the judge uses sm_90a); there is no AMD back end; only Triton 3.8.0 and torch 2.14.0
-  are tested, the versions the `triton` extra pins.
+  --tritonbench`, with the judge of `e9b2025`, on a 4-vCPU cloud VM (7 Oct, 2 jobs, then 4), and
+  about 75 minutes under the private harness of 19 Sep on a 20-core desktop.
+- Which targets and versions? Kernels are compiled for CUDA capability 9.0 (sm_90a in Triton's
+  naming); a script run can pick another with `--cc`, the judge always uses 9.0. There is no AMD
+  back end; only Triton 3.8.0 and torch 2.14.0 are tested, the versions the `triton` extra pins.
 - Is the calibration a held-out test? No. Triton's `test_core.py` was also the development set: its
   first run had 1,008 mismatches and 3,659 errors, and the semantics and the harness were fixed
   until what was left had a documented cause ([docs/RESULTS.md][results]). Two other corpora: the
@@ -236,10 +236,10 @@ companion tools that are not; [LEDGER.md][ledger] describes each.
   `python -m ttsem.sanitize`, a vector add over 16.8 million float32 elements took 16.6 s and a
   1024 x 1024 x 1024 fp16 matmul in 64 x 64 x 32 tiles 12.2 s.
 - **Past 4,000,000 element accesses in one launch, races are checked by address range only.** Only
-  the range of bytes each access touched is kept: where no program instance writes into a range
-  another instance touches, no race is possible and the launch counts as checked; where the ranges
-  meet, the launch still runs and is checked for out-of-bounds accesses, but not for races. A script
-  run ends with the number of launches not checked: of the two launches above, the vector add is
+  the range of bytes each access touched is kept, up to 2,000,000 ranges per launch: where no
+  program instance writes into a range another instance touches, no race is possible and the launch
+  counts as checked; where the ranges meet, or a launch leaves more ranges than that, the launch
+  still runs and is checked for out-of-bounds accesses, but not for races. A script run ends with the number of launches not checked: of the two launches above, the vector add is
   ruled race-free by its ranges, while the matmul's 64 x 64 output tiles are not contiguous, so the
   ranges of neighbouring tiles meet, and the run ends with `1 launch(es) too large to be checked for
   races`. Under `python -m ttsem.sanitize pytest` the terminal summary prints the same count. Under

@@ -79,6 +79,14 @@ open("output_code.py", "w").write(codes[0])
 recipe above then judges it. Without `unstub_torch_cuda()` the compile stops at `Torch not
 compiled with CUDA enabled`. Code saved on a machine with a GPU needs none of this.
 
+A split scan (`cumsum` and its kin over a long dimension) passes each block's partial to the next
+through a scratch buffer, under a flag that the next block spins on: run one instance after the
+other, the plain store and the plain load of that buffer look like a race, but the flag forces
+their order. A session leaves that buffer out of the race check where the kernel calls Inductor's
+own helper, `triton_helpers.exclusive_scan_decoupled_lookback*`, with it (the call itself, resolved
+in the kernel's globals) and the launch exchanged a flag in it; every other buffer is checked. The
+judge of model-written kernels never leaves a buffer out ([JUDGE.md](JUDGE.md)).
+
 ## The block cap
 
 A race needs two program instances on the same data. At a test's small shape Inductor's default

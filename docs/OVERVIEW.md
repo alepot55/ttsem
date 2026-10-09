@@ -48,7 +48,7 @@ validates every launch the suite makes.
   cases of Triton's own C++ unit tests for `LinearLayoutConversions.cpp` reproduced exactly.
 - **Level 3 (races): of the 9,372 distinct modules of the test suite that ran, none races with
   Membar's barriers in place and 1,435 race with every barrier stripped.** So about one module in
-  six needs at least one of Membar's barriers.
+  seven (15%) needs at least one of Membar's barriers.
 
 ## How it works
 

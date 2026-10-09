@@ -110,7 +110,9 @@ into the checker. What each verdict holds against is therefore worth stating pla
     `base64`/`marshal`/`pickle` fed to them), the interpreter's frames, object graph or module
     table, `ctypes` or other native code, threads, signals, child processes, a dunder attribute
     outside a short list, an attribute name computed at run time, or rebinding a library's own
-    attribute;
+    attribute. A module bound to another plain name (`w = os`, a default argument, a chain of such
+    bindings) is followed as the module itself; one reached through any other expression (a
+    lambda's return value, a container, an object's attribute) is left to the integrity check;
   - **the integrity check** snapshots, before the answer is imported, the identity and code of
     every function and class of the whole checker (not a hand-picked list), of the numpy, Triton,
     torch and standard-library attributes it uses, and of the process's threads, signal handlers
@@ -127,6 +129,17 @@ into the checker. What each verdict holds against is therefore worth stating pla
   looked for, and a run with such a launch is `not_judged` (`races_unchecked`) where it would have
   been `verified`; it is still `wrong` or `unsafe` where its values differ or a fault was found.
   The record keeps the count of such launches, and the verdict line names it.
+- The race check leaves out no buffer of an answer. Outside the judge, `python -m ttsem.sanitize`
+  and `sanitize.session()` leave out one buffer, for TorchInductor's own code: the scratch buffer of
+  Inductor's split scan, through which each block passes its partial to the next under a flag that
+  the next block spins on, which forces their order. They do so only where the kernel's code calls
+  Inductor's helper `exclusive_scan_decoupled_lookback*` with that buffer (the callee resolved
+  through the kernel's globals to the function in `torch._inductor.runtime.triton_helpers`; a
+  comment or a string that names it is not a call) and the launch exchanged a flag in it. The judges
+  turn this off (`session(inductor_lookback=False)`): an answer is untrusted and could race on the
+  very buffer it hands the helper, so an answer that calls the helper has that buffer checked like
+  any other, and its protocol reads as a race. None of the 7,752 published TritonBench answers calls
+  it.
 - Full separation of the answer from the checker (running the semantics in a process the answer's
   code cannot reach at all) is planned for 0.2. Until then the judge is fit for auditing published
   answers and for evaluation, where the answers were not written to defeat it. Used as an RL reward
