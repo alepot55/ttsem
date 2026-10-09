@@ -1,8 +1,9 @@
 # The Triton code of torch.compile, under ttsem
 
 TorchInductor turns a PyTorch program into Triton kernels. It emits Triton for CPU tensors too
-(`torch._inductor.config.cpu_backend = "triton"`, the same lowering and the same passes), so the
-kernels `torch.compile` generates can run under ttsem on a machine with no GPU. When a pass gets
+(`torch._inductor.config.cpu_backend = "triton"`, the same lowering, though a few scheduling choices
+Inductor makes only for CUDA are off for CPU nodes, loop reordering among them), so the kernels
+`torch.compile` generates can run under ttsem on a machine with no GPU. When a pass gets
 aliasing wrong, a kernel reads memory that another program instance of the same launch writes;
 ttsem stops at the kernel line where that happens.
 
@@ -47,20 +48,47 @@ with sanitize.session():  # every Triton launch runs under ttsem; a fault raises
 On the code torch 2.14 emits for `x[1:] = x[:-1].clone()` on CPU tensors (with
 `cpu_backend = "triton"`), this stops with the same `KernelFault` as the demo, at line 25 of the
 kernel. Code emitted for CUDA tensors goes through the same names (`inductor_names` answers
-`_empty_strided_cuda` and the kernel's switch to the GPU driver), but it was not tried here.
+`_empty_strided_cuda` and the kernel's switch to the GPU driver). The README's numbers on
+`torch.compile` were measured with this recipe, on code Inductor emitted on an RTX 4070 (and, for
+the two random seeds, on code it emitted for CPU tensors), with a companion harness and the
+semantics of that time.
 
 Producing `output_code.py` is the part that needs care on a machine with no GPU: Inductor compiles
-the Triton it emits, and with no active Triton driver that compile fails (`0 active drivers`). The
-demo gets around it by compiling inside a ttsem session, which supplies a driver; see
-`run_case` in `ttsem/torch_demo.py`. Code saved on a machine with a GPU needs none of this.
+the Triton it emits, and with no active Triton driver that compile fails (`0 active drivers`). A
+ttsem session supplies a driver, but inside a session alone the compile still fails (`0 compatible
+backends for target (cpu)`); with `sanitize.inductor_names()` applied in the session, Inductor
+loads its kernels without compiling them for a device. `run_case` in `ttsem/torch_demo.py` does
+this (lines 87-89), and so does this, for a function `f` and its input `x`:
+
+```python
+import torch, torch._inductor.utils as inductor_utils
+from torch._inductor import config
+from ttsem import _fakedriver, sanitize
+config.cpu_backend = "triton"  # Inductor's Triton for CPU tensors
+with sanitize.session(cuda_is_cpu=False, races="off"):  # a Triton driver; record no races yet
+    _fakedriver.unstub_torch_cuda()  # the driver answers Triton, not Inductor
+    undo = sanitize.inductor_names()  # load the kernels without compiling them for a device
+    try:
+        _, codes = inductor_utils.run_and_get_code(torch.compile(f), x)
+    finally:
+        undo()
+open("output_code.py", "w").write(codes[0])
+```
+
+`races="off"` keeps the file coming out of a program that races (the call above runs it once); the
+recipe above then judges it. Without `unstub_torch_cuda()` the compile stops at `Torch not
+compiled with CUDA enabled`. Code saved on a machine with a GPU needs none of this.
 
 ## The block cap
 
 A race needs two program instances on the same data. At a test's small shape Inductor's default
 block covers the whole tensor with one program instance, and nothing can race.
 `sanitize.inductor_names(block=16)` caps `XBLOCK`, `YBLOCK` and `ZBLOCK` of the config Inductor
-launches with; a generated kernel is valid under every block size its autotuner may pick, so the
-cap changes the schedule, not the meaning.
+launches with. Inductor masks a generated load or store unless the size it covers is a multiple of
+the largest block it allows (4096 along x outside ROCm, 1024 along y and z; `_has_constant_mask` in
+`torch/_inductor/codegen/triton.py`, torch 2.14), so the kernel computes the same values under any
+power-of-two block up to that one. 16 need not be a size the autotuner would pick: the cap changes
+the schedule, not the meaning.
 
 Older Inductor output launches its kernels directly, as `kernel[grid](..., XBLOCK=64)` with a grid
 computed from the block. For that code, set `TTSEM_BLOCK_CAP=16` in the environment: inside a

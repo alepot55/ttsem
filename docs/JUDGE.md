@@ -118,6 +118,7 @@ into the checker. What each verdict holds against is therefore worth stating pla
     travel out of band over a pipe carrying a token the answer does not know, captured as closures
     when the run starts, so rebinding the channel's class does not reach the run's own exit, and a
     forged report or a mismatched launch count is `not_judged` (`forged`).
+- A launch too large for the race check makes the run `not_judged`.
 - Full separation of the answer from the checker (running the semantics in a process the answer's
   code cannot reach at all) is planned for 0.2. Until then the judge is fit for auditing published
   answers and for evaluation, where the answers were not written to defeat it. Used as an RL reward
