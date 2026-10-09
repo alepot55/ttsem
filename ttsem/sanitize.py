@@ -35,7 +35,7 @@ from triton.runtime.errors import OutOfResources
 from triton.runtime.jit import JITFunction
 
 from ttsem import harness, pidraces, values
-from ttsem.memory import MemoryFault
+from ttsem.memory import ACCESS_BUDGET, MemoryFault
 
 
 @dataclasses.dataclass
@@ -629,6 +629,7 @@ def session(
     on_launch: Callable[[int], object] | None = None,
     races: str = "raise",
     on_check: Callable[[], object] | None = None,
+    on_unchecked: Callable[[], object] | None = None,
 ) -> Iterator[Session]:
     """While open, every Triton launch of this process is executed by the semantics on the CPU
     tensors it was given and written back into them. A launch that faults raises
@@ -656,7 +657,12 @@ def session(
     what the semantics read of the program's objects is read before the first, as plain values,
     and the garbage collector is off in between, so no finalizer of the program's runs there. A
     judge checks at both points that the checker's own code is the code it snapshotted
-    (`ttsem._guard`), and ends the run if not."""
+    (`ttsem._guard`), and ends the run if not.
+
+    ``on_unchecked`` is called, between those two points, for each launch whose accesses were too
+    many to be checked for races (over ``Memory.access_budget``: ``Session.races_unchecked``
+    counts them): a judge counts them over its own channel, and does not call such a run
+    verified."""
     if races not in ("raise", "record", "off"):
         raise ValueError(f"races: {races!r}")
     harness._install_fake_driver(cc)
@@ -736,6 +742,8 @@ def session(
             raise Unjudged(failure.verdict, failure.message, list(failure.unsupported or []))
         if execution.memory.access_overflow:
             state.races_unchecked += 1
+            if on_unchecked is not None:
+                on_unchecked()  # before anything of the program's runs again
         log = _without_protocol_buffers(record, src, execution.memory.access_log)
         race = pidraces.find_race(log) if many else None
         if on_check is not None:
@@ -821,13 +829,10 @@ class _RaceSummary:
         self.reported = False
 
     def _line(self) -> str:
-        from ttsem.memory import Memory
-
-        budget = Memory().access_budget
         n = self.state.races_unchecked
         return (
             f"ttsem: {n} launch(es) too large to be checked for races "
-            f"(over {budget:,} memory accesses each): run and compared, but not race-checked"
+            f"(over {ACCESS_BUDGET:,} memory accesses each): run and compared, but not race-checked"
         )
 
     def pytest_terminal_summary(self, terminalreporter: Any, *args: Any, **kwargs: Any) -> None:

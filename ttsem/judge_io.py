@@ -19,8 +19,9 @@ stop-gaps narrow that. Every event the runner sends carries a per-run token the 
 before the answer is imported (`hello` is sent first, with it), so the judge counts only the
 runner's own events and ignores an answer's forgeries on the same pipe: an answer that leaves the
 process itself (`os._exit`) without the runner's token-bearing `done` is seen as not finished, not
-as a clean run, and a launch count the runner did not confirm over the channel is not trusted. The
-values a run returns are still compared with a reference it cannot touch.
+as a clean run, and a count the runner did not confirm over the channel (the launches, and those
+too large to be checked for races) is not trusted. The values a run returns are still compared
+with a reference it cannot touch.
 
 Imports only the standard library and numpy at module level: the judge's process reads its runs
 with it, the runners write with it.
@@ -63,16 +64,16 @@ class Channel:
     """The runner's end of the pipe to the judge (`--events FD`), and the way out of the process.
 
     Everything it does is a closure built here, when the runner starts and before any code under
-    test is imported: `send`, `launch`, `stop`, `finish` and `end` are attributes of the instance,
-    each holding the `os.write`, the `os._exit` and the encoder it was built with. A later
-    `os.write = ...`, `json.dumps = ...` or `Channel.stop = ...` reaches none of them, and a runner
-    that keeps them in its own variables right after building the channel is out of reach of a
-    rebinding of the instance too.
+    test is imported: `send`, `launch`, `unchecked`, `stop`, `finish` and `end` are attributes of
+    the instance, each holding the `os.write`, the `os._exit` and the encoder it was built with. A
+    later `os.write = ...`, `json.dumps = ...` or `Channel.stop = ...` reaches none of them, and a
+    runner that keeps them in its own variables right after building the channel is out of reach
+    of a rebinding of the instance too.
 
     A random `token`, picked here before the answer is imported, is stamped on every event and
     announced in the first one (`hello`). The judge takes the first `hello`'s token as the
     runner's own and ignores any later event that does not carry it, so an answer writing JSON to
-    the same pipe cannot forge a `done`, a launch count or a `stop`: it does not know the token,
+    the same pipe cannot forge a `done`, a count or a `stop`: it does not know the token,
     and its own `hello` is not the first."""
 
     def __init__(self, fd: int | None) -> None:
@@ -80,23 +81,27 @@ class Channel:
         self.token = secrets.token_hex(8)
         self.send: Send
         self.launch: Launch
+        self.unchecked: Unchecked
         self.stop: Stop
         self.finish: End
         self.end: End
-        self.send, self.launch, self.stop, self.finish, self.end = _channel(fd, self.token)
+        closures = _channel(fd, self.token)
+        self.send, self.launch, self.unchecked, self.stop, self.finish, self.end = closures
         self.send({"event": "hello"})  # first, before any code under test runs
 
 
 Send = Callable[[Mapping[str, Any]], None]
 Launch = Callable[[int], None]
+Unchecked = Callable[[], None]
 Stop = Callable[..., NoReturn]
 End = Callable[[int], NoReturn]
 
 
-def _channel(fd: int | None, token: str) -> tuple[Send, Launch, Stop, End, End]:
-    """The channel's five functions, as closures over what they use (`Channel`)."""
+def _channel(fd: int | None, token: str) -> tuple[Send, Launch, Unchecked, Stop, End, End]:
+    """The channel's six functions, as closures over what they use (`Channel`)."""
     write, leave, encode = os.write, os._exit, _encoder()
     count = [0]  # the launches executed, kept here (not a value the answer can set)
+    skipped = [0]  # the launches too large to be checked for races, kept here likewise
 
     def send(
         event: Mapping[str, Any], _write: Any = write, _encode: Any = encode, _fd: Any = fd
@@ -120,6 +125,14 @@ def _channel(fd: int | None, token: str) -> tuple[Send, Launch, Stop, End, End]:
         if count[0] <= _cap:
             send({"event": "launch", "n": count[0]})
 
+    def unchecked(_cap: int = LAUNCH_EVENT_CAP) -> None:
+        """One more launch too large to be checked for races (`sanitize.Session.races_unchecked`),
+        counted here: a run with any is never verified, and its count rides on `done` and `stop`
+        whatever the run's account says."""
+        skipped[0] += 1
+        if skipped[0] <= _cap:
+            send({"event": "unchecked", "n": skipped[0]})
+
     def end(code: int, _sys: Any = sys, _leave: Any = leave) -> NoReturn:
         """Out of the process, with no exit handler, finalizer or thread of the code under test
         running after the runner's last word."""
@@ -135,7 +148,7 @@ def _channel(fd: int | None, token: str) -> tuple[Send, Launch, Stop, End, End]:
         """A `stop` event (a fault, a launch that cannot be judged), then out of the process. The
         event goes first; `then` (writing what the run did so far) runs after it, and whatever it
         does, raises or rebinds cannot take the event back."""
-        send({**event, "event": "stop", "launches": count[0]})
+        send({**event, "event": "stop", "launches": count[0], "races_unchecked": skipped[0]})
         if then is not None:
             try:
                 then()
@@ -144,11 +157,11 @@ def _channel(fd: int | None, token: str) -> tuple[Send, Launch, Stop, End, End]:
         end(_stopped)
 
     def finish(code: int = 0) -> NoReturn:
-        """`done` (with the launch count the checker counted), then out of the process."""
-        send({"event": "done", "launches": count[0]})
+        """`done` (with the counts the checker kept), then out of the process."""
+        send({"event": "done", "launches": count[0], "races_unchecked": skipped[0]})
         end(code)
 
-    return send, launch, stop, finish, end
+    return send, launch, unchecked, stop, finish, end
 
 
 def _encoder() -> Any:
@@ -298,6 +311,27 @@ class Ran:
             int(e["n"])
             for e in self.events
             if e.get("event") == "launch" and e.get("token") == tok and isinstance(e.get("n"), int)
+        ]
+        return max(counts) if counts else None
+
+    def confirmed_unchecked(self) -> int | None:
+        """The count of launches too large to be checked for races that the runner itself
+        reported over the pipe (on its `done` or `stop`, or the highest `unchecked` tally), or None
+        where it reported none (an older runner, or the device control)."""
+        tok = self.token()
+        counts = [
+            int(e["races_unchecked"])
+            for e in self.events
+            if e.get("event") in ("done", "stop")
+            and e.get("token") == tok
+            and isinstance(e.get("races_unchecked"), int)
+        ]
+        counts += [
+            int(e["n"])
+            for e in self.events
+            if e.get("event") == "unchecked"
+            and e.get("token") == tok
+            and isinstance(e.get("n"), int)
         ]
         return max(counts) if counts else None
 

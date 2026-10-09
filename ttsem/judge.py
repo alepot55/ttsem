@@ -33,8 +33,14 @@ One verdict per pass:
   launch outside an autotuner is not checked against the limit), or its process died (`crash`)
 - too_slow: the timeout expired
 - not_judged: the tool cannot say (an op ttsem does not model, its own error, the memory cap,
-  a full /tmp, a task that does not run, a run that stopped before the trials the rule asks for),
-  or the answer reached into the judge (`tampered`) or did not finish through it (`forged`)
+  a full /tmp, a task that does not run, a run that stopped before the trials the rule asks for,
+  values that match from a launch too large to be checked for races: `races_unchecked`), or the
+  answer reached into the judge (`tampered`) or did not finish through it (`forged`)
+
+A launch whose memory accesses number more than `ttsem.memory.ACCESS_BUDGET` is run and its values
+compared, but not checked for races between program instances. A run with any such launch is never
+`verified`: it is `not_judged` (`races_unchecked`) where it would have been, and `wrong` or `unsafe`
+still where its values differ or a fault was found.
 
 `--gpu` sets only the shared-memory limit: every launch is compiled for sm_90a, so whether an
 autotune config compiles (the autotuner skips one that raises `CompileTimeAssertionFailure` or
@@ -101,6 +107,7 @@ from ttsem.judge_io import (
     run_sandboxed,
     tensor_of,
 )
+from ttsem.memory import ACCESS_BUDGET
 
 VERDICTS = ("verified", "wrong", "unsafe", "no_kernel", "error", "too_slow", "not_judged")
 RUNNER = "ttsem._judge_runner"
@@ -571,10 +578,19 @@ def verdict_of(
                 "message": f"the run's trials claim {per_trial} launch(es); the judge counted "
                 f"{confirmed} over its own channel",
             }  # fmt: skip
+        skipped = ran.confirmed_unchecked()
+        said = account.get("races_unchecked") if account is not None else None
+        if skipped is not None and isinstance(said, int) and said != skipped:
+            return {
+                **head, "verdict": "not_judged", "why": "forged",
+                "message": f"the run claims {said} launch(es) too large to be checked for races; "
+                f"the judge counted {skipped} over its own channel",
+            }  # fmt: skip
+    unchecked = unchecked_count(account, ran)
     try:
         if account is not None:
             arrays = load_npz(work / "run.npz") if (work / "run.npz").exists() else {}
-            outcome = compared(report, account, arrays, reference, rule)
+            outcome = compared(report, account, arrays, reference, rule, unchecked)
         else:
             outcome = {}
     except MALFORMED as exc:
@@ -582,6 +598,8 @@ def verdict_of(
             message = f"malformed run report: {type(exc).__name__}: {exc}"[:300]
             return {**head, "verdict": "error", "why": "crash", "message": message}
         outcome = {}
+    if unchecked:
+        report["races_unchecked"] = unchecked
     if stop is not None:
         return report | stopped(stop) | stage_of(account)
     failure = account.get("failure") if account is not None else None
@@ -594,6 +612,23 @@ def verdict_of(
             return {**head, "verdict": "error", "why": "crash", "message": message}
         return report | stage_of(account) | failure
     return report | outcome
+
+
+def unchecked_count(account: dict[str, Any] | None, ran: Ran) -> int:
+    """How many of the run's launches were too large to be checked for races: the count the
+    runner sent over its own channel, or, where it sent none (an older runner), the count its
+    account gives. Whichever is larger counts: a forged account cannot lower it."""
+    said = account.get("races_unchecked") if account is not None else None
+    said = said if isinstance(said, int) and not isinstance(said, bool) else 0
+    return max(ran.confirmed_unchecked() or 0, said, 0)
+
+
+def unchecked_message(n: int) -> str:
+    """Why a run whose values match is `not_judged` (`races_unchecked`)."""
+    return (
+        f"{n} launch(es) too large to be checked for races between program instances (over "
+        f"{ACCESS_BUDGET:,} memory accesses each): the values match, but no race was looked for"
+    )
 
 
 def stage_of(account: dict[str, Any] | None) -> dict[str, Any]:
@@ -619,12 +654,17 @@ def compared(
     arrays: Mapping[str, Any],
     reference: dict[str, Any],
     rule: str,
+    unchecked: int = 0,
 ) -> dict[str, Any]:
     """The answer's outputs against the reference's, trial by trial, then config by config, into
     `report` (`trials`, `configs`, and the account's own counts); returns the verdict they come to
     when the run ended on its own. A comparison that raises (a dtype the reference's does not
-    take) is the answer's error, as it was when the runner compared."""
+    take) is the answer's error, as it was when the runner compared. `unchecked` is the count of
+    launches too large to be checked for races (`unchecked_count`): with any, values that match
+    are `not_judged` (`races_unchecked`), never `verified`."""
     report |= {key: account[key] for key in ACCOUNT if key in account}
+    if unchecked or "races_unchecked" in report:
+        report["races_unchecked"] = unchecked  # the judge's count, not the account's
     expected = reference["trials"]
     trials: list[dict[str, Any]] = []
     report["trials"] = trials
@@ -658,6 +698,9 @@ def compared(
     if not any(t["launches"] for t in trials):  # a launch at init only does not do the task
         return {"verdict": "no_kernel"}
     if passed and "failed" not in report.get("configs", {}):
+        if unchecked:  # right values, but a race between program instances was not looked for
+            message = unchecked_message(unchecked)
+            return {"verdict": "not_judged", "why": "races_unchecked", "message": message}
         return {"verdict": "verified"}
     return {"verdict": "wrong"}
 
@@ -726,7 +769,16 @@ def judge_item(
 
 def describe(report: dict[str, Any]) -> str:
     """One pass's verdict in a line: for `wrong` the trial and the largest difference, for
-    `unsafe` the kind of fault, the kernel and the answer's own line."""
+    `unsafe` the kind of fault, the kernel and the answer's own line; and, for a run with
+    launches too large to be checked for races, how many."""
+    text = verdict_line(report)
+    n = report.get("races_unchecked")
+    if isinstance(n, int) and n > 0 and report.get("why") != "races_unchecked":
+        text += f"; {n} launch(es) too large to be checked for races"
+    return text
+
+
+def verdict_line(report: dict[str, Any]) -> str:
     verdict = str(report["verdict"])
     trials = report.get("trials") or []
     configs = report.get("configs") or {}

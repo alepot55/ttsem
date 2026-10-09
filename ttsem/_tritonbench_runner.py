@@ -131,7 +131,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--events", type=int, help="the pipe to the judge (`judge_io.Channel`)")
     args = ap.parse_args(argv)
     channel = Channel(args.events)  # before anything of the file's is imported
-    stop, launch, finish = channel.stop, channel.launch, channel.finish  # its closures, held here
+    # its closures, held here
+    stop, launch, finish = channel.stop, channel.launch, channel.finish
+    unchecked = channel.unchecked
     # a SIGINT in the middle of a launch would raise KeyboardInterrupt into the file, which could
     # catch it and go on without the launch's verdict; nothing interrupts a judged run
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -139,7 +141,6 @@ def main(argv: list[str] | None = None) -> int:
     script: Path = args.script
     report: dict[str, Any] = {"file": script.name, "run": "ok", "launches": 0}
     own = {script.resolve()}
-    live: dict[str, Any] = {}
     guards: dict[str, Callable[[], None]] = {}  # the integrity checks, once armed
     start = time.time()
     torch.manual_seed(0)
@@ -167,20 +168,20 @@ def main(argv: list[str] | None = None) -> int:
         else:
             event = {"kind": "unjudged", "run": fault.verdict, "message": fault.detail[:300]}
             event["ops"] = fault.unsupported
-        state = live.get("state")
-        if state is not None:
-            event |= {"launches": state.launches, "races_unchecked": state.races_unchecked}
-        stop(event)
+        stop(event)  # with the counts the channel kept: the launches, those not race-checked
 
     if "_inductor" in script.read_text(encoding="utf-8", errors="replace"):
         sanitize.inductor_names()  # code in Inductor's style: `grid`, `_empty_strided_cuda`
     # the session stays open to the end: the process leaves by the channel, and the snapshot
     # below includes what the session installed
     session = sanitize.session(
-        source=str(script), on_stop=on_stop, on_launch=on_launch, on_check=on_check
+        source=str(script),
+        on_stop=on_stop,
+        on_launch=on_launch,
+        on_check=on_check,
+        on_unchecked=unchecked,  # a launch too large for the race check, counted by the channel
     )
     state = session.__enter__()
-    live["state"] = state
     from triton.runtime.jit import JITFunction
 
     guard = _guard.checker_integrity(

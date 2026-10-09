@@ -365,6 +365,33 @@ def test_the_columns() -> None:
         "answers": 13, "verified": 3, "reduced": 0, "wrong": 1, "unsafe": 1,
         "not_compared": 2, "not_judged": 1, "ran": 7,
     }  # fmt: skip
+    records.append({"class": "races_unchecked"})  # ran and compared, but not race-checked
+    assert tb.columns(records)["not_compared"] == 3
+
+
+@pytest.mark.parametrize(
+    ("value", "want"),
+    [([1.0, 2.0], "not_judged races_unchecked"), ([1.0, 3.0], "wrong wrong_result")],
+)
+def test_launches_too_large_for_the_race_check_are_never_verified(
+    tmp_path: Path, value: list[float], want: str
+) -> None:
+    """Right values from a run with a launch too large to be checked for races are `not_judged`
+    (`races_unchecked`), with the count and the budget; wrong ones are still `wrong`, a fault still
+    `unsafe`; the record keeps the count, and its line says it."""
+    gold = results(tmp_path, "gold", [1.0, 2.0])
+    run, npz = results(tmp_path, "answer", value)
+    run["races_unchecked"] = 2
+    got = tb.decide(run, npz, gold, lambda: gold, False)
+    assert (f"{got['verdict']} {got['class']}", got["races_unchecked"]) == (want, 2), got
+    line = tb.describe(got)
+    if got["verdict"] == "not_judged":
+        assert line.startswith("not_judged (races_unchecked): 2 launch(es) too large"), line
+        assert "4,000,000" in line and got["tolerance"] == "strict"
+    else:
+        assert line.endswith("; 2 launch(es) too large to be checked for races"), line
+    race = tb.decide({"run": "race", "races_unchecked": 2}, npz, gold, lambda: gold, False)
+    assert (race["verdict"], race["class"]) == ("unsafe", "race")
 
 
 def references(out: Path, values: list[float]) -> tuple[dict[str, Any], Path]:

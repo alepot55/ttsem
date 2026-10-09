@@ -262,10 +262,10 @@ def test_the_channel_exit_is_bound_at_creation() -> None:
     use by assigning to `Channel.stop` (the round-2 mute)."""
     from ttsem import judge_io
 
-    for name in ("stop", "finish", "end", "send", "launch"):
+    for name in ("stop", "finish", "end", "send", "launch", "unchecked"):
         assert not hasattr(judge_io.Channel, name), name
     channel = judge_io.Channel(None)  # no fd: sends nothing
-    for name in ("stop", "finish", "end", "send", "launch"):
+    for name in ("stop", "finish", "end", "send", "launch", "unchecked"):
         assert callable(getattr(channel, name)), name
 
 
@@ -332,6 +332,151 @@ def test_a_forged_launch_count_is_not_judged(tmp_path: Path) -> None:
     got = judge.verdict_of(head, reference, ran, work, "kernelbench", 60)
     assert (got["verdict"], got["why"]) == ("not_judged", "forged"), got
     assert "35" in got["message"] and "0" in got["message"]
+
+
+# --- the race check's budget ---------------------------------------------------------------------
+
+
+def test_the_channel_counts_the_launches_not_race_checked() -> None:
+    """Each launch too large for the race check is counted by the channel itself and sent at once;
+    the judge reads the count off the runner's own events only, not off a line the answer wrote
+    to the same pipe."""
+    from ttsem import judge_io
+
+    read_fd, write_fd = os.pipe()
+    try:
+        channel = judge_io.Channel(write_fd)
+        channel.launch(1)
+        channel.unchecked()
+        channel.unchecked()
+        os.write(write_fd, b'\n{"event": "unchecked", "n": 0}\n{"event": "done"}\n')
+        os.close(write_fd)
+        events = judge_io.events_of(judge_io.drain(read_fd))
+    finally:
+        os.close(read_fd)
+    assert Ran(0, "", events).confirmed_unchecked() == 2
+
+
+def _kb_run(
+    tmp_path: Path, got: list[float], claimed: int | None, last: dict[str, Any]
+) -> dict[str, Any]:
+    """The report the judge writes for a hand-made run: one trial whose output is `got` against a
+    reference of [1, 2], an account claiming `claimed` launches not race-checked (no claim when
+    None), and `last` as the runner's last event (its `done` or `stop`)."""
+    torch = pytest.importorskip("torch")
+    work = tmp_path / "work"
+    work.mkdir()
+    np.savez(
+        work / "run.npz", allow_pickle=False, trial0=np.asarray(got, np.float32).view(np.uint8)
+    )
+    output = {"dtype": "float32", "shape": [len(got)]}
+    account: dict[str, Any] = {
+        "trials": [{"seed": 1, "launches": 1, "output": output}],
+        "launches": 1,
+        "tuners": 0,
+    }
+    if claimed is not None:
+        account["races_unchecked"] = claimed
+    (work / "run.json").write_text(json.dumps(account))
+    reference = {
+        "trials": [{"seed": 1, "precision": "fp32", "want": torch.tensor([1.0, 2.0])}],
+        "sweep": {},
+    }
+    head = {"answer": "a.py", "scale": "auto", "launches": 0, "settings": judge.DEFAULTS}
+    code = EXIT_STOPPED if last["event"] == "stop" else 0
+    ran = Ran(code, "", [{"event": "hello", "token": "T"}, {"token": "T", **last}])
+    return judge.verdict_of(head, reference, ran, work, "kernelbench", 60)
+
+
+@pytest.mark.parametrize(
+    ("got", "claimed", "sent", "want"),
+    [
+        ([1.0, 2.0], 0, 0, "verified"),
+        ([1.0, 2.0], 2, 2, "not_judged races_unchecked"),
+        ([1.0, 2.0], 2, None, "not_judged races_unchecked"),  # a runner that sends no count
+        ([1.0, 3.0], 2, 2, "wrong"),
+        ([1.0, 2.0], 0, 2, "not_judged forged"),  # an account that lowers the count
+    ],
+)
+def test_a_kernelbench_run_with_launches_not_race_checked_is_never_verified(
+    tmp_path: Path, got: list[float], claimed: int, sent: int | None, want: str
+) -> None:
+    """Round 4: a launch over `ttsem.memory.ACCESS_BUDGET` accesses is run and compared but not
+    checked for races, and a racing kernel padded past the budget was `verified`. Values that
+    match from such a run are `not_judged` (`races_unchecked`), with the count and the budget in
+    the message; values that differ are still `wrong`. The count is the channel's: an account
+    that says fewer is `forged`."""
+    last: dict[str, Any] = {"event": "done", "launches": 1}
+    if sent is not None:
+        last["races_unchecked"] = sent
+    report = _kb_run(tmp_path, got, claimed, last)
+    assert " ".join([report["verdict"], *([report["why"]] if "why" in report else [])]) == want
+    line = judge.describe(report)
+    if want == "not_judged races_unchecked":
+        assert report["races_unchecked"] == 2
+        assert line.startswith("not_judged (races_unchecked): 2 launch(es) too large"), line
+        assert "4,000,000" in line
+    if want == "wrong":
+        assert line.endswith("; 2 launch(es) too large to be checked for races"), line
+
+
+def test_a_kernelbench_fault_is_unsafe_whatever_the_count(tmp_path: Path) -> None:
+    stop = {"event": "stop", "kind": "fault", "fault": "race", "launches": 1, "races_unchecked": 3}
+    report = _kb_run(tmp_path, [1.0, 2.0], 3, stop)
+    assert (report["verdict"], report["kind"], report["races_unchecked"]) == ("unsafe", "race", 3)
+
+
+def test_a_tritonbench_report_that_lowers_the_count_is_tampered(tmp_path: Path) -> None:
+    """The TritonBench judge reads the count the same way: the channel's, and a report that says
+    fewer is `tampered`; from a runner that sends none, the report's own."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "run.json").write_text(json.dumps({"run": "ok", "launches": 1, "races_unchecked": 0}))
+    hello = {"event": "hello", "token": "T"}
+    done = {"event": "done", "token": "T", "launches": 1, "races_unchecked": 1}
+    got = tb.run_report(Ran(0, "", [hello, done]), work, Path("a.py"), 60)
+    assert got["run"] == "tampered" and "1 over its own channel" in got["message"], got
+    (work / "run.json").write_text(json.dumps({"run": "ok", "launches": 1, "races_unchecked": 2}))
+    older = {"event": "done", "token": "T", "launches": 1}
+    got = tb.run_report(Ran(0, "", [hello, older]), work, Path("a.py"), 60)
+    assert (got["run"], got["races_unchecked"]) == ("ok", 2), got
+
+
+@needs_sandbox
+@pytest.mark.parametrize(("rewrites", "want"), [(0, ("unsafe", "race")), (1100, None)])
+def test_a_race_padded_past_the_budget_is_not_verified(
+    tmp_path: Path, rewrites: int, want: tuple[str, str] | None
+) -> None:
+    """The round-4 break, end to end: program 0 stores what every program reads, which the order
+    ttsem runs them in makes right. Unpadded, the judge finds the race; padded with rewrites past
+    the race check's budget, the values match and the judge says it did not look (it said
+    `verified` before)."""
+    answer = KB / "answer_race_unchecked.py"
+    if rewrites != 1100:
+        source = answer.read_text().replace("REWRITES = 1100\n", f"REWRITES = {rewrites}\n")
+        answer = tmp_path / "answer_race.py"
+        answer.write_text(source)
+    got = judge.judge_one(KB / "task_relu.py", answer, tmp_path / "a.json", 300)
+    if want is not None:
+        assert (got["verdict"], got["kind"]) == want, got
+        return
+    assert (got["verdict"], got["why"]) == ("not_judged", "races_unchecked"), got
+    assert got["races_unchecked"] == 5 and all(t["pass"] for t in got["trials"])  # 5 trials
+
+
+@needs_sandbox
+def test_a_tritonbench_race_padded_past_the_budget_is_not_verified(tmp_path: Path) -> None:
+    item = {
+        "id": "a",
+        "task": str(TB / "task_relu.py"),
+        "answer": str(TB / "answer_race_unchecked.py"),
+    }
+    got = tb.judge_item(item, tmp_path, 300, sandbox=True)[tb.RECORD]
+    assert (got["verdict"], got["class"], got["races_unchecked"]) == (
+        "not_judged",
+        "races_unchecked",
+        1,
+    ), got
 
 
 # --- the forged answers -------------------------------------------------------------------------

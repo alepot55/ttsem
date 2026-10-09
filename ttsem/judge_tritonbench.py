@@ -42,9 +42,12 @@ The verdicts are those of ``python -m ttsem judge``, and `class` keeps the finer
   compared by value: the reference run is not `ok` or keeps objects that are not values
   (`ran_reference_unjudged`), keeps nothing (`ran_reference_returns_nothing`), two reference runs
   under two poison patterns differ, so it returns memory it never wrote (`ran_reference_unwritten`),
-  the task or the answer draws random numbers inside the operator (`ran_random_task`), or the
+  the task or the answer draws random numbers inside the operator (`ran_random_task`), the
   answer faults where the task's own test drives the reference into a fault too
-  (`fault_also_in_reference`)
+  (`fault_also_in_reference`), or its results are right but a launch was too large to be checked
+  for races between program instances (`races_unchecked`: more memory accesses than
+  `ttsem.memory.ACCESS_BUDGET`); such a run is never `verified`, and is `wrong` or `unsafe` still
+  where its values differ or a fault was found
 
 The reference runs once per task (and a second time, with the second poison pattern, when an
 answer's results are to be compared with it), into OUT/reference/, with a Triton cache of its own
@@ -128,6 +131,7 @@ NOT_COMPARED = (
     "ran_reference_unwritten",
     "fault_also_in_reference",
     "verified_no_kernel",
+    "races_unchecked",
 )
 
 
@@ -312,7 +316,15 @@ def run_report(ran: Ran, work: Path, script: Path, timeout: int) -> dict[str, An
             "message": f"the run claims {claimed} launch(es); the judge counted {confirmed} over "
             "its own channel",
         }  # fmt: skip
-    return found
+    skipped, said = ran.confirmed_unchecked(), found.get("races_unchecked")
+    if skipped is not None and isinstance(said, int) and said != skipped:
+        return {
+            "file": script.name, "run": "tampered",
+            "message": f"the run claims {said} launch(es) too large to be checked for races; "
+            f"the judge counted {skipped} over its own channel",
+        }  # fmt: skip
+    # the count the judge trusts: the channel's, or, from a runner that sent none, the report's
+    return {**found, "races_unchecked": judge.unchecked_count(found, ran)}
 
 
 def run_file(
@@ -399,9 +411,12 @@ def decide(
     kind = str(run.get("run"))
     gold_run, gold_npz = gold
     launches = run.get("launches", 0)
+    unchecked = run.get("races_unchecked", 0)
+    unchecked = unchecked if isinstance(unchecked, int) and unchecked > 0 else 0
+    counts = {"launches": launches} | ({"races_unchecked": unchecked} if unchecked else {})
 
     def verdict(value: str, name: str, **extra: Any) -> dict[str, Any]:
-        return {"verdict": value, "class": name, "launches": launches, **extra}
+        return {"verdict": value, "class": name, **counts, **extra}
 
     def unjudged(message: str) -> dict[str, Any]:
         return verdict("not_judged", "ran_reference_unjudged", message=message)
@@ -453,6 +468,11 @@ def decide(
             if ok:
                 if not launches:
                     return verdict("no_kernel", "verified_no_kernel", tolerance=tolerance)
+                if unchecked:  # right values, but a race was not looked for
+                    message = judge.unchecked_message(unchecked)
+                    return verdict(
+                        "not_judged", "races_unchecked", tolerance=tolerance, message=message
+                    )
                 return verdict("verified", name, tolerance=tolerance)
         return verdict("wrong", "wrong_result", message=why)
     if kind in FAULTS:
@@ -571,7 +591,16 @@ def judge_item(
 
 
 def describe(record: dict[str, Any]) -> str:
-    """One answer's verdict in a line."""
+    """One answer's verdict in a line, and, for a run with launches too large to be checked for
+    races, how many."""
+    text = verdict_line(record)
+    n = record.get("races_unchecked")
+    if isinstance(n, int) and n > 0 and record.get("class") != "races_unchecked":
+        text += f"; {n} launch(es) too large to be checked for races"
+    return text
+
+
+def verdict_line(record: dict[str, Any]) -> str:
     verdict, name = str(record["verdict"]), str(record.get("class"))
     if verdict == "verified":
         if record.get("tolerance") == "reduced":
@@ -611,7 +640,8 @@ def describe(record: dict[str, Any]) -> str:
 def columns(records: list[dict[str, Any]]) -> dict[str, int]:
     """The answers in columns: answers; verified (strict or lenient); reduced precision; wrong;
     unsafe; not compared (a random task, a reference that cannot be compared with, a fault the
-    task's test causes in the reference too, right values with no kernel); not judged (what the
+    task's test causes in the reference too, right values with no kernel or from a launch too large
+    to be checked for races); not judged (what the
     machine or the tool lacks, a timeout, a crash); ran (the file ran to the end, or stopped for
     a fault a GPU runs past: all but the last two and the answers that raised)."""
     tally = Counter(str(r.get("class")) for r in records)

@@ -309,7 +309,8 @@ def run_answer(
         answer.write_text(answer_run, encoding="utf-8")
     precision = "keep" if args.rule == "v3" else args.precision
     live: dict[str, Any] = {}  # what the account reads at any point: the session, the op counts
-    stop, launch = channel.stop, channel.launch  # the channel's own closures, held here
+    # the channel's own closures, held here
+    stop, launch, unchecked = channel.stop, channel.launch, channel.unchecked
 
     def on_launch(n: int) -> None:
         """Before the semantics run this launch: the count over the channel (where a forged
@@ -355,7 +356,11 @@ def run_answer(
         stop(event, then=written)  # the event first: what the account says after it is a courtesy
 
     session = sanitize.session(
-        source=str(answer), on_stop=on_stop, on_launch=on_launch, on_check=on_check
+        source=str(answer),
+        on_stop=on_stop,
+        on_launch=on_launch,
+        on_check=on_check,
+        on_unchecked=unchecked,  # a launch too large for the race check, counted by the channel
     )
     # held to the end: the process leaves by the channel, never through the session's
     # exit, so the snapshot below (which includes what the session installed) holds

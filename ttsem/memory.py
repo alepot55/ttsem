@@ -34,6 +34,10 @@ RMW = {
     "xchg": lambda _old, new: new,
 }
 UNSIGNED_RMW = ("umax", "umin")
+# How many element accesses one launch's access log holds (`Memory.access_budget`): past this
+# many the log is dropped, the launch is not checked for races between program instances, and a
+# judge does not call it verified (`Session.races_unchecked`).
+ACCESS_BUDGET = 4_000_000
 
 
 class MemoryFault(Exception):
@@ -99,7 +103,7 @@ class Memory:
         self.current_op = ""
         # The log holds every address of every access: past this many elements it is dropped
         # and `access_overflow` says the launch was too large to be checked for races.
-        self.access_budget = 4_000_000
+        self.access_budget = ACCESS_BUDGET
         self.access_overflow = False
         self._logged = 0
 

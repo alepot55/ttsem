@@ -81,6 +81,22 @@ def test_a_pytest_suite_reports_launches_too_large_for_the_race_check(capsys) ->
     assert "4,000,000" in out
 
 
+def test_a_session_tells_its_caller_of_each_launch_too_large_for_the_race_check() -> None:
+    """`on_unchecked` is called once per launch not race-checked, as `races_unchecked` counts
+    them: what a judge counts over its own channel."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("suite_big", AGENTS / "suite_big_launch.py")
+    assert spec is not None and spec.loader is not None
+    suite = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(suite)
+    heard: list[int] = []
+    with sanitize.session(on_unchecked=lambda: heard.append(1)) as state:
+        suite.test_add_one_over_many_elements()
+        suite.test_add_one_over_many_elements()
+    assert (state.launches, state.races_unchecked, len(heard)) == (2, 2, 2)
+
+
 def test_memory_from_torch_empty_is_poisoned_so_reading_it_shows(capsys) -> None:
     """`torch.empty` returns zero pages often enough, on a GPU too, that a kernel accumulating
     into it passes its tests. Here such memory holds NaN (a loud pattern for integers), so the
