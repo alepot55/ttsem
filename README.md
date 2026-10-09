@@ -3,10 +3,11 @@
 [![CI](https://github.com/alepot55/ttsem/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/alepot55/ttsem/actions/workflows/ci.yml)
 
 Run the tests of your Triton kernels on a machine with no GPU and get the faults a GPU run hides:
-a write past the end of a tensor, two program instances that touch the same element, an operation
-with an undefined result. Each one fails its test at the line of your kernel. A read of memory
-nobody wrote is filled with NaN instead, so it shows up in the values. ttsem compiles every launch
-with Triton's own frontend and executes the IR it produces on the CPU.
+a write past the end of a tensor, two program instances that touch the same element with at least
+one of them writing it, an operation with an undefined result. Each one fails its test at the line
+of your kernel. Memory nobody wrote is filled with NaN instead, so a read of it shows up in the
+values. ttsem compiles every launch with Triton's own frontend and executes the IR it produces on
+the CPU.
 
 ```console
 $ pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
@@ -26,7 +27,7 @@ $ python -m ttsem.sanitize pytest tests/fixtures/agents/suite_no_mask.py -q
 E   KernelFault: kernel `add_kernel`, launch 1: `suite_no_mask.py:15: tl.store(out_ptr + offs, x + y)` writes 24 element(s) past the end of the tensor passed as `out_ptr`. A GPU run usually hides this (allocations are rounded up). Check the mask of this access against the tensor's real size, for every program id and for sizes that are not a multiple of the block.
 ...
 FAILED tests/fixtures/agents/suite_no_mask.py::test_add[1000] - KernelFault: ...
-1 failed, 1 passed in 2.68s
+1 failed, 1 passed in 5.58s
 ```
 
 `python -m ttsem.sanitize script.py` does the same for a script. In CI, the action runs your suite
@@ -39,8 +40,8 @@ this way on a CPU runner (pin it to `@v0.1.0` once that release is tagged):
     args: tests/kernels -q           # pytest arguments
 ```
 
-When ttsem runs the IR after every compiler pass, it names the first pass that changes what a
-kernel computes. The demo replays the per-pass verdicts recorded on a real GPU launch of
+When ttsem runs the module every compiler pass receives, it names the first pass that changes what
+a kernel computes. The demo replays the per-pass verdicts recorded on a real GPU launch of
 triton#11519 (Triton `main` at `e1f944a7a`); the recording keeps the verdicts, so nothing is
 executed. The end of its output:
 
@@ -57,7 +58,11 @@ $ python -m ttsem demo
 first pass that changes the meaning: tritongpu-fuse-nested-loops (triton#11519, fixed upstream in #11521)
 ```
 
-The device ran the miscompiled kernel, so it disagrees with every stage before the faulty pass.
+A stage is the module its pass receives: stage 23 is what `tritongpu-fuse-nested-loops` receives and
+stage 24 is what it returns. The device ran the miscompiled kernel, so it disagrees with every stage
+before the faulty pass. In this recording stage 24, the module `canonicalize` receives, is
+unsupported, so the recording alone cannot tell `tritongpu-fuse-nested-loops` from the
+`canonicalize` after it (the demo names the first of the two); only the live run separates them.
 `python -m ttsem demo --live` compiles the same program with the Triton 3.8.0 wheel, which still has
 the bug, and runs every stage here against Triton's interpreter on the source: stages 1-20 match,
 21-59 mismatch, and it names the same pass (13 s on the machine of "Limits" below). For
@@ -74,7 +79,7 @@ check.
 | | needs a GPU | access out of bounds | race between program instances | read of memory nobody wrote | source |
 |---|---|---|---|---|---|
 | ttsem | no | fails at the kernel's line, counted against the tensor's real size | fails at the kernel's line, for launches of up to 4,000,000 element accesses | `torch.empty` and its kin are filled with NaN (integers with a pattern), so the read shows in the values | measured here |
-| `TRITON_INTERPRET=1` | no | not reported: on a copy of `suite_no_mask.py` with CPU tensors, the process aborts in the n = 1000 case on a corrupted heap (10 runs of 10), with no word on the cause; the traceback, when there is one, stops wherever the allocator next notices (in the kernel, the test or torch) | not reported as a race: it runs the program instances one after the other | not reported: on a copy of `accumulate_into_empty.py` with CPU tensors, the read returns what the CPU allocator left there (wrong values in 3 runs of 3) | measured here; [Triton docs][interp] |
+| `TRITON_INTERPRET=1` | no | not reported: on a copy of `suite_no_mask.py` with CPU tensors, the n = 1000 case corrupts the heap; in 19 runs of 20 the process died of a segmentation fault or an abort (once after both tests had passed), and in the other the store raised an `IndexError` about an array of size 0; no run named the cause | not reported as a race: it runs the program instances one after the other | not reported: on a copy of `accumulate_into_empty.py` with CPU tensors, the read returns what the CPU allocator left there (wrong values in 3 runs of 3) | measured here; [Triton docs][interp] |
 | compute-sanitizer memcheck | yes | reported; an overflow into the next allocation only with `--padding`, and PyTorch's docs ask to turn its caching allocator off for memory checkers (`PYTORCH_NO_CUDA_MEMORY_CACHING=1`) | | | [NVIDIA][cs], [PyTorch][ptcuda] |
 | compute-sanitizer racecheck | yes | | shared memory only, not global memory | | [NVIDIA][cs] |
 | compute-sanitizer initcheck | yes | | | reported, in device global memory by default | [NVIDIA][cs] |
@@ -83,10 +88,10 @@ check.
 | GPU output compared with a reference | yes | seen only when values change or the run crashes: 86 of 95 in the control below | seen only when the values of that run change | seen only when values change | measured here |
 
 What ttsem executes is the IR Triton's compiler produces: TTIR for a test run, and under the
-validator the module after every pass down to the LLVM conversion, so the run that checks a kernel
-can also name the pass that broke it. Triton's interpreter simulates the kernel's Python with numpy
-instead of compiling it, and Triton-San lowers it through triton-shared, a different pipeline that
-the program has to select in its code.
+validator the module every pass receives, down to the LLVM conversion, so the run that checks a
+kernel can also name the pass that broke it. Triton's interpreter simulates the kernel's Python
+with numpy instead of compiling it, and Triton-San lowers it through triton-shared, a different
+pipeline that the program has to select in its code.
 
 ## Evidence
 
@@ -113,16 +118,21 @@ are in [audits/kernelbench][audit-kb].
 **torch.compile.** On torch 2.14, over five families of generated in-place programs (3,292), an RTX
 4070 gets 856 wrong, 855 of them only at a large shape. Inductor emitted each program's Triton for
 the GPU at small or medium shapes (on the same RTX 4070), and ttsem, judging that code with no GPU,
-flags all 856, plus 90 programs the device does not confirm at those shapes. These five families
-are also where the judge's choices were tuned (the block cap, a second block size, a second input,
-the medium shapes, not counting a store of the value already there), so they are not a held-out
-test. On programs drawn at random from a separate generator, with no GPU at all (Inductor's Triton
-for CPU tensors, judged by ttsem, set against the RTX 4070), ttsem flags 74 of the 88 programs the
-device gets wrong in seed 1 and 81 of the 92 in seed 2 (82 when the CPU code is scheduled as CUDA
-code is). With the fixes loaded into torch, our #198010 (merged) and #185450 (another contributor's
-fix for `index_put_`, not merged when this was measured), the three families that had failed
-(2,092 programs) give 0 wrong and 0 flagged. The generators of these programs are not in this
-repository.
+flags all 856, plus 90 programs the device does not confirm at those shapes. These five families are
+also where the judge's choices were tuned (the block cap, a second block size, a second input, the
+medium shapes, not counting a store of the value already there), so they are not a held-out test. On
+programs drawn at random from a separate generator, with no GPU at all (Inductor's Triton for CPU
+tensors, judged by ttsem, set against the RTX 4070), ttsem flags 74 of the 88 programs the device
+gets wrong in seed 1 and 81 of the 92 in seed 2 (82 when the CPU code is scheduled as CUDA code is).
+Seed 1 also flags 50 programs the device gets right: races in the CPU code that the CUDA code need
+not have. In seed 2 a rerun of 7 Oct, with the block capped at 16 and then 4, flags 135 programs, so
+at least 43 of them are programs the device gets right. Seed 1 is not fully held out either: it was
+drawn before the generator had its two rules (keep a program only if eager agrees with its
+functionalized form, and drop an update that reads a view of its own destination), and it is where
+those rules came from. With two fixes loaded into torch, our #198010 (merged) and #185450 (another
+contributor's fix for `index_put_`, not merged when this was measured), the three families they
+address, `views`, `alias` and `scatter` (2,092 programs), give 0 wrong and 0 flagged. The generators
+of these programs are not in this repository.
 
 **Repair from the verdict, a negative result.** On 145 TritonBench-T tasks, 67 answers of
 AutoTriton-8B pass a check that only runs the file and can be judged; 31 of them (46%) are wrong,
@@ -131,12 +141,13 @@ the 31. The harness of that experiment is not in this repository.
 
 ## Upstream bugs from this project
 
-State on 8 October 2026; [LEDGER.md][ledger] has every row with its reproducer and dates, and the
-copy of this page on PyPI keeps the state of its release. **PyTorch**, since 20 Sep: 18 defects
-reported (17 issues, one reported with its fix); 7 fixed on `main`, 6 of them by 5 PRs of ours and
-one by another contributor; 3 more fixes of ours are open PRs, one of them approved.
-**Triton**: 4 bug-fix PRs of ours merged, 7 merged in all (the other 3 are a documentation change
-and two optimizations). "ours" marks a PR by the author.
+State on 8 October 2026; [LEDGER.md][ledger] has every row with its dates and, for the reported
+ones, a link to the report that holds its reproducer. Once the package is on PyPI, its page there
+keeps the state of its release. **PyTorch**, since 20 Sep: 18 defects reported (17 issues, one
+reported with its fix); 7 fixed on `main`, 6 of them by 5 PRs of ours and one by another
+contributor; 3 more fixes of ours are open PRs, one of them approved. **Triton**: 4 bug-fix PRs of
+ours merged, 7 merged in all (the other 3 are a documentation change and two optimizations). "ours"
+marks a PR by the author.
 
 | bug | first found by | state |
 |---|---|---|
@@ -165,34 +176,38 @@ and two optimizations). "ours" marks a PR by the author.
 | Triton [#11751](https://github.com/triton-lang/triton/pull/11751), [#11752](https://github.com/triton-lang/triton/pull/11752), [#11738](https://github.com/triton-lang/triton/pull/11738), [#11862](https://github.com/triton-lang/triton/pull/11862): interpreter tf32 rounding, an IR round trip, a test writing past its buffer, the TMA scatter path taken on sm_12x | modelling the descriptor in the semantics; the validator; the memory model; Triton's kernel tests under the validator | **merged** (ours) |
 | LLVM [#221532](https://github.com/llvm/llvm-project/pull/221532), [#222127](https://github.com/llvm/llvm-project/pull/222127): MLIR GPU to NVVM, an all-reduce stored from every lane, a missing lowering | LLVM continuation; program fuzzer | open (ours) |
 
-The race detector, the validator and the memory model are in this package. The PyTorch program
-generator (whose fourth tier adds aliased inputs, integers, freezing and autograd), the OpInfo
-layout sweep, the program fuzzer, the static witness and the LLVM continuation are companion tools
-that are not; [LEDGER.md][ledger] describes each.
+The race detectors, the validator, the minimiser and the memory model are in this package. The
+PyTorch program generator (whose fourth tier adds aliased inputs, integers, freezing and autograd),
+the OpInfo layout sweep, the program fuzzer, the static witness and the LLVM continuation are
+companion tools that are not; [LEDGER.md][ledger] describes each.
 
 ## Questions a skeptic asks
 
-- How many of the listed bugs did ttsem find itself? 6 of the 53 rows of [LEDGER.md][ledger]:
-  pytorch#197829, #198031 and #198033 (the race detector), triton#11752 (the validator), #11738 (the
-  memory model) and #11751 (found while modelling the semantics). 8 more surfaced while Triton's own
-  suites ran under the validator, but fail without it too. The other 39 were found by hand or by the
-  companion tools; this package's tools localised or confirmed 4 of those (#11325, #11407, #11519,
-  #11601).
+- How many of the listed bugs did ttsem find itself? Going by the "found by" column of the 53
+  upstream rows of [LEDGER.md][ledger], 6: pytorch#197829, #198031 and #198033 (the race detector),
+  triton#11752 (the validator), #11738 (the memory model) and #11751 (found while modelling the
+  semantics). 7 more surfaced while Triton's own suites ran under the validator, but fail without it
+  too: triton#11730, the two defects of #11733, #11746, #11747, #11831 and #11859. The other 40 were
+  found by hand or by the companion tools. In 5 of those a tool of this package also took part: the
+  validator named the pass of #11407 and #11519, the level-2 gather check reproduced the boundary of
+  #11600, and the minimiser produced the witnesses of #11601 (with the validator's read set) and
+  #11612.
 - Does it raise false alarms on correct code? On KernelBook's Triton code generated by Inductor,
-  16,858 rows ran and raised 4 reports, all true: three races, all one Inductor miscompile, and one
-  undefined value, an `index_put` with duplicate indices (20-21 Sep, at the code's own block sizes;
-  the harness is not in this repository). Liger-Kernel's own kernel tests, unmodified (`c5b9f31`, 19
-  Sep, the semantics of that day): 173 passed, 0 faults, 3 failures at tolerances chosen for two
-  GPU runs, here against torch on the CPU; four files with 4096 x 32000 tensors did not finish.
+  16,858 rows ran and raised 4 reports, all true: three races, all the same Inductor miscompile, and
+  one undefined value, an `index_put` with duplicate indices (20-21 Sep, at the code's own block
+  sizes; the harness is not in this repository). Liger-Kernel's own kernel tests, unmodified
+  (`c5b9f31`, 19 Sep, the semantics of that day): 173 passed, 0 faults, 3 failures at tolerances
+  chosen for two GPU runs, here against torch on the CPU; four files with 4096 x 32000 tensors did
+  not finish.
 - What is the TritonBench denominator? 7,752 published answers, of which 1,002 ran under ttsem and
   767 could be judged by value; the 32% is 245 of those 767. Comparing values on the RTX 4070 alone
   finds 220 of the 816 answers it ran and compared wrong (27%, audit of 19-20 Sep); ttsem, with no
   GPU, finds 147 wrong and 98 unsafe of 767 and names the fault and its line
   ([audits/tritonbench][audit-tb]).
 - How long does a verdict take? About 12 s for a small KernelBench answer on the machine of "Limits"
-  (11.8 s and 12.0 s for `tests/fixtures/judge/task_relu.py` with `answer_unsafe.py` and
-  `answer_ok.py`): two sandboxed processes, the task's reference and the answer. The 7,752
-  TritonBench answers took about 75 minutes on a 20-core desktop.
+  (11.4 s to 11.8 s over two runs each of `tests/fixtures/judge/task_relu.py` with
+  `answer_unsafe.py` and with `answer_ok.py`): two sandboxed processes, the task's reference and the
+  answer. The 7,752 TritonBench answers took about 75 minutes on a 20-core desktop.
 - Which targets and versions? Kernels are compiled for CUDA sm_90 (a script run can pick another
   with `--cc`; the judge uses sm_90a); there is no AMD back end; only Triton 3.8.0 and torch 2.14.0
   are tested, the versions the `triton` extra pins.
@@ -200,16 +215,17 @@ that are not; [LEDGER.md][ledger] describes each.
   first run had 1,008 mismatches and 3,659 errors, and the semantics and the harness were fixed
   until what was left had a documented cause ([docs/RESULTS.md][results]). Two other corpora: the
   2,387 runnable programs of three fuzzer families, bit-exact at TTIR and at the final TTGIR, and
-  the 3.8.0 release's own `test_core.py` on sm_120 (14,979 launches, no unexplained mismatch;
-  triton#11730 in [LEDGER.md][ledger]), a later copy of the same suite.
+  the 3.8.0 release's own `test_core.py` on sm_120 (14,979 launches on 12 Sep, no unexplained
+  mismatch; triton#11730 in [LEDGER.md][ledger]). That one is the release branch's copy of the
+  same suite, so it is not independent of the development set either.
 
 ## Limits
 
 - **Linux only.** Triton 3.8.0 publishes wheels for Linux (x86_64 and aarch64) only, and the judge's
   sandbox is `bwrap`.
 - **An interpreter, not a GPU.** No timing. On a 4-core cloud VM (Intel Xeon at 2.8 GHz), under
-  `python -m ttsem.sanitize`, a vector add over 16.8 million float32 elements took 16.5 s and a
-  1024 x 1024 x 1024 fp16 matmul in 64 x 64 x 32 tiles 9.8 s.
+  `python -m ttsem.sanitize`, a vector add over 16.8 million float32 elements took 16.6 s and a
+  1024 x 1024 x 1024 fp16 matmul in 64 x 64 x 32 tiles 12.2 s.
 - **Races are checked up to 4,000,000 element accesses per launch.** A larger launch still runs and
   is checked for out-of-bounds accesses. A script run ends with the number of launches too large to
   be checked for races: the run of the two launches above ends with `2 launch(es) too large to be
