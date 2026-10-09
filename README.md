@@ -65,10 +65,10 @@ unsupported, so the recording alone cannot tell `tritongpu-fuse-nested-loops` fr
 `canonicalize` after it (the demo names the first of the two); only the live run separates them.
 `python -m ttsem demo --live` compiles the same program with the Triton 3.8.0 wheel, which still has
 the bug, and runs every stage here against Triton's interpreter on the source: stages 1-20 match,
-21-59 mismatch, and it names the same pass (13 s on the machine of "Limits" below). For
-`torch.compile`, `python -m ttsem demo --torch` runs Inductor's Triton code for two PyTorch bugs
-and, on torch 2.14, stops at the race in each ([docs/INDUCTOR.md][inductor]). For coding agents:
-[docs/AGENTS.md][agents] and the skill [skills/triton-verify][skill].
+21-59 mismatch, and it names the same pass (12.9 s and 13.3 s on the machine of "Limits" below, two
+runs on 9 Oct 2026). For `torch.compile`, `python -m ttsem demo --torch` runs Inductor's Triton code
+for two PyTorch bugs and, on torch 2.14, stops at the race in each ([docs/INDUCTOR.md][inductor]).
+For coding agents: [docs/AGENTS.md][agents] and the skill [skills/triton-verify][skill].
 
 ## How it compares
 
@@ -233,8 +233,9 @@ companion tools that are not; [LEDGER.md][ledger] describes each.
 - **Linux only.** Triton 3.8.0 publishes wheels for Linux (x86_64 and aarch64) only, and the judge's
   sandbox is `bwrap`.
 - **An interpreter, not a GPU.** No timing. On a 4-core cloud VM (Intel Xeon at 2.8 GHz), under
-  `python -m ttsem.sanitize`, a vector add over 16.8 million float32 elements took 16.6 s and a
-  1024 x 1024 x 1024 fp16 matmul in 64 x 64 x 32 tiles 12.2 s.
+  `python -m ttsem.sanitize`, a vector add over 16.8 million float32 elements took 20.1 s and 20.4 s
+  and a 1024 x 1024 x 1024 fp16 matmul in 64 x 64 x 32 tiles 12.5 s in both runs (9 Oct 2026; the
+  add took 17.8 s to 20.8 s in four earlier runs on the same VM).
 - **Past 4,000,000 element accesses in one launch, races are checked by address range only.** Only
   the range of bytes each access touched is kept, up to 2,000,000 ranges per launch: where no
   program instance writes into a range another instance touches, no race is possible and the launch
