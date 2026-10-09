@@ -121,7 +121,10 @@ into the checker. What each verdict holds against is therefore worth stating pla
     travel out of band over a pipe carrying a token the answer does not know, captured as closures
     when the run starts, so rebinding the channel's class does not reach the run's own exit, and a
     forged report or a mismatched launch count is `not_judged` (`forged`).
-- `verified` also means that every launch was checked for races between program instances. A
+- `verified` also means that every launch was checked for races between program instances. A race
+  here is a pair of accesses by two instances, at least one a write, whose result depends on the
+  order the instances run in; a store of the bytes the address already holds changes nothing a
+  load can see, so it is no conflict for a load, and two atomic updates are no race. A
   launch of more than 4,000,000 memory accesses (`ttsem.memory.ACCESS_BUDGET`) is checked by the
   range of bytes each access touched: where no instance writes into a range another instance
   touches, no race is possible. Where the ranges meet, or one launch leaves more than 2,000,000 of
@@ -138,8 +141,9 @@ into the checker. What each verdict holds against is therefore worth stating pla
   comment or a string that names it is not a call) and the launch exchanged a flag in it. The judges
   turn this off (`session(inductor_lookback=False)`): an answer is untrusted and could race on the
   very buffer it hands the helper, so an answer that calls the helper has that buffer checked like
-  any other, and its protocol reads as a race. None of the 7,752 published TritonBench answers calls
-  it.
+  any other, and the 64-bit helper's protocol (a plain store and load under the flag) reads as a
+  race; the 32-bit helper packs value and flag into one word updated only atomically, which is
+  never a race. None of the 7,752 published TritonBench answers calls either.
 - Full separation of the answer from the checker (running the semantics in a process the answer's
   code cannot reach at all) is planned for 0.2. Until then the judge is fit for auditing published
   answers and for evaluation, where the answers were not written to defeat it. Used as an RL reward
