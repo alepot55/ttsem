@@ -39,8 +39,10 @@ cannot see a missing mask; n = 1000 can), n = 0 and n = 1, non-contiguous inputs
 one program instance writing to the same output.
 
 Limits: it is an interpreter (on a 4-core VM a vector add over 16.8 million elements takes 16 s);
-races are checked for launches of up to 4,000,000 element accesses, and a block that covers a whole
-small tensor leaves one program instance and nothing to race; a launch that uses an op the
-semantics does not model stops with `unsupported` rather than a guess; timing and performance are
-out of scope; the semantics is calibrated against real devices on Triton's own test suite (see
-`docs/RESULTS.md`), not proved. The README's "Limits" section has the rest.
+past 4,000,000 element accesses in one launch, races are checked only by the address range of each
+access, and a launch where the ranges of two program instances meet is reported as not checked for
+races; a block that covers a whole small tensor leaves one program instance and nothing to race; a
+launch that uses an op the semantics does not model stops with `unsupported` rather than a guess;
+timing and performance are out of scope; the semantics is calibrated against real devices on
+Triton's own test suite (see `docs/RESULTS.md`), not proved. The README's "Limits" section has the
+rest.

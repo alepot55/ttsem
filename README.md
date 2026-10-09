@@ -78,7 +78,7 @@ check.
 
 | | needs a GPU | access out of bounds | race between program instances | read of memory nobody wrote | source |
 |---|---|---|---|---|---|
-| ttsem | no | fails at the kernel's line, counted against the tensor's real size | fails at the kernel's line, for launches of up to 4,000,000 element accesses | `torch.empty` and its kin are filled with NaN (integers with a pattern), so the read shows in the values | measured here |
+| ttsem | no | fails at the kernel's line, counted against the tensor's real size | fails at the kernel's line; past 4,000,000 element accesses in one launch, checked by the address range of each access, and a launch where two instances' ranges meet is counted as not checked | `torch.empty` and its kin are filled with NaN (integers with a pattern), so the read shows in the values | measured here |
 | `TRITON_INTERPRET=1` | no | not reported: on a copy of `suite_no_mask.py` with CPU tensors, the n = 1000 case corrupts the heap and the process dies of an abort (40 runs of 40 on 9 Oct, each after the n = 1024 case had passed); no run names the cause | not reported as a race: it runs the program instances one after the other | not reported: on a copy of `accumulate_into_empty.py` with CPU tensors, the read returns what the CPU allocator left there (wrong values in 3 runs of 3) | measured here; [Triton docs][interp] |
 | compute-sanitizer memcheck | yes | reported; an overflow into the next allocation only with `--padding`, and PyTorch's docs ask to turn its caching allocator off for memory checkers (`PYTORCH_NO_CUDA_MEMORY_CACHING=1`) | | | [NVIDIA][cs], [PyTorch][ptcuda] |
 | compute-sanitizer racecheck | yes | | shared memory only, not global memory | | [NVIDIA][cs] |
@@ -232,11 +232,15 @@ companion tools that are not; [LEDGER.md][ledger] describes each.
 - **An interpreter, not a GPU.** No timing. On a 4-core cloud VM (Intel Xeon at 2.8 GHz), under
   `python -m ttsem.sanitize`, a vector add over 16.8 million float32 elements took 16.6 s and a
   1024 x 1024 x 1024 fp16 matmul in 64 x 64 x 32 tiles 12.2 s.
-- **Races are checked up to 4,000,000 element accesses per launch.** A larger launch still runs and
-  is checked for out-of-bounds accesses. A script run ends with the number of launches too large to
-  be checked for races: the run of the two launches above ends with `2 launch(es) too large to be
-  checked for races`. Under `python -m ttsem.sanitize pytest` the terminal summary prints the same
-  count. Under the judge, such a launch makes the run `not_judged`.
+- **Past 4,000,000 element accesses in one launch, races are checked by address range only.** Only
+  the range of bytes each access touched is kept: where no program instance writes into a range
+  another instance touches, no race is possible and the launch counts as checked; where the ranges
+  meet, the launch still runs and is checked for out-of-bounds accesses, but not for races. A script
+  run ends with the number of launches not checked: of the two launches above, the vector add is
+  ruled race-free by its ranges, while the matmul's 64 x 64 output tiles are not contiguous, so the
+  ranges of neighbouring tiles meet, and the run ends with `1 launch(es) too large to be checked for
+  races`. Under `python -m ttsem.sanitize pytest` the terminal summary prints the same count. Under
+  the judge, a run with such a launch is never `verified`: it is `not_judged` (`races_unchecked`).
 - **A race needs two program instances on the same data.** A block that covers a whole small tensor
   leaves one instance and nothing to race, so test at sizes several blocks long. For Inductor's
   code, `sanitize.inductor_names(block=16)` caps the block ([docs/INDUCTOR.md][inductor]).

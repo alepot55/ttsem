@@ -59,7 +59,8 @@ Triton kernel was launched; the batch counts `reduced` apart. Otherwise the verd
 `unsafe`, `error`, `too_slow`, or `not_judged` with the reason in `class` (a package or a CPU
 operator this machine lacks, a task that draws random numbers, a reference that cannot be compared
 with: it does not run, keeps nothing, returns memory it never wrote, or faults under its own test
-where the answer does). `--manifest M.jsonl --out DIR` judges a batch and prints the counts per
+where the answer does), or right values from a launch too large to be checked for races
+(`races_unchecked`, below). `--manifest M.jsonl --out DIR` judges a batch and prints the counts per
 verdict and in columns (verified, reduced precision, wrong, unsafe, not compared, not judged). The
 references run once per task, on a Triton cache of their own; an answer's sandbox sees neither their
 results nor the task file, nor the directory tree the task sits in.
@@ -118,7 +119,13 @@ into the checker. What each verdict holds against is therefore worth stating pla
     travel out of band over a pipe carrying a token the answer does not know, captured as closures
     when the run starts, so rebinding the channel's class does not reach the run's own exit, and a
     forged report or a mismatched launch count is `not_judged` (`forged`).
-- A launch too large for the race check makes the run `not_judged`.
+- `verified` also means that every launch was checked for races between program instances. A
+  launch of more than 4,000,000 memory accesses (`ttsem.memory.ACCESS_BUDGET`) is checked by the
+  range of bytes each access touched: where no instance writes into a range another instance
+  touches, no race is possible. Where the ranges meet, the launch runs and its values are compared,
+  but no race is looked for, and a run with such a launch is `not_judged` (`races_unchecked`) where
+  it would have been `verified`; it is still `wrong` or `unsafe` where its values differ or a fault
+  was found. The record keeps the count of such launches, and the verdict line names it.
 - Full separation of the answer from the checker (running the semantics in a process the answer's
   code cannot reach at all) is planned for 0.2. Until then the judge is fit for auditing published
   answers and for evaluation, where the answers were not written to defeat it. Used as an RL reward
