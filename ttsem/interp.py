@@ -87,7 +87,7 @@ class Interp:
             raise KeyError(f"no function {fn!r}; module has {sorted(self.module.funcs)}")
         func = self.module.funcs[fn]
         self.program_id = tuple(program_id)
-        if getattr(self.memory, "access_log", None) is not None:
+        if getattr(self.memory, "tracing", False):
             self.memory.agent = self.program_id
         self.scopes = []
         return self.run_region(func.regions[0], list(args))
@@ -190,7 +190,7 @@ class Interp:
         if handler is None:
             self.unsupported.add(op.name)
             raise Unsupported(op.name, op.text or "")
-        if getattr(self.memory, "access_log", None) is not None:
+        if getattr(self.memory, "access_log", None) is not None:  # the spans need no op
             self.memory.current_op = op.text or op.name
         try:
             results = handler(self, op, [self.value(n) for n in op.operands])

@@ -1,7 +1,8 @@
-"""A correct kernel launched over so many elements that the race check runs out of its access
-budget (over 4,000,000 accesses): the launch is run and its values checked, but no race between
-program instances is looked for in it. The test passes; the point is that the session reports the
-unchecked launch rather than dropping it silently."""
+"""A correct kernel launched over so many elements that the race check's access log runs out
+(over 4,000,000 accesses). Past the log, only the range of addresses of each access is kept, and
+each program instance loads and stores its own block, so no two instances' ranges meet and the
+ranges alone rule a race out: the launch counts as checked (`suite_big_tiled.py` is one they
+cannot settle)."""
 
 import torch
 import triton

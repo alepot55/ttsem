@@ -37,8 +37,10 @@ One verdict per pass:
   values that match from a launch too large to be checked for races: `races_unchecked`), or the
   answer reached into the judge (`tampered`) or did not finish through it (`forged`)
 
-A launch whose memory accesses number more than `ttsem.memory.ACCESS_BUDGET` is run and its values
-compared, but not checked for races between program instances. A run with any such launch is never
+A launch whose memory accesses number more than `ttsem.memory.ACCESS_BUDGET` is checked for races
+between program instances by the range of addresses each access touched: where no two instances'
+ranges meet with one of them writing, no race is possible. Where they meet, the launch is run and
+its values compared, but not checked for races, and a run with any such launch is never
 `verified`: it is `not_judged` (`races_unchecked`) where it would have been, and `wrong` or `unsafe`
 still where its values differ or a fault was found.
 
@@ -627,7 +629,8 @@ def unchecked_message(n: int) -> str:
     """Why a run whose values match is `not_judged` (`races_unchecked`)."""
     return (
         f"{n} launch(es) too large to be checked for races between program instances (over "
-        f"{ACCESS_BUDGET:,} memory accesses each): the values match, but no race was looked for"
+        f"{ACCESS_BUDGET:,} memory accesses each, with the address ranges of two instances "
+        "meeting): the values match, but no race was looked for"
     )
 
 

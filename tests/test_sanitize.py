@@ -68,12 +68,11 @@ def test_a_pytest_suite_written_for_a_gpu_fails_where_the_kernel_is_wrong(capsys
 
 
 def test_a_pytest_suite_reports_launches_too_large_for_the_race_check(capsys) -> None:
-    """A launch over the race-check budget (over 4,000,000 accesses) is run and its values
-    checked, so the test passes, but the session says how many such launches there were, in the
-    terminal summary, rather than dropping the count without a word (item 7)."""
-    code = sanitize.run_pytest(
-        [str(AGENTS / "suite_big_launch.py"), "-q", "-p", "no:cacheprovider"]
-    )
+    """A launch over the race-check budget (over 4,000,000 accesses) whose access ranges cannot
+    rule a race out (tiles whose stores span rows the tiles beside them share) is run and its
+    values checked, so the test passes, but the session says how many such launches there were,
+    in the terminal summary, rather than dropping the count without a word (item 7)."""
+    code = sanitize.run_pytest([str(AGENTS / "suite_big_tiled.py"), "-q", "-p", "no:cacheprovider"])
     out = capsys.readouterr().out
     assert code == 0, out
     assert "1 passed" in out
@@ -81,20 +80,36 @@ def test_a_pytest_suite_reports_launches_too_large_for_the_race_check(capsys) ->
     assert "4,000,000" in out
 
 
+def test_a_launch_past_the_budget_whose_ranges_do_not_meet_is_race_checked(capsys) -> None:
+    """Past the access log's budget the range of each access is kept: a launch whose program
+    instances each load and store their own block has ranges that never meet, which rules every
+    race out, so the launch counts as checked and nothing is reported."""
+    code = sanitize.run_pytest(
+        [str(AGENTS / "suite_big_launch.py"), "-q", "-p", "no:cacheprovider"]
+    )
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "1 passed" in out
+    assert "too large to be checked for races" not in out
+
+
 def test_a_session_tells_its_caller_of_each_launch_too_large_for_the_race_check() -> None:
     """`on_unchecked` is called once per launch not race-checked, as `races_unchecked` counts
     them: what a judge counts over its own channel."""
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("suite_big", AGENTS / "suite_big_launch.py")
-    assert spec is not None and spec.loader is not None
-    suite = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(suite)
+    suites = {}
+    for name in ("suite_big_launch", "suite_big_tiled"):
+        spec = importlib.util.spec_from_file_location(name, AGENTS / f"{name}.py")
+        assert spec is not None and spec.loader is not None
+        suites[name] = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(suites[name])
     heard: list[int] = []
     with sanitize.session(on_unchecked=lambda: heard.append(1)) as state:
-        suite.test_add_one_over_many_elements()
-        suite.test_add_one_over_many_elements()
-    assert (state.launches, state.races_unchecked, len(heard)) == (2, 2, 2)
+        suites["suite_big_tiled"].test_copy_in_tiles()
+        suites["suite_big_launch"].test_add_one_over_many_elements()  # its ranges rule races out
+        suites["suite_big_tiled"].test_copy_in_tiles()
+    assert (state.launches, state.races_unchecked, len(heard)) == (3, 2, 2)
 
 
 def test_the_command_line_names_itself_and_its_options() -> None:
@@ -433,6 +448,27 @@ def test_the_scratch_buffer_of_a_decoupled_lookback_scan_is_not_a_race() -> None
     finally:
         undo()
         inductor_utils.print_performance = once  # type: ignore[assignment]
+
+
+def test_past_the_budget_the_scratch_buffer_of_a_lookback_scan_is_left_out_of_the_spans() -> None:
+    """The spans kept past the access log's budget leave out the scratch buffer of a
+    decoupled-lookback scan as the exact check does: a span inside it is dropped, one that only
+    meets it stays whole."""
+    from types import SimpleNamespace
+
+    from ttsem.memory import AccessSpans
+
+    record = SimpleNamespace(bases={"tmp": 1000}, pre={"tmp": np.zeros(4, dtype=np.int32)})
+    source = "exclusive_scan_decoupled_lookback_64(tmp, x, y)"
+    inside = AccessSpans()
+    inside.add((0, 0, 0), True, 1000, 1003)  # a store of block 0's partial
+    inside.add((1, 0, 0), False, 1000, 1003)  # block 1 loads it, after the flag
+    assert sanitize._spans_may_race(record, "", inside)  # without the protocol: maybe a race
+    assert not sanitize._spans_may_race(record, source, inside)
+    across = AccessSpans()
+    across.add((0, 0, 0), True, 996, 1003)  # reaches out of the scratch buffer
+    across.add((1, 0, 0), False, 996, 999)
+    assert sanitize._spans_may_race(record, source, across)
 
 
 def test_a_kernel_that_writes_back_rows_it_did_not_change_does_not_race_with_their_readers() -> (

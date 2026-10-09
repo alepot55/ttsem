@@ -46,8 +46,8 @@ The verdicts are those of ``python -m ttsem judge``, and `class` keeps the finer
   answer faults where the task's own test drives the reference into a fault too
   (`fault_also_in_reference`), or its results are right but a launch was too large to be checked
   for races between program instances (`races_unchecked`: more memory accesses than
-  `ttsem.memory.ACCESS_BUDGET`); such a run is never `verified`, and is `wrong` or `unsafe` still
-  where its values differ or a fault was found
+  `ttsem.memory.ACCESS_BUDGET`, and address ranges of two instances that meet); such a run is
+  never `verified`, and is `wrong` or `unsafe` still where its values differ or a fault was found
 
 The reference runs once per task (and a second time, with the second poison pattern, when an
 answer's results are to be compared with it), into OUT/reference/, with a Triton cache of its own

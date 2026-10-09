@@ -1405,7 +1405,7 @@ def execute(
     memory = Memory()
     memory.trace_reads = trace_reads
     if trace_access:
-        memory.access_log = []
+        memory.trace()
     registered: set[int] = set()
     for name in runtime_names:
         if name in record.ptrs:

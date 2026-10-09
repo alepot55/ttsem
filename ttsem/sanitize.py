@@ -35,7 +35,7 @@ from triton.runtime.errors import OutOfResources
 from triton.runtime.jit import JITFunction
 
 from ttsem import harness, pidraces, values
-from ttsem.memory import ACCESS_BUDGET, MemoryFault
+from ttsem.memory import ACCESS_BUDGET, AccessSpans, MemoryFault
 
 
 @dataclasses.dataclass
@@ -207,12 +207,7 @@ def _without_protocol_buffers(
     kernel touches is judged as usual)."""
     if not log:
         return log
-    names = set(LOOKBACK.findall(fn_source))
-    spans = []
-    for name in names:
-        if name in record.bases:
-            arr = record.pre[name]
-            spans.append((record.bases[name], record.bases[name] + arr.size * arr.itemsize))
+    spans = _protocol_spans(record, fn_source)
     if not spans:
         return log
     kept = []
@@ -233,6 +228,42 @@ def _without_protocol_buffers(
                 )
             )
     return kept
+
+
+def _protocol_spans(record: harness.LaunchRecord, fn_source: str) -> list[tuple[int, int]]:
+    """The byte ranges [start, end) of the scratch buffers of a decoupled-lookback scan
+    (`_without_protocol_buffers`)."""
+    spans = []
+    for name in set(LOOKBACK.findall(fn_source)):
+        if name in record.bases:
+            arr = record.pre[name]
+            spans.append((record.bases[name], record.bases[name] + arr.size * arr.itemsize))
+    return spans
+
+
+def _spans_may_race(
+    record: harness.LaunchRecord, fn_source: str, spans: AccessSpans | None
+) -> bool:
+    """Whether a launch whose accesses outran the access log may hold a race, read off the span
+    of each access (`pidraces.spans_may_race`): True where the spans were not kept or ran out
+    too. A span inside the scratch buffer of a decoupled-lookback scan is left out, as the exact
+    check leaves those addresses out (`_without_protocol_buffers`); one that only meets it stays."""
+    if spans is None or spans.overflow:
+        return True
+    protocol = _protocol_spans(record, fn_source)
+    if not protocol:
+        return pidraces.spans_may_race(spans.lo, spans.hi, spans.who, spans.write)
+    keep = [
+        i
+        for i in range(len(spans.lo))
+        if not any(start <= spans.lo[i] and spans.hi[i] < end for start, end in protocol)
+    ]
+    return pidraces.spans_may_race(
+        [spans.lo[i] for i in keep],
+        [spans.hi[i] for i in keep],
+        [spans.who[i] for i in keep],
+        [spans.write[i] for i in keep],
+    )
 
 
 def _drop_raw(entry: Any, inside: np.ndarray) -> np.ndarray:
@@ -593,7 +624,9 @@ class _Warm:
 @dataclasses.dataclass
 class Session:
     launches: int = 0
-    races_unchecked: int = 0  # launches too large for the access log (`Memory.access_budget`)
+    # launches whose accesses outran the access log (`Memory.access_budget`) and whose access
+    # spans could not rule a race out: run and compared, but not checked for races
+    races_unchecked: int = 0
     # (compute capability, bytes): while set, a launch whose kernel needs more shared memory
     # than that on that GPU raises Triton's `OutOfResources` instead of running, as the runtime
     # does on the device, so an autotuner skips such a configuration as it would there
@@ -659,10 +692,11 @@ def session(
     judge checks at both points that the checker's own code is the code it snapshotted
     (`ttsem._guard`), and ends the run if not.
 
-    ``on_unchecked`` is called, between those two points, for each launch whose accesses were too
-    many to be checked for races (over ``Memory.access_budget``: ``Session.races_unchecked``
-    counts them): a judge counts them over its own channel, and does not call such a run
-    verified."""
+    ``on_unchecked`` is called, between those two points, for each launch not checked for races
+    (``Session.races_unchecked`` counts them): its accesses outran the access log
+    (``Memory.access_budget``) and their spans could not rule a race out (two instances' address
+    ranges meet where one of them writes). A judge counts them over its own channel, and does not
+    call such a run verified."""
     if races not in ("raise", "record", "off"):
         raise ValueError(f"races: {races!r}")
     harness._install_fake_driver(cc)
@@ -740,11 +774,14 @@ def session(
         if execution.failure is not None:
             failure = execution.failure
             raise Unjudged(failure.verdict, failure.message, list(failure.unsupported or []))
-        if execution.memory.access_overflow:
+        memory = execution.memory
+        # past the log's budget only the spans of the accesses are left: enough to rule a race
+        # out where no two instances' ranges meet, else the launch is not race-checked
+        if memory.access_overflow and _spans_may_race(record, src, memory.access_spans):
             state.races_unchecked += 1
             if on_unchecked is not None:
                 on_unchecked()  # before anything of the program's runs again
-        log = _without_protocol_buffers(record, src, execution.memory.access_log)
+        log = _without_protocol_buffers(record, src, memory.access_log)
         race = pidraces.find_race(log) if many else None
         if on_check is not None:
             on_check()  # the semantics and the race finder ran with the checker's own code
@@ -819,9 +856,10 @@ def run_script(
 
 class _RaceSummary:
     """A pytest plugin that, at the end of the session, says how many launches were too large to
-    be checked for races (over ``Memory.access_budget`` accesses): those launches were run and
-    their values compared, but no race between program instances was looked for in them, so the
-    count must not pass silently. The line goes to the terminal summary and, as a fallback for a
+    be checked for races (over ``Memory.access_budget`` accesses, with the address ranges of two
+    program instances meeting, so the spans could not rule a race out): those launches were run
+    and their values compared, but no race between program instances was looked for in them, so
+    the count must not pass silently. The line goes to the terminal summary and, as a fallback for a
     run with no terminal reporter, to stderr."""
 
     def __init__(self, state: Session) -> None:
@@ -831,8 +869,9 @@ class _RaceSummary:
     def _line(self) -> str:
         n = self.state.races_unchecked
         return (
-            f"ttsem: {n} launch(es) too large to be checked for races "
-            f"(over {ACCESS_BUDGET:,} memory accesses each): run and compared, but not race-checked"
+            f"ttsem: {n} launch(es) too large to be checked for races (over {ACCESS_BUDGET:,} "
+            "memory accesses each, with the address ranges of two program instances meeting): "
+            "run and compared, but not race-checked"
         )
 
     def pytest_terminal_summary(self, terminalreporter: Any, *args: Any, **kwargs: Any) -> None:
