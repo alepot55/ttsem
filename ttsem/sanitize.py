@@ -19,6 +19,7 @@ does not explain them either (``free(): invalid pointer``).
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import dataclasses
 import gc
@@ -26,7 +27,8 @@ import json
 import os
 import re
 import sys
-from collections.abc import Callable, Iterator
+import types
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -189,13 +191,94 @@ def _locate(record: harness.LaunchRecord, fault: MemoryFault) -> tuple[str | Non
     return best[1], best[2], best[3]
 
 
-LOOKBACK = re.compile(r"exclusive_scan_decoupled_lookback\w*\(\s*(\w+)")
+# TorchInductor's helpers for the decoupled lookback of a split scan, by name in their module
+_LOOKBACK_MODULE = "torch._inductor.runtime.triton_helpers"
+_LOOKBACK_HELPERS = ("exclusive_scan_decoupled_lookback", "exclusive_scan_decoupled_lookback_64")
+
+
+def lookback_buffers(fn: Any, source: str) -> frozenset[str]:
+    """The kernel's parameters passed as the scratch buffer of TorchInductor's decoupled-lookback
+    scan (`_without_protocol_buffers`): the first argument of each call, in the kernel's code, of
+    a name that the kernel's globals resolve to one of Inductor's own helper functions
+    (`torch._inductor.runtime.triton_helpers.exclusive_scan_decoupled_lookback*`, the very object,
+    not a function of the same name). `fn` is the kernel's Python function, `source` its code
+    (`JITFunction.src`, what Triton compiles).
+
+    Decided from what runs, never from the text: the code is parsed, so a comment or a string that
+    spells the helper's name is not a call, and the callee is looked up in the globals Triton's
+    frontend resolves it in, through module dictionaries only (nothing of the program's runs:
+    no `__getattr__`, no property). Empty where Inductor's helpers were never imported."""
+    module = sys.modules.get(_LOOKBACK_MODULE)
+    scope = getattr(fn, "__globals__", None)
+    if type(module) is not types.ModuleType or type(scope) is not dict:
+        return frozenset()
+    table = vars(module)
+    helpers = [table[name] for name in _LOOKBACK_HELPERS if name in table]
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, TypeError):
+        return frozenset()
+    kernel = next((n for n in tree.body if isinstance(n, ast.FunctionDef)), None)
+    if not helpers or kernel is None:
+        return frozenset()
+    a = kernel.args
+    params = {p.arg for p in [*a.posonlyargs, *a.args, *a.kwonlyargs]}
+    found: set[str] = set()
+    for node in ast.walk(kernel):
+        if not isinstance(node, ast.Call):
+            continue
+        callee = _global_of(node.func, scope)
+        if not any(callee is helper for helper in helpers):
+            continue
+        base = node.args[0] if node.args else None
+        for keyword in node.keywords:
+            if keyword.arg == "scratch_base":
+                base = keyword.value
+        if base is not None:
+            found |= {n.id for n in ast.walk(base) if isinstance(n, ast.Name) and n.id in params}
+    return frozenset(found)
+
+
+def _global_of(node: ast.AST, scope: dict[str, Any]) -> Any:
+    """What `name` or `module.attr...` stands for in the globals `scope`, through module
+    dictionaries only, or None."""
+    attrs: list[str] = []
+    while isinstance(node, ast.Attribute):
+        attrs.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    value = scope.get(node.id)
+    for attr in reversed(attrs):
+        if type(value) is not types.ModuleType:
+            return None
+        value = vars(value).get(attr)
+    return value
+
+
+def _protocol_spans(
+    record: harness.LaunchRecord, names: Iterable[str], exchanged: list[np.ndarray]
+) -> list[tuple[int, int]]:
+    """The byte ranges [start, end) of the scratch buffers of a decoupled-lookback scan: the
+    buffers of `names` (`lookback_buffers`) into which this launch made an atomic exchange
+    (`exchanged`, `Memory.exchanged`), as the protocol does in every program instance."""
+    hits = np.concatenate(exchanged) if exchanged else np.zeros(0, dtype=np.int64)
+    spans = []
+    for name in sorted(set(names)):
+        if name in record.bases:
+            arr = record.pre[name]
+            lo = record.bases[name]
+            hi = lo + arr.size * arr.itemsize
+            if ((hits >= lo) & (hits < hi)).any():
+                spans.append((lo, hi))
+    return spans
 
 
 def _without_protocol_buffers(
-    record: harness.LaunchRecord, fn_source: str, log: list[Any] | None
+    log: list[Any] | None, spans: list[tuple[int, int]]
 ) -> list[Any] | None:
-    """The access log without the scratch buffer of a decoupled-lookback scan.
+    """The access log without the scratch buffer of a decoupled-lookback scan (`spans`,
+    `_protocol_spans`).
 
     TorchInductor's split scan (`triton_helpers.exclusive_scan_decoupled_lookback*`) passes each
     block's partial to the next through a scratch buffer: a plain store of the value, then an
@@ -204,11 +287,11 @@ def _without_protocol_buffers(
     runs the program instances one after another sees the plain store and the plain load of two
     instances and cannot tell a forced order from an incidental one, so the scratch buffer of
     that protocol is left out of the race check (and only that buffer: everything else the
-    kernel touches is judged as usual)."""
-    if not log:
-        return log
-    spans = _protocol_spans(record, fn_source)
-    if not spans:
+    kernel touches is judged as usual). Which buffer that is comes from the kernel's call to
+    Inductor's helper (`lookback_buffers`), never from its text, and a judge never leaves any
+    buffer out (`session(inductor_lookback=False)`): an answer is untrusted, and could race on
+    the very buffer it passes to the helper."""
+    if not log or not spans:
         return log
     kept = []
     for entry in log:
@@ -230,27 +313,14 @@ def _without_protocol_buffers(
     return kept
 
 
-def _protocol_spans(record: harness.LaunchRecord, fn_source: str) -> list[tuple[int, int]]:
-    """The byte ranges [start, end) of the scratch buffers of a decoupled-lookback scan
-    (`_without_protocol_buffers`)."""
-    spans = []
-    for name in set(LOOKBACK.findall(fn_source)):
-        if name in record.bases:
-            arr = record.pre[name]
-            spans.append((record.bases[name], record.bases[name] + arr.size * arr.itemsize))
-    return spans
-
-
-def _spans_may_race(
-    record: harness.LaunchRecord, fn_source: str, spans: AccessSpans | None
-) -> bool:
+def _spans_may_race(spans: AccessSpans | None, protocol: list[tuple[int, int]]) -> bool:
     """Whether a launch whose accesses outran the access log may hold a race, read off the span
     of each access (`pidraces.spans_may_race`): True where the spans were not kept or ran out
-    too. A span inside the scratch buffer of a decoupled-lookback scan is left out, as the exact
-    check leaves those addresses out (`_without_protocol_buffers`); one that only meets it stays."""
+    too. A span inside the scratch buffer of a decoupled-lookback scan (`protocol`,
+    `_protocol_spans`) is left out, as the exact check leaves those addresses out
+    (`_without_protocol_buffers`); one that only meets it stays."""
     if spans is None or spans.overflow:
         return True
-    protocol = _protocol_spans(record, fn_source)
     if not protocol:
         return pidraces.spans_may_race(spans.lo, spans.hi, spans.who, spans.write)
     keep = [
@@ -663,6 +733,7 @@ def session(
     races: str = "raise",
     on_check: Callable[[], object] | None = None,
     on_unchecked: Callable[[], object] | None = None,
+    inductor_lookback: bool = True,
 ) -> Iterator[Session]:
     """While open, every Triton launch of this process is executed by the semantics on the CPU
     tensors it was given and written back into them. A launch that faults raises
@@ -696,7 +767,14 @@ def session(
     (``Session.races_unchecked`` counts them): its accesses outran the access log
     (``Memory.access_budget``) and their spans could not rule a race out (two instances' address
     ranges meet where one of them writes). A judge counts them over its own channel, and does not
-    call such a run verified."""
+    call such a run verified.
+
+    ``inductor_lookback`` leaves out of the race check the scratch buffer of TorchInductor's
+    decoupled-lookback scan, whose order a flag protocol forces (`_without_protocol_buffers`): the
+    buffer a kernel passes to Inductor's own helper, found from the call itself
+    (`lookback_buffers`) and only where the launch made an atomic exchange into it. For code
+    Inductor generated. A judge passes False: an answer is untrusted, so every buffer it touches is
+    checked, the one it hands to the helper too."""
     if races not in ("raise", "record", "off"):
         raise ValueError(f"races: {races!r}")
     harness._install_fake_driver(cc)
@@ -738,10 +816,14 @@ def session(
         many = int(np.prod([int(g) for g in record.grid])) > 1 and races != "off"
         src = getattr(self, "src", "") or ""
         src = src if type(src) is str else ""
+        # the buffers of Inductor's lookback protocol, from the kernel's call to the helper
+        lookback = (
+            lookback_buffers(getattr(self, "fn", None), src) if inductor_lookback and many else ()
+        )
         collecting = gc.isenabled()
         gc.disable()  # no finalizer of the program's runs while the semantics do
         try:
-            judged = _judged(record, ir_text, kernel_file, launch, many, src)
+            judged = _judged(record, ir_text, kernel_file, launch, many, lookback)
         finally:
             if collecting:
                 gc.enable()
@@ -749,7 +831,12 @@ def session(
         return None
 
     def _judged(
-        record: Any, ir_text: str, kernel_file: str, launch: int, many: bool, src: str
+        record: Any,
+        ir_text: str,
+        kernel_file: str,
+        launch: int,
+        many: bool,
+        lookback: Iterable[str],
     ) -> harness.Execution:
         """The launch executed by the semantics and checked for races, between the two checks of
         `on_check`; a fault or a race raises :class:`KernelFault`."""
@@ -777,11 +864,12 @@ def session(
         memory = execution.memory
         # past the log's budget only the spans of the accesses are left: enough to rule a race
         # out where no two instances' ranges meet, else the launch is not race-checked
-        if memory.access_overflow and _spans_may_race(record, src, memory.access_spans):
+        protocol = _protocol_spans(record, lookback, memory.exchanged) if lookback else []
+        if memory.access_overflow and _spans_may_race(memory.access_spans, protocol):
             state.races_unchecked += 1
             if on_unchecked is not None:
                 on_unchecked()  # before anything of the program's runs again
-        log = _without_protocol_buffers(record, src, memory.access_log)
+        log = _without_protocol_buffers(memory.access_log, protocol)
         race = pidraces.find_race(log) if many else None
         if on_check is not None:
             on_check()  # the semantics and the race finder ran with the checker's own code

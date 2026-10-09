@@ -422,14 +422,11 @@ def test_a_kernel_the_user_wrote_runs_from_the_output_code_with_its_constexprs()
         inductor_utils.print_performance = once  # type: ignore[assignment]
 
 
-def test_the_scratch_buffer_of_a_decoupled_lookback_scan_is_not_a_race() -> None:
-    """Inductor's split scan passes each block's partial to the next through a scratch buffer:
-    a plain store, then a flag exchanged with release order, which the next block spins on with
-    acquire order before its plain load. Run one after the other, the two plain accesses look
-    like a race; the spin makes the order hold in every schedule."""
+def _split_scan(**session: Any) -> tuple[Any, Any]:
+    """Inductor's split scan of `fixtures/inductor/split_scan_output_code.py`, run under a session
+    opened with `session`: what it returned and what eager returns."""
     import runpy
 
-    pytest.importorskip("torch._inductor.runtime.triton_heuristics")
     import torch
     import torch._inductor.utils as inductor_utils
 
@@ -438,37 +435,177 @@ def test_the_scratch_buffer_of_a_decoupled_lookback_scan_is_not_a_race() -> None
     inductor_utils.print_performance = lambda fn, *a, **k: fn()  # type: ignore[assignment]
     undo = sanitize.inductor_names()
     try:
-        with sanitize.session() as state:
+        with sanitize.session(**session) as state:
             code = runpy.run_path(str(fixtures / "split_scan_output_code.py"), run_name="code")
             (x,) = code["get_args"]()
             want = (x > 0.5).to(torch.int64).cumsum(0) * 2
             (got,) = code["call"]([x])
             assert state.launches == 1  # the scan and the multiply are one kernel
-        assert torch.equal(got.cpu(), want.cpu())
+        return got, want
     finally:
         undo()
         inductor_utils.print_performance = once  # type: ignore[assignment]
+
+
+def test_the_scratch_buffer_of_a_decoupled_lookback_scan_is_not_a_race() -> None:
+    """Inductor's split scan passes each block's partial to the next through a scratch buffer:
+    a plain store, then a flag exchanged with release order, which the next block spins on with
+    acquire order before its plain load. Run one after the other, the two plain accesses look
+    like a race; the spin makes the order hold in every schedule."""
+    pytest.importorskip("torch._inductor.runtime.triton_heuristics")
+    import torch
+
+    got, want = _split_scan()
+    assert torch.equal(got.cpu(), want.cpu())
+
+
+def test_a_judges_session_leaves_not_even_inductors_scratch_buffer_out() -> None:
+    """With `inductor_lookback=False`, as the judges open their sessions, no buffer is left out of
+    the race check, the one a real call of Inductor's helper passes either: the same scan stops at
+    the plain store and load of its scratch buffer."""
+    pytest.importorskip("torch._inductor.runtime.triton_heuristics")
+    with pytest.raises(sanitize.KernelFault) as stop:
+        _split_scan(inductor_lookback=False)
+    assert (stop.value.fault.kind, stop.value.fault.buffer) == ("race", "ws_ptr")
+
+
+LOOKBACK_CALLS = {
+    "a comment": """def k(ws_ptr, x_ptr):
+    # exclusive_scan_decoupled_lookback_64(ws_ptr, v, i, f)
+    return 0
+""",
+    "a string": """def k(ws_ptr, x_ptr):
+    _ = "exclusive_scan_decoupled_lookback_64(ws_ptr, v, i, f)"
+    return 0
+""",
+    "a function of the same name": """def k(ws_ptr, x_ptr):
+    exclusive_scan_decoupled_lookback_64(ws_ptr, v, i, f)
+""",
+    "Inductor's helper through its module": """def k(ws_ptr, x_ptr):
+    triton_helpers.exclusive_scan_decoupled_lookback_64(
+        ws_ptr.to(tl.pointer_type(tl.uint64)) + x * 3, v, i, f
+    )
+""",
+    "Inductor's helper by its name": """def k(ws_ptr, x_ptr):
+    lookback(scratch_base=ws_ptr, block_value=v, index=i, combine_fn=f)
+""",
+}
+
+
+@pytest.mark.parametrize(
+    ("case", "want"),
+    [
+        ("a comment", set()),
+        ("a string", set()),
+        ("a function of the same name", set()),
+        ("Inductor's helper through its module", {"ws_ptr"}),
+        ("Inductor's helper by its name", {"ws_ptr"}),
+    ],
+)
+def test_the_lookback_buffer_is_read_off_a_call_of_inductors_helper_not_off_text(
+    case: str, want: set[str]
+) -> None:
+    """Which buffer is the protocol's comes from a call the kernel makes, whose callee its globals
+    resolve to Inductor's own helper: never from a comment, a string, or a function that only has
+    the helper's name."""
+    from types import SimpleNamespace
+
+    helpers = pytest.importorskip("torch._inductor.runtime.triton_helpers")
+
+    def impostor(*args: Any) -> None:
+        return None
+
+    scope = {
+        "triton_helpers": helpers,
+        "lookback": helpers.exclusive_scan_decoupled_lookback_64,
+        "exclusive_scan_decoupled_lookback_64": impostor,
+    }
+    fn = SimpleNamespace(__globals__=scope)
+    assert sanitize.lookback_buffers(fn, LOOKBACK_CALLS[case]) == want
+
+
+def test_a_buffer_the_launch_never_exchanged_into_is_not_left_out() -> None:
+    """The protocol exchanges a flag into its buffer in every program instance: a buffer named by
+    the call that no exchange of this launch landed in stays in the race check."""
+    from types import SimpleNamespace
+
+    record = SimpleNamespace(bases={"tmp": 1000}, pre={"tmp": np.zeros(4, dtype=np.int32)})
+    assert sanitize._protocol_spans(record, {"tmp"}, []) == []
+    outside = [np.array([2000], dtype=np.int64)]
+    assert sanitize._protocol_spans(record, {"tmp"}, outside) == []
+    inside = [np.array([1004], dtype=np.int64)]
+    assert sanitize._protocol_spans(record, {"tmp"}, inside) == [(1000, 1016)]
+
+
+@pytest.mark.parametrize("answer", ["answer_protocol_marker.py", "answer_protocol_big.py"])
+def test_a_comment_naming_the_lookback_helper_does_not_hide_a_race(answer: str) -> None:
+    """Round 5: a comment that spells a call of Inductor's helper on the racing buffer once left
+    that buffer out of both race checks (by the log, and past its budget by the ranges). Under a
+    session as `python -m ttsem.sanitize` opens it, with Inductor's helpers loaded, the small
+    launch is a race and the padded one is counted as not checked."""
+    import importlib.util
+
+    import torch
+
+    pytest.importorskip("torch._inductor.runtime.triton_helpers")
+    path = Path(__file__).resolve().parent / "fixtures" / "judge" / answer
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    x = torch.randn(4000)
+    with sanitize.session() as state:
+        if answer == "answer_protocol_marker.py":
+            with pytest.raises(sanitize.KernelFault) as stop:
+                module.ModelNew()(x)
+            assert (stop.value.fault.kind, stop.value.fault.buffer) == ("race", "scratch_ptr")
+        else:
+            module.ModelNew()(x)
+    if answer == "answer_protocol_big.py":
+        assert (state.launches, state.races_unchecked) == (1, 1)
+
+
+def test_the_lookback_exemption_trusts_the_kernel_so_a_judge_turns_it_off() -> None:
+    """The exemption is a matter of trust: a kernel that calls Inductor's helper for real can race
+    on the same scratch buffer outside the protocol, and a session that trusts it (the default,
+    for Inductor's own code) leaves the whole buffer out and misses that race. A judge's session
+    (`inductor_lookback=False`) finds it."""
+    import importlib.util
+
+    import torch
+
+    pytest.importorskip("torch._inductor.runtime.triton_helpers")
+    path = Path(__file__).resolve().parent / "fixtures" / "judge" / "answer_lookback_helper.py"
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    x = torch.randn(4000)
+    with sanitize.session():
+        got = module.ModelNew()(x)
+    # no race reported, and the order ttsem runs the instances in gives ReLU (+ 1 - 1)
+    assert torch.allclose(got, torch.relu(x), rtol=0, atol=1e-6)
+    with sanitize.session(inductor_lookback=False), pytest.raises(sanitize.KernelFault) as stop:
+        module.ModelNew()(x)
+    assert (stop.value.fault.kind, stop.value.fault.buffer) == ("race", "ws_ptr")
 
 
 def test_past_the_budget_the_scratch_buffer_of_a_lookback_scan_is_left_out_of_the_spans() -> None:
     """The spans kept past the access log's budget leave out the scratch buffer of a
     decoupled-lookback scan as the exact check does: a span inside it is dropped, one that only
     meets it stays whole."""
-    from types import SimpleNamespace
-
     from ttsem.memory import AccessSpans
 
-    record = SimpleNamespace(bases={"tmp": 1000}, pre={"tmp": np.zeros(4, dtype=np.int32)})
-    source = "exclusive_scan_decoupled_lookback_64(tmp, x, y)"
+    protocol = [(1000, 1016)]  # the scratch buffer: four int32 at 1000
     inside = AccessSpans()
     inside.add((0, 0, 0), True, 1000, 1003)  # a store of block 0's partial
     inside.add((1, 0, 0), False, 1000, 1003)  # block 1 loads it, after the flag
-    assert sanitize._spans_may_race(record, "", inside)  # without the protocol: maybe a race
-    assert not sanitize._spans_may_race(record, source, inside)
+    assert sanitize._spans_may_race(inside, [])  # without the protocol: maybe a race
+    assert not sanitize._spans_may_race(inside, protocol)
     across = AccessSpans()
     across.add((0, 0, 0), True, 996, 1003)  # reaches out of the scratch buffer
     across.add((1, 0, 0), False, 996, 999)
-    assert sanitize._spans_may_race(record, source, across)
+    assert sanitize._spans_may_race(across, protocol)
 
 
 def test_a_kernel_that_writes_back_rows_it_did_not_change_does_not_race_with_their_readers() -> (

@@ -180,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         on_launch=on_launch,
         on_check=on_check,
         on_unchecked=unchecked,  # a launch too large for the race check, counted by the channel
+        inductor_lookback=False,  # an answer is untrusted: every buffer it touches is race-checked
     )
     state = session.__enter__()
     from triton.runtime.jit import JITFunction

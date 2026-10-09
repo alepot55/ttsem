@@ -240,7 +240,8 @@ def run_reference(args: argparse.Namespace, raw: Raw) -> None:
     report = raw.data
     Model, get_init_inputs, get_inputs, _, _ = load_task(args, report)
     precision = "keep" if args.rule == "v3" else args.precision
-    with sanitize.session(source=str(args.task)):
+    # the judge's sessions leave no buffer out of the race check (`inductor_lookback`)
+    with sanitize.session(source=str(args.task), inductor_lookback=False):
         report["stage"] = "reference"
         torch.manual_seed(args.seed)
         init_inputs = [cast(x, precision) for x in get_init_inputs()]
@@ -361,6 +362,7 @@ def run_answer(
         on_launch=on_launch,
         on_check=on_check,
         on_unchecked=unchecked,  # a launch too large for the race check, counted by the channel
+        inductor_lookback=False,  # an answer is untrusted: every buffer it touches is race-checked
     )
     # held to the end: the process leaves by the channel, never through the session's
     # exit, so the snapshot below (which includes what the session installed) holds

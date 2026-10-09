@@ -507,6 +507,42 @@ def test_a_tritonbench_race_padded_past_the_budget_is_not_verified(tmp_path: Pat
     ), got
 
 
+@needs_sandbox
+@pytest.mark.parametrize(
+    ("answer", "want"),
+    [
+        ("answer_protocol_marker.py", ("unsafe", "race")),
+        ("answer_protocol_big.py", ("not_judged", "races_unchecked")),
+        ("answer_lookback_helper.py", ("unsafe", "race")),
+    ],
+)
+def test_no_buffer_of_an_answer_is_left_out_of_the_race_check(
+    tmp_path: Path, answer: str, want: tuple[str, str]
+) -> None:
+    """Round 5: a comment that spelled a call of Inductor's decoupled-lookback helper on the racing
+    buffer took that buffer out of both race checks, and the judge said `verified` (small) and
+    `verified` (padded past the budget). The judge now leaves no buffer of an answer out, the one
+    it really passes to Inductor's helper neither (`answer_lookback_helper.py` races on it)."""
+    got = judge.judge_one(KB / "task_relu.py", KB / answer, tmp_path / "a.json", 300)
+    if want[0] == "unsafe":
+        buffer = "ws_ptr" if answer == "answer_lookback_helper.py" else "scratch_ptr"
+        assert (got["verdict"], got["kind"], got["buffer"]) == (*want, buffer), got
+        return
+    assert (got["verdict"], got["why"]) == want, got
+    assert got["races_unchecked"] == 5 and all(t["pass"] for t in got["trials"])  # 5 trials
+
+
+@needs_sandbox
+def test_no_buffer_of_a_tritonbench_answer_is_left_out_of_the_race_check(tmp_path: Path) -> None:
+    item = {
+        "id": "a",
+        "task": str(TB / "task_relu.py"),
+        "answer": str(TB / "answer_protocol_marker.py"),
+    }
+    got = tb.judge_item(item, tmp_path, 300, sandbox=True)[tb.RECORD]
+    assert (got["verdict"], got["class"]) == ("unsafe", "race"), got
+
+
 # --- the forged answers -------------------------------------------------------------------------
 
 
