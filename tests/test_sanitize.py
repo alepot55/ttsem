@@ -456,9 +456,9 @@ def test_a_race_whose_first_store_leaves_the_bytes_it_found_is_reported() -> Non
             pid_to_first[(2,)](out)
     assert stop.value.fault.kind == "race"
     text = sanitize.message(stop.value.fault)
-    # here one serial order already gives a wrong value, so the message must not claim that an
-    # output comparison never sees a race
-    assert "an output comparison may not see it" in text and "cannot see" not in text
+    # here one serial order already gives a wrong value, so the message must not claim that
+    # comparing outputs never shows a race
+    assert "comparing outputs may not show it" in text and "cannot see" not in text
     assert "(0, 0, 0) stores to it, (1, 0, 0) stores to it" in text
 
 

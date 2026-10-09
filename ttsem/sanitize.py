@@ -289,10 +289,9 @@ def message(fault: Fault) -> str:
     if fault.kind == "race":
         return (
             f"{where}: `{op}`: {fault.detail} Program instances run in any order and at the same "
-            "time, so the result depends on the schedule: one order may give the right values "
-            "and another not, so an output comparison may not see it. Make the instances write "
-            "disjoint elements, or use an atomic update (`tl.atomic_add` and the like) for the "
-            "shared ones."
+            "time. One order can give the right values and another the wrong ones, so comparing "
+            "outputs may not show it. Make the instances write disjoint elements, or use an "
+            "atomic update (`tl.atomic_add` and the like) for the shared ones."
         )
     return f"{where}: `{op}` is an operation with an undefined result: {fault.detail}"
 
