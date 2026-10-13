@@ -4,14 +4,15 @@ The point of an executable semantics is that a compiler bug stops being "the ans
 and becomes "this pass changed the meaning of the program". The demo shows that on
 triton#11519: ``tritongpu-fuse-nested-loops`` trusted an ``llvm.assume`` sitting on the branch
 the loop nest cannot reach, so a nest whose inner loop runs zero times executed its body
-anyway. peterbell10 fixed it upstream in triton#11521.
+anyway. It was fixed upstream in triton#11521.
 
 Two ways to see it, and they differ only in where the stages come from.
 
 ``python -m ttsem demo`` replays the recording committed in ``examples/``: the verdict the
 semantics reached on every stage of one launch, stage by stage, as recorded on Triton main
-``e1f944a7a``. Nothing but ``numpy`` is needed, because nothing is compiled: this is
-bookkeeping over verdicts somebody else's machine already produced, and the demo says so.
+``e1f944a7a``. A stage is the module its pass receives. Nothing but ``numpy`` is needed,
+because nothing is compiled: this is bookkeeping over verdicts somebody else's machine already
+produced, and the demo says so.
 ``culprit_of`` below is the library's own function, run here on the recorded verdicts, so the
 pass the demo names is derived and not a string in this file.
 
@@ -19,7 +20,7 @@ pass the demo names is derived and not a string in this file.
 ``examples/e15_repro.py`` through the fake driver with the IR dump on, runs the module that
 every pass in the pipeline receives through :class:`ttsem.interp.Interp` on the launch's own
 inputs, and compares each one with the launch's reference output. That needs the Triton wheel
-(the ``triton`` extra) but still no GPU, and takes tens of seconds.
+(the ``triton`` extra) but still no GPU, and takes ten seconds or more.
 
 Why the recording carries verdicts and not IR: a stage dump of this pipeline is some megabytes
 of MLIR per launch, and the recording is meant to be read in a diff. Reproducing the verdicts
@@ -213,9 +214,11 @@ def run_recorded(path: Path, out: Any) -> int:
     print("  reference   a real launch, recorded on Triton main e1f944a7a", file=out)
     print(
         "\n  The verdicts below are the ones the semantics reached when it ran each stage's\n"
-        "  module on that launch's inputs. The recording keeps the verdicts, not the modules,\n"
-        "  so nothing is re-executed here; the pass named at the end is computed from them by\n"
-        "  ttsem.validate. Run `python -m ttsem demo --live` to redo the whole thing locally.\n",
+        "  module on that launch's inputs; a stage is the module its pass receives. The\n"
+        "  recording keeps the verdicts, not the modules, so nothing is re-executed here; the\n"
+        "  pass named at the end is computed from them by ttsem.validate. When the stage after\n"
+        "  that pass is unsupported, the recording cannot tell that pass from the next one.\n"
+        "  Run `python -m ttsem demo --live` to redo the whole thing locally.\n",
         file=out,
     )
     named: str | None = None
@@ -239,11 +242,13 @@ def run_live(program: Path, out: Any) -> int:
     try:
         import triton  # noqa: F401
     except ImportError:
+        from ttsem._install import triton_hint
+
         print(
             "--live needs the Triton wheel, which is not installed here.\n"
             "It compiles the kernel (through the fake driver, so no GPU is needed) to get the\n"
             "module every pass receives. Install it with:\n"
-            "    pip install 'ttsem[triton] @ git+https://github.com/alepot55/ttsem'\n"
+            f"{triton_hint()}"
             "The default `python -m ttsem demo` replays a committed recording instead.",
             file=out,
         )
@@ -260,7 +265,7 @@ def run_live(program: Path, out: Any) -> int:
     print("  device      cpu (Triton's own interpreter is the reference, no GPU needed)", file=out)
     print(
         "  the whole pipeline is compiled with the IR dump on, and every module it prints is\n"
-        "  run on this launch's inputs: tens of seconds\n",
+        "  run on this launch's inputs: ten seconds or more\n",
         file=out,
     )
 

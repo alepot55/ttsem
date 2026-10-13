@@ -5,8 +5,10 @@
 For each line of a manifest of `manifest.py`, the file the benchmark runs (the answer, the
 separator, the task's test: ``ttsem.judge_tritonbench.build``) and the task's own file each run on
 the GPU in their own process (`device_runner.py`, no ttsem), inside the judge's `bwrap` sandbox
-with the GPU's device nodes let in. As in the judge, an answer's sandbox sees neither the task nor
-the reference runs, and the references run once per task on a Triton cache of their own. The
+with the GPU's device nodes let in. As in the judge, each run writes only in a directory of its
+own (OUT/work/<id>.device/, OUT/reference/<task>-<digest>.device/), an answer's sandbox sees
+neither the task nor the reference runs nor the other answers' runs, and the references run once
+per task. The
 answer's results are then compared with the reference's by the judge's own rules
 (``ttsem.judge_tritonbench.decide``), minus what only the semantics can see: no fault is reported
 on the device, and there is no second reference run under another poison pattern.
@@ -25,16 +27,16 @@ import functools
 import hashlib
 import json
 import os
-import subprocess
 import sys
-import threading
 from collections import Counter
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from ttsem import judge
 from ttsem import judge_tritonbench as tb
+from ttsem.judge_io import printable, read_json, run_sandboxed
 
 RUNNER = Path(__file__).resolve().parent / "device_runner.py"
 RECORD = "device"  # the key of a row's record, and the suffix of its file
@@ -61,15 +63,20 @@ def gpu_nodes() -> list[str]:
 
 
 def run_file(
-    script: Path, report: Path, out: Path, timeout: int, cache: Path, extra: list[str]
+    script: Path,
+    work: Path,
+    timeout: int,
+    hide: Sequence[Path] = (),
+    extra: Sequence[str] = (),
 ) -> dict[str, Any]:
     """`script` run by `device_runner.py` in its own process, with a timeout, in the judge's
-    sandbox (OUT the only directory it may write) plus the GPU, `extra` added (what an answer
-    must not see). The report is kept: a rerun reads it back."""
-    if report.exists():
-        return tb.read_report(report, script)
-    out = out.resolve()
-    cache.mkdir(parents=True, exist_ok=True)
+    sandbox plus the GPU: `work` is its own directory, the only one it may write (its report, its
+    arrays, its Triton cache), `hide` is hidden from it besides the judge's own, and `extra` is
+    added (what an answer must not see). Returns its report as the judge takes it
+    (``ttsem.judge_tritonbench.run_report``)."""
+    work = work.resolve()
+    cache = work / ".cache"
+    cache.mkdir(parents=True, exist_ok=True)  # a run may write there first
     # none of the caller's environment but the judge's and the GPU's few variables: an answer
     # could copy a token from it into its report; ttsem stays off the path, as in the benchmark
     passed = {key: os.environ[key] for key in DEVICE_ENV if key in os.environ}
@@ -77,74 +84,65 @@ def run_file(
     env.pop("PYTHONPATH")
     if os.environ.get("PYTHONPATH"):
         env["PYTHONPATH"] = os.environ["PYTHONPATH"]
-    cmd = judge.sandbox_prefix(out, cache, [script], env) + gpu_nodes() + extra
-    cmd += ["--ro-bind", str(RUNNER), str(RUNNER)]  # whatever /tmp or `extra` hide
-    npz = report.with_suffix(".npz")
-    cmd += [sys.executable, "-P", str(RUNNER), str(script.resolve()), str(report.resolve())]
-    cmd += [str(npz.resolve())]
-    try:
-        done = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, env=env, cwd=out, check=False
-        )
-        if not report.exists():
-            tail = (done.stderr or "").strip().splitlines()[-1:] or [""]
-            report.write_text(json.dumps({"file": script.name, "run": "crash", "message": tail[0]}))
-    except subprocess.TimeoutExpired:
-        report.write_text(json.dumps({"file": script.name, "run": "timeout", "seconds": timeout}))
-    return tb.read_report(report, script)
-
-
-_LOCKS: dict[Path, threading.Lock] = {}
-_LOCKS_GUARD = threading.Lock()
+    cmd = judge.sandbox_prefix(work, cache, [script], env, hide) + gpu_nodes() + list(extra)
+    cmd += ["--ro-bind", str(RUNNER), str(RUNNER)]  # whatever /tmp or `hide` hide
+    cmd += [sys.executable, "-P", str(RUNNER), str(script.resolve())]
+    cmd += [str(work / "run.json"), str(work / "run.npz")]
+    return tb.run_report(run_sandboxed(cmd, env, work, timeout), work, script, timeout)
 
 
 def reference(task: Path, out: Path, timeout: int) -> tuple[dict[str, Any], Path]:
-    """The task file's own run on the GPU, once per task content, in OUT/reference with the
-    Triton cache OUT/reference/.cache, which no answer sees: its report and where its arrays are.
-    Two answers of one task wait for one run."""
+    """The task file's own run on the GPU, once per task content, in its own directory
+    OUT/reference/<task>-<digest>.device/ (its Triton cache inside), which no answer sees: its
+    report (kept by this process in OUT/reference/<task>-<digest>.device.json, read back by a
+    rerun) and where its arrays are. Two answers of one task wait for one run."""
     digest = hashlib.sha256(task.read_bytes()).hexdigest()[:12]
-    report = out / "reference" / f"{task.stem}-{digest}.{RECORD}.json"
-    report.parent.mkdir(parents=True, exist_ok=True)
-    cache = (out / "reference" / ".cache").resolve()
-    with _LOCKS_GUARD:
-        lock = _LOCKS.setdefault(report.resolve(), threading.Lock())
-    with lock:
-        run = run_file(task, report, out, timeout, cache, [])
-    return run, report.with_suffix(".npz")
+    name = f"{task.stem}-{digest}.{RECORD}"
+    report = out / judge.REFERENCE / f"{name}.json"
+    work = out / judge.REFERENCE / name
+    with judge.locked(report):
+        run = read_json(report)
+        if not isinstance(run, dict):
+            judge.fresh(work)
+            run = run_file(task, work, timeout, judge.out_tree(out))
+            report.write_text(json.dumps(run))
+    return run, work / "run.npz"
 
 
 def judge_item(item: dict[str, Any], out: Path, timeout: int) -> dict[str, Any]:
-    """One answer on the GPU: its record, read back if it is already in OUT."""
+    """One answer on the GPU, in its own directory OUT/work/<id>.device/: its record, read back
+    if it is already in OUT (only this process writes there)."""
     record_path = out / f"{item['id']}.{RECORD}.json"
-    kept = tb.read_record(record_path) if record_path.exists() else None
+    kept = tb.read_record(record_path)
     if kept is not None:
         return {**item, RECORD: kept}
     task, answer = Path(item["task"]), Path(item["answer"])
-    script = out / f"{item['id']}.{RECORD}.py"
+    work = judge.fresh(out / judge.WORK / f"{item['id']}.{RECORD}")
+    script = work / f"{item['id']}.{RECORD}.py"
     try:
         tb.build(task, answer, script)
     except tb.BadTask as exc:
         bad = {"answer": answer.name, "verdict": "not_judged", "class": "bad_task"}
         return {**item, RECORD: {**bad, "launches": 0, "message": str(exc)}}
     gold = reference(task, out, timeout)
-    report = script.with_suffix(".run.json")
-    hide = tb.answer_sandbox(task, out)
-    run = run_file(script, report, out, timeout, (out / ".cache").resolve(), hide)
+    hide, extra = tb.answer_sandbox(task, out)
+    run = run_file(script, work, timeout, hide, extra)
     random = tb.draws_random(
         tb.operator_part(task.read_text(encoding="utf-8")),
         tb.operator_part(answer.read_text(encoding="utf-8")),
     )
 
     def no_twin() -> tuple[dict[str, Any], Path]:  # the device has no poison pattern to vary
-        return NOT_RUN, out / "reference" / "no-twin.npz"
+        return NOT_RUN, out / judge.REFERENCE / "no-twin.npz"
 
     try:
-        record = tb.decide(run, script.with_suffix(".run.npz"), gold, no_twin, random)
+        record = tb.decide(run, work / "run.npz", gold, no_twin, random)
         record = {"answer": answer.name, **record, "seconds": run.get("seconds")}
     except tb.MALFORMED as exc:  # written by the answer's own process, which may write anything
         message = f"malformed run report: {type(exc).__name__}: {exc}"[:300]
         record = {"answer": answer.name, "verdict": "error", "class": "crash", "launches": 0}
         record["message"] = message
+    judge.tidy(work)
     with contextlib.suppress(OSError):
         record_path.write_text(json.dumps(record, indent=1))
     return {**item, RECORD: record}
@@ -184,7 +182,8 @@ def main(argv: list[str] | None = None) -> int:
             records.append(row[RECORD])
             sink.write(json.dumps(row) + "\n")
             sink.flush()
-            print(f"{row['id']}: {row[RECORD]['verdict']} ({row[RECORD].get('class')})", flush=True)
+            line = f"{row['id']}: {row[RECORD]['verdict']} ({row[RECORD].get('class')})"
+            print(printable(line), flush=True)
     counts = Counter(str(r["verdict"]) for r in records)
     print(f"{len(records)} answer(s): " + ", ".join(f"{v} {n}" for v, n in counts.most_common()))
     print("columns: " + ", ".join(f"{k} {n}" for k, n in tb.columns(records).items()))

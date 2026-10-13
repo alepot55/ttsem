@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from conftest import block, func, interp, op, ptr, region, tensor, ty
+
 from ttsem.ir_types import DenseAttr, Module, Op
 from ttsem.memory import Memory
 from ttsem.values import Unsupported
@@ -587,3 +588,16 @@ def test_ub_poison_is_a_zero_of_its_type() -> None:
     )
     (got,) = run(module, "k", [])
     assert got.shape == (2, 3) and got.dtype == np.int32 and not got.any()
+
+
+def test_the_grid_runs_in_order_reversed_or_shuffled_and_always_whole() -> None:
+    from ttsem import interp
+
+    pids = list(interp.grid_order((3, 2, 1)))
+    assert pids[:4] == [(0, 0, 0), (1, 0, 0), (2, 0, 0), (0, 1, 0)]
+    assert interp.grid_order((3, 2, 1), "reverse") == pids[::-1]
+    shuffled = interp.grid_order((3, 2, 1), "shuffle:7")
+    assert sorted(shuffled) == sorted(pids)
+    assert shuffled == interp.grid_order((3, 2, 1), "shuffle:7")  # the seed decides
+    with pytest.raises(ValueError, match="unknown order"):
+        interp.grid_order((1, 1, 1), "backwards")

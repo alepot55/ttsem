@@ -11,7 +11,8 @@ benchmark (G, T), one line per model and the total, in the columns of
   semantics stopped for a fault that a GPU runs past;
 - verified (strict or lenient tolerance), reduced precision, wrong, unsafe;
 - not compared: a task or answer that draws random numbers, a reference that cannot be compared
-  with, a fault the task's own test causes in the reference too, right values with no kernel;
+  with, a fault the task's own test causes in the reference too, right values with no kernel or
+  from a launch too large to be checked for races (`races_unchecked`);
 - not judged: what this machine or the tool lacks, a timeout, a crash;
 - wrong or unsafe, out of the answers that ran and could be judged.
 

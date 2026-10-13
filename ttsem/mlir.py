@@ -878,7 +878,7 @@ def _unparse_attr_value(v: object) -> str:
     if isinstance(v, float):
         return f"{_format_float(v)} : f64"
     if isinstance(v, str):
-        if v.startswith("#") or v.startswith("@"):
+        if v.startswith(("#", "@")):
             return v
         return '"' + _escape_string(v) + '"'
     if isinstance(v, Type):

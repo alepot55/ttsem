@@ -138,7 +138,7 @@ class LinearLayout:
         self._check_invariants(require_surjective)
 
     def _infer_out_dims(self, names: Sequence[str]) -> OutDimsT:
-        sizes = {name: 1 for name in names}
+        sizes = dict.fromkeys(names, 1)
         for in_bases in self.bases.values():
             for basis in in_bases:
                 for i, value in enumerate(basis):
@@ -375,8 +375,8 @@ class LinearLayout:
         in_dims = supremum(inner.in_dim_names(), outer.in_dim_names())
         out_dims = supremum(inner.out_dim_names(), outer.out_dim_names())
 
-        in_log2 = {dim: 0 for dim in in_dims}
-        out_log2 = {dim: 0 for dim in out_dims}
+        in_log2 = dict.fromkeys(in_dims, 0)
+        out_log2 = dict.fromkeys(out_dims, 0)
         for layout in (inner, outer):
             for dim in layout.in_dim_names():
                 in_log2[dim] += layout.get_in_dim_size_log2(dim)

@@ -22,10 +22,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ttsem import harness
-from ttsem import mlir
 import numpy as np
-from ttsem import validate
+
+from ttsem import harness, mlir, validate
 from ttsem.defuse import definer, defs
 
 RunPass = Callable[[str], str]  # generic module text -> generic module text after the pass

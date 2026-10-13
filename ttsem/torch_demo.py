@@ -2,8 +2,8 @@
 
 TorchInductor turns a PyTorch program into Triton kernels. When a pass gets aliasing wrong, the
 kernel reads memory that another program instance of the same launch writes: on a GPU the
-instances run at the same time, the result depends on the schedule, and nothing fails. Each
-program below compiles to such a kernel on the torch releases that have the bug.
+instances run at the same time, the result depends on the schedule, and a test may well pass.
+Each program below compiles to such a kernel on the torch releases that have the bug.
 
 No GPU is needed because Inductor also emits Triton for CPU tensors (``cpu_backend = "triton"``,
 the same lowering and the same passes), and :func:`ttsem.sanitize.session` executes every launch
@@ -62,7 +62,7 @@ CASES = [
     Case(
         "pytorch#198033",
         "torch._foreach_add_([x], [x.flip(0)])",
-        "fix proposed in pytorch#198242",
+        "fixed on main by pytorch#198549 (1 Oct 2026)",
         _foreach_flip,
     ),
 ]
@@ -116,10 +116,9 @@ def main(argv: list[str] | None = None, out: Any = None) -> int:
     try:
         import torch
     except ImportError:
-        out.write(
-            "this demo needs torch and the Triton wheel:\n"
-            "    pip install 'ttsem[triton] @ git+https://github.com/alepot55/ttsem'\n"
-        )
+        from ttsem._install import triton_hint
+
+        out.write(f"this demo needs torch and the Triton wheel:\n{triton_hint()}")
         return 2
     out.write(f"torch {torch.__version__}, no GPU: Inductor's Triton code run under ttsem\n")
     verdicts = [run_case(c, out) for c in CASES if args.case in (None, c.issue)]

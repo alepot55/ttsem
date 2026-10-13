@@ -10,10 +10,12 @@ address whose lane is live raises `MemoryFault`.
 
 from __future__ import annotations
 
+from array import array
 from collections.abc import Callable
 from typing import Any
 
 import numpy as np
+
 from ttsem.values import Poison
 
 # Decodes a stored value into the value it denotes, or encodes it back (`values.to_float` and
@@ -33,6 +35,52 @@ RMW = {
     "xchg": lambda _old, new: new,
 }
 UNSIGNED_RMW = ("umax", "umin")
+# How many element accesses one launch's access log holds (`Memory.access_budget`): past this
+# many the log is dropped and only the access spans are kept (`AccessSpans`). A launch whose spans
+# cannot rule a race out is then not checked for races between program instances, and a judge does
+# not call it verified (`Session.races_unchecked`).
+ACCESS_BUDGET = 4_000_000
+# How many spans `AccessSpans` keeps (about 25 bytes each) before it gives up too.
+SPAN_BUDGET = 2_000_000
+
+
+class AccessSpans:
+    """For each access, the range of bytes it touched, whether it wrote (a store or an atomic
+    update) or only read, and the program instance that made it: what `pidraces.spans_may_race`
+    needs to rule a race out without the addresses. A race needs a byte two instances touch, one
+    of them writing it, so ranges that do not meet that way leave none; ranges that do are only
+    "maybe". Cheap enough to keep for a launch whose every address would not fit in the log.
+
+    Instances run one after the other, so an instance is a run of accesses under one `agent`; the
+    span of an access that meets or touches the last span of its instance and kind is merged into
+    it, whose union is then the same bytes (a loop that rewrites one block keeps one span)."""
+
+    def __init__(self) -> None:
+        self.lo, self.hi, self.who = array("q"), array("q"), array("q")
+        self.write = bytearray()
+        self.overflow = False  # more than SPAN_BUDGET spans: nothing ruled out
+        self._agent: Any = None
+        self._ident = -1
+        self._last: dict[bool, int] = {}  # the current instance's last span, by kind
+
+    def add(self, agent: Any, write: bool, lo: int, hi: int) -> None:
+        """One access of `agent` over bytes `lo` to `hi` (both included)."""
+        if self.overflow:
+            return
+        if agent != self._agent:
+            self._agent, self._ident, self._last = agent, self._ident + 1, {}
+        k = self._last.get(write)
+        if k is not None and lo <= self.hi[k] + 1 and hi >= self.lo[k] - 1:
+            self.lo[k], self.hi[k] = min(self.lo[k], lo), max(self.hi[k], hi)
+            return
+        if len(self.lo) >= SPAN_BUDGET:
+            self.overflow = True
+            return
+        self._last[write] = len(self.lo)
+        self.lo.append(lo)
+        self.hi.append(hi)
+        self.who.append(self._ident)
+        self.write.append(write)
 
 
 class MemoryFault(Exception):
@@ -97,13 +145,30 @@ class Memory:
         self.agent: Any = (0, 0, 0)
         self.current_op = ""
         # The log holds every address of every access: past this many elements it is dropped
-        # and `access_overflow` says the launch was too large to be checked for races.
-        self.access_budget = 4_000_000
+        # and `access_overflow` says the launch was too large for it. When set, `access_spans`
+        # keeps on recording the range of each access, past the budget too.
+        self.access_budget = ACCESS_BUDGET
         self.access_overflow = False
+        self.access_spans: AccessSpans | None = None
         self._logged = 0
 
+    def trace(self) -> None:
+        """Record every access from now on: in the log, and in the spans that outlive its
+        budget."""
+        self.access_log, self.access_spans = [], AccessSpans()
+
+    @property
+    def tracing(self) -> bool:
+        """Whether accesses are recorded (in the log, or past its budget in the spans)."""
+        return self.access_log is not None or self.access_spans is not None
+
     def _log(self, kind: str, addrs: np.ndarray, itemsize: int, raw: np.ndarray | None) -> None:
-        if self.access_log is None or not addrs.size:
+        if not addrs.size:
+            return
+        if self.access_spans is not None:
+            lo, hi = int(addrs.min()), int(addrs.max()) + itemsize - 1
+            self.access_spans.add(self.agent, kind != "r", lo, hi)
+        if self.access_log is None:
             return
         self._logged += int(addrs.size)
         if self._logged > self.access_budget:
@@ -216,7 +281,7 @@ class Memory:
             except MemoryFault:
                 silent = None  # out of bounds: the write below says so
         self._write(flat, vals)
-        if self.access_log is not None and flat.size:
+        if self.tracing and flat.size:
             raw = vals.view(np.uint8).reshape(flat.size, -1)
             if silent is None or not silent.any():
                 self._log("w", flat, vals.dtype.itemsize, raw)
@@ -262,7 +327,7 @@ class Memory:
         live = _live(mask, shape).reshape(-1)
         flat = np.asarray(addrs, dtype=np.int64).reshape(-1)
         old = np.zeros(int(np.prod(shape, dtype=np.int64)), dtype=val.dtype)
-        if self.access_log is not None and live.any():
+        if self.tracing and live.any():
             self._log("a", flat[live], val.dtype.itemsize, None)
         for i in np.nonzero(live)[0]:
             addr = flat[i : i + 1]

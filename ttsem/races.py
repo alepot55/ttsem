@@ -166,7 +166,6 @@ class RaceInterp(LayoutInterp):
     def block_until(self, ready, what: str) -> None:  # type: ignore[override]
         """Level 3 orders the partitions with its own epochs and vector clocks and runs them
         one after the other; the level-1 wait must not block or object here."""
-        return None
 
     def eval_op(self, op: Op) -> None:
         self.steps += 1

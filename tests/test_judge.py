@@ -144,6 +144,21 @@ def test_one_pair_as_json_through_the_package_entry_point(tmp_path: Path) -> Non
     assert (tmp_path / "answer_ok.scaled.json").exists()
 
 
+def test_a_file_that_is_not_there_is_refused_before_anything_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    started: list[Any] = []
+    monkeypatch.setattr(judge, "judge_one", lambda *a, **k: started.append(a))
+    for argv in (
+        [str(TASK), str(tmp_path / "answer.py")],
+        ["--manifest", str(tmp_path / "m.jsonl"), "--out", str(tmp_path / "out")],
+    ):
+        with pytest.raises(SystemExit) as stop:
+            judge.main(argv)
+        assert stop.value.code == 2 and "no such file" in capsys.readouterr().err
+    assert not started
+
+
 def test_without_bwrap_the_judge_refuses_to_run_anything(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -204,6 +219,13 @@ def test_a_run_is_given_none_of_the_callers_environment(planted: Planted, tmp_pa
     assert bare["HOME"] == str(planted.home) and "TTSEM_TEST_SECRET" not in set(bare)
 
 
+def test_a_run_keeps_the_block_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`TTSEM_BLOCK_CAP` reaches the run: it sets how many program instances a direct launch has,
+    so whether the judge can see a race depends on it."""
+    monkeypatch.setenv("TTSEM_BLOCK_CAP", "16")
+    assert judge.run_env(tmp_path / ".cache")["TTSEM_BLOCK_CAP"] == "16"
+
+
 def test_an_output_directory_that_holds_a_hidden_one_is_refused(tmp_path: Path) -> None:
     """OUT is bound writable over the hidden directories: one that holds the home or /run would
     give them back to the answer."""
@@ -230,15 +252,15 @@ def test_the_sandbox_shows_an_answer_no_secret_of_the_caller(
 
 @needs_sandbox
 def test_a_judged_answer_sees_no_secret_of_the_caller(planted: Planted, tmp_path: Path) -> None:
-    """The same, through a whole pass: the answer copies what it can see at import, then is
-    judged as any other."""
+    """The same, through a whole pass: the answer copies what it can see at import (into its own
+    directory, the only one it may write), then is judged as any other."""
     answer = tmp_path / "answer_leak.py"
     answer.write_text(planted.leak() + (FIXTURES / "answer_ok.py").read_text())
     out = tmp_path / "out"
     out.mkdir()
     got = judge.judge_one(TASK, answer, out / "leak.scaled.json", 300)
     assert got["verdict"] == "verified", got
-    planted.check(out)
+    planted.check(out / judge.WORK / "leak.scaled")
 
 
 def test_each_kind_of_verdict_reads_as_one_line() -> None:
@@ -549,12 +571,14 @@ def test_a_limit_of_the_machine_is_the_answers_error_when_it_raises_it_itself(
     by_answer: bool,
     verdict: str,
 ) -> None:
-    """The runner's verdict for what escapes the run, in this process: `judge` is replaced, and
-    the "answer" is a two-line file of this test's own that raises what it is given."""
+    """The runner's account of what escapes the run, in this process, and the verdict the judge
+    reads off it: the answer's run is replaced, the "answer" is a two-line file of this test's
+    own that raises what it is given, and the runner's way out of the process raises instead."""
     pytest.importorskip("torch")
     pytest.importorskip("triton")
     from ttsem import _judge_runner as runner
     from ttsem import sanitize
+    from ttsem.judge_io import Ran
 
     exc = LIMITS[limit](sanitize)
     answer = tmp_path / "answer.py"
@@ -564,20 +588,39 @@ def test_a_limit_of_the_machine_is_the_answers_error_when_it_raises_it_itself(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    def fake_judge(args: Any, report: dict[str, Any]) -> None:
-        report["stage"] = "forward"
+    def fake_run(args: Any, raw: Any, channel: Any, own: Any, guards: Any) -> None:
+        raw.data["stage"] = "forward"
         (module.forward if by_answer else raise_here)(exc)
 
-    monkeypatch.setattr(runner, "judge", fake_judge)
+    class Leaves(runner.Channel):
+        """The channel's way out (closures built with it) replaced by an exception."""
+
+        def __init__(self, fd: int | None) -> None:
+            super().__init__(fd)
+
+            def leave(code: int = 0, *rest: Any, **named: Any) -> Any:
+                raise SystemExit(code)
+
+            self.finish = self.end = leave
+
+    monkeypatch.setattr(runner, "run_answer", fake_run)
     monkeypatch.setattr(runner, "cap_memory", lambda: None)
-    out = tmp_path / "answer.scaled.json"
-    monkeypatch.setattr(sys, "argv", ["runner", str(TASK), str(answer), str(out)])
-    assert runner.main() == 0
-    report = json.loads(out.read_text())
+    monkeypatch.setattr(runner, "Channel", Leaves)
+    monkeypatch.setattr(runner.signal, "signal", lambda *args: None)  # this process's SIGINT
+    work = tmp_path / "work"
+    work.mkdir()
+    with pytest.raises(SystemExit) as left:
+        runner.main([str(TASK), str(work), "--answer", str(answer)])
+    assert left.value.code == 0
+    settings = {"rule": "kernelbench", "precision": "fp32", "gpu": ""}
+    head = {"answer": answer.name, "scale": "auto", "launches": 0, "settings": settings}
+    reference = {"trials": [], "sweep": {}}
+    done = Ran(0, "", [{"event": "done"}])
+    report = judge.verdict_of(head, reference, done, work, "kernelbench", 60)
     assert judge.describe(report).startswith(verdict), report
     if by_answer:
         assert report["where"] == "answer.py:3"
-    assert report["settings"] == {"rule": "kernelbench", "precision": "fp32", "gpu": ""}
+    assert report["settings"] == settings
 
 
 def fake_batch(
@@ -664,33 +707,39 @@ def test_an_id_that_names_two_answers_is_an_error(
 def test_a_report_is_read_back_only_under_the_settings_it_was_judged_under(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Nothing is executed: the runner's process is replaced by one that writes a report."""
+    """Nothing is executed: the reference run is replaced, and so is the answer's run, by one
+    that leaves an account saying the answer failed to load."""
+    from ttsem.judge_io import Ran
+
     report = tmp_path / "a.scaled.json"
     first = {"rule": "kernelbench", "precision": "fp32", "gpu": ""}
     report.write_text(json.dumps({"verdict": "wrong", "settings": first}))
     ran: list[list[str]] = []
 
-    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        ran.append(cmd)
-        flags = dict(zip(cmd[-6::2], cmd[-5::2], strict=True))
-        settings = {key.removeprefix("--"): value for key, value in flags.items()}
-        report.write_text(json.dumps({"verdict": "verified", "settings": settings}))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+    def fake_run(cmd: list[str], env: Any, cwd: Path, timeout: int) -> Ran:
+        ran.append(list(cmd))
+        failure = {"verdict": "error", "message": "NameError: x", "where": "answer_ok.py:1"}
+        (cwd / "run.json").write_text(json.dumps({"stage": "load", "failure": failure}))
+        return Ran(0, "", [{"event": "done"}])
 
-    monkeypatch.setattr(judge.subprocess, "run", fake_run)
+    def no_reference(*args: Any, **kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        return {"trials": [], "sweep": {}}, {}
+
+    monkeypatch.setattr(judge, "run_sandboxed", fake_run)
+    monkeypatch.setattr(judge, "reference_run", no_reference)
     answer = FIXTURES / "answer_ok.py"
     again = judge.judge_one(TASK, answer, report, 60, "auto", first, sandbox=False)
     assert again["verdict"] == "wrong" and not ran  # read back
     v3 = {**first, "rule": "v3"}
-    assert judge.judge_one(TASK, answer, report, 60, "auto", v3, sandbox=False) == {
-        "verdict": "verified",
-        "settings": v3,
-    }
+    got = judge.judge_one(TASK, answer, report, 60, "auto", v3, sandbox=False)
+    assert (got["verdict"], got["settings"], got["stage"]) == ("error", v3, "load")
+    assert json.loads(report.read_text()) == got  # kept for the next rerun
     assert len(ran) == 1  # judged again
-    # the runner's working directory is OUT, which answers write: it stays off the path
+    # the runner's working directory is the run's own, which the answer writes: off the path
     assert ran[0][:3] == [sys.executable, "-P", "-m"]
+    assert ran[0][ran[0].index("--rule") + 1] == "v3"
     report.write_text(json.dumps({"verdict": "wrong"}))  # a report from before `settings`
     assert judge.judge_one(TASK, answer, report, 60, "auto", v3, sandbox=False)["verdict"] == (
-        "verified"
+        "error"
     )
     assert len(ran) == 2

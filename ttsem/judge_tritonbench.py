@@ -23,9 +23,12 @@ The verdicts are those of ``python -m ttsem judge``, and `class` keeps the finer
   absolute tolerance scales with the reference's largest finite value, when that is below 1, down
   to 1e-6.
 - wrong: other values, another structure, shape or dtype, or an exception the test swallowed into
-  its results (`wrong_result`)
-- unsafe: out-of-bounds access, race between program instances, or use of memory nobody wrote,
-  with the kernel and its source line (`oob_read`, `oob_write`, `race`, `poison`)
+  its results (`wrong_result`). Memory nobody wrote is filled with NaN, so a kernel that reads it
+  shows up here, as NaN in the values
+- unsafe: an out-of-bounds access or a race between program instances (at the kernel's line), or
+  an operation with an undefined result (a division by zero, MIN / -1, two lanes of one store
+  writing different values), with the kernel and its source line (`oob_read`, `oob_write`, `race`,
+  `poison`)
 - no_kernel: the results are right, at any of the three tolerances, and no Triton kernel was
   launched (`verified_no_kernel`)
 - error: the file raised (`call_error`: a module that exists nowhere is the answer's error too),
@@ -34,13 +37,17 @@ The verdicts are those of ``python -m ttsem judge``, and `class` keeps the finer
 - not_judged: something this machine lacks (`environment`: torch or a known package missing, a
   function torch removed, an operator CPU torch does not have, or an error the reference file
   raises word for word too), an op ttsem does not model or its own error (`unsupported`, `error`,
-  `tool_error`), the memory cap (`memory`), a task file with no separator (`bad_task`); or a task
-  that cannot be compared by value: the reference run is not `ok` or keeps objects that are not
-  values (`ran_reference_unjudged`), keeps nothing (`ran_reference_returns_nothing`), two
-  reference runs under two poison patterns differ, so it returns memory it never wrote
-  (`ran_reference_unwritten`), the task or the answer draws random numbers inside the operator
-  (`ran_random_task`), or the answer faults where the task's own test drives the reference into a
-  fault too (`fault_also_in_reference`)
+  `tool_error`), the memory cap (`memory`), a task file with no separator (`bad_task`), the answer
+  reaching into the judge or not finishing through it (`tampered`); or a task that cannot be
+  compared by value: the reference run is not `ok` or keeps objects that are not values
+  (`ran_reference_unjudged`), keeps nothing (`ran_reference_returns_nothing`), two reference runs
+  under two poison patterns differ, so it returns memory it never wrote (`ran_reference_unwritten`),
+  the task or the answer draws random numbers inside the operator (`ran_random_task`), the
+  answer faults where the task's own test drives the reference into a fault too
+  (`fault_also_in_reference`), or its results are right but a launch was too large to be checked
+  for races between program instances (`races_unchecked`: more memory accesses than
+  `ttsem.memory.ACCESS_BUDGET`, and address ranges of two instances that meet); such a run is
+  never `verified`, and is `wrong` or `unsafe` still where its values differ or a fault was found
 
 The reference runs once per task (and a second time, with the second poison pattern, when an
 answer's results are to be compared with it), into OUT/reference/, with a Triton cache of its own
@@ -61,21 +68,19 @@ import hashlib
 import io
 import json
 import re
-import subprocess
 import sys
 import tempfile
-import threading
 import tokenize
-import zipfile
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from ttsem import judge
+from ttsem import _guard, judge
+from ttsem.judge_io import Ran, load_npz, printable, read_json, run_sandboxed
 
 RUNNER = "ttsem._tritonbench_runner"
 SEP = "#" * 146
@@ -89,7 +94,10 @@ FAULTS = ("oob_read", "oob_write", "race", "poison")
 # what a run's report may say besides `ok`, a fault, `call_error`, `crash` and `timeout`: the
 # runner's own words for what the tool cannot judge (any other word is a report the runner did
 # not write)
-UNJUDGED_RUNS = ("unsupported", "error", "memory", "tool_error")
+UNJUDGED_RUNS = ("unsupported", "error", "memory", "tool_error", "tampered")
+# what a run that stopped at a launch the semantics cannot judge says (`sanitize.Unjudged`): a
+# launch the semantics does not model, or a file that swapped the checker's own code (`tampered`)
+STOPPED_RUNS = ("unsupported", "error", "tampered")
 # the task's operator, read as text
 RNG = re.compile(r"dropout|tl\.rand|torch\.rand|torch\.bernoulli|random\.|manual_seed|\bseed\b")
 # the answer's operator, its code only (`code_only`): what draws random numbers, or reseeds the
@@ -108,15 +116,13 @@ KNOWN_PACKAGES = (
     "transformers",
 )  # fmt: skip
 # what a report the answer's own process could have written may break when read
-MALFORMED = (
-    ValueError, KeyError, IndexError, TypeError, AttributeError, RecursionError, OSError,
-    zipfile.BadZipFile,
-)  # fmt: skip
+MALFORMED = judge.MALFORMED
 
 # the columns (`columns`), by class
 UNSAFE = FAULTS
 NOT_JUDGED = (
     "unsupported", "timeout", "memory", "tool_error", "crash", "error", "environment", "bad_task",
+    "tampered", "forged",
 )  # fmt: skip
 NOT_COMPARED = (
     "ran_random_task",
@@ -125,11 +131,25 @@ NOT_COMPARED = (
     "ran_reference_unwritten",
     "fault_also_in_reference",
     "verified_no_kernel",
+    "races_unchecked",
 )
 
 
 class BadTask(ValueError):
     """A task file that is not one of TritonBench's: no separator between operator and test."""
+
+
+def tamper_reason(answer: Path) -> str | None:
+    """Why this answer must not be run, read off its code (before the separator) without running
+    it (`_guard`), or None: an answer that reaches into the judge is `not_judged`, before it runs.
+    Only the answer's own code is scanned; the task's test, added after the separator, is the
+    benchmark's."""
+    try:
+        source = operator_part(answer.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    reason = _guard.tamper_scan(source, judge.FORBIDDEN_MODULES)
+    return None if reason is None else f"the answer reaches into the judge: {reason}"
 
 
 def operator_part(text: str) -> str:
@@ -229,9 +249,10 @@ def same(gold: Any, pred: Any, tol: dict[str, float]) -> tuple[bool, str]:
 
 
 def results_of(run: dict[str, Any], npz: Path) -> Any:
-    """What a run's test kept, rebuilt from its report and its arrays (no pickle)."""
-    with np.load(npz, allow_pickle=False) as data:
-        arrays = [data[f"arr_{i}"] for i in range(len(data.files))]
+    """What a run's test kept, rebuilt from its report and its arrays (no pickle, every array
+    read as untrusted: `judge_io.load_npz`)."""
+    data = load_npz(npz)
+    arrays = [data[f"arr_{i}"] for i in range(len(data))]
 
     def build(node: Any) -> Any:
         if isinstance(node, dict):
@@ -260,112 +281,115 @@ def opaque(node: Any) -> list[str]:
     return []
 
 
-def read_report(report: Path, script: Path) -> dict[str, Any]:
-    """A run's report as the host reads it. One that is not a JSON object (cut short by a kill,
-    or written by the code under test, which runs in the runner's process) is rewritten as the
-    crash it stands for, so that a rerun does not trip on it again."""
-    try:
-        found = json.loads(report.read_text(encoding="utf-8"))
-    except (ValueError, RecursionError, OSError):
-        found = None
+def run_report(ran: Ran, work: Path, script: Path, timeout: int) -> dict[str, Any]:
+    """A run's report as the judge takes it: the `stop` the run sent (a fault, or a launch the
+    semantics cannot judge: sent before the code under test could catch it), else the report it
+    wrote if it said `done`, else what it stands for: a timeout, or a crash (a process that died,
+    or a report that is not a JSON object)."""
+    stop = ran.stop()
+    if stop is not None:
+        fields = ("run", "kernel", "buffer", "fault_file", "line", "source", "message", "ops")
+        found = {key: stop[key] for key in fields if key in stop}
+        if found.get("run") not in (*FAULTS, *STOPPED_RUNS):
+            return {"file": script.name, "run": "crash", "message": "a stop that says no fault"}
+        counts = {key: stop.get(key, 0) for key in ("launches", "races_unchecked")}
+        return {"file": script.name, **found, **counts}
+    if ran.code is None:
+        return {"file": script.name, "run": "timeout", "seconds": timeout}
+    found = read_json(work / "run.json")
+    if not ran.done():
+        if isinstance(found, dict):
+            # a report is there, but the runner's own token-bearing `done` never arrived: the file
+            # left the process itself (os._exit), having written or forged the report
+            return {
+                "file": script.name, "run": "tampered",
+                "message": "the run wrote a report but did not finish through the judge",
+            }  # fmt: skip
+        return {"file": script.name, "run": "crash", "message": ran.tail}
     if not isinstance(found, dict):
-        found = {"file": script.name, "run": "crash", "message": "unreadable report"}
-        with contextlib.suppress(OSError):
-            report.write_text(json.dumps(found))
-    return found
+        return {"file": script.name, "run": "crash", "message": "unreadable report"}
+    confirmed = ran.confirmed_launches()
+    claimed = found.get("launches")
+    if confirmed is not None and isinstance(claimed, int) and claimed != confirmed:
+        return {
+            "file": script.name, "run": "tampered",
+            "message": f"the run claims {claimed} launch(es); the judge counted {confirmed} over "
+            "its own channel",
+        }  # fmt: skip
+    skipped, said = ran.confirmed_unchecked(), found.get("races_unchecked")
+    if skipped is not None and isinstance(said, int) and said != skipped:
+        return {
+            "file": script.name, "run": "tampered",
+            "message": f"the run claims {said} launch(es) too large to be checked for races; "
+            f"the judge counted {skipped} over its own channel",
+        }  # fmt: skip
+    # the count the judge trusts: the channel's, or, from a runner that sent none, the report's
+    return {**found, "races_unchecked": judge.unchecked_count(found, ran)}
 
 
 def run_file(
     script: Path,
-    report: Path,
-    out: Path,
+    work: Path,
     timeout: int,
     sandbox: bool,
-    cache: Path,
     poison: str = "",
+    hide: Sequence[Path] = (),
     extra: Iterable[str] = (),
+    strict: bool = False,
 ) -> dict[str, Any]:
     """`script` run by ``ttsem._tritonbench_runner`` in its own process, with a timeout, under
-    the sandbox of ``ttsem judge`` (OUT the only directory it may write) and `cache` as its
-    Triton cache; `extra` is added to the sandbox's command line (what an answer must not see).
-    Python leaves the working directory, OUT, off the path (`-P`): a module a run writes there is
-    not what a later run imports. The report is kept: a rerun reads it back."""
-    if report.exists():
-        return read_report(report, script)
-    out = out.resolve()
-    cache.mkdir(parents=True, exist_ok=True)
+    the sandbox of ``ttsem judge``: `work` is its own directory, the only one it may write (its
+    report, its arrays and its Triton cache go there), `hide` is hidden from it besides the
+    judge's own, and `extra` is added to the sandbox's command line. Python leaves the working
+    directory, `work`, off the path (`-P`): a module the run writes there is not what the runner
+    imports. Returns the run's report (`run_report`); its arrays are in work/run.npz."""
+    work = work.resolve()
+    cache = work / ".cache"
+    cache.mkdir(parents=True, exist_ok=True)  # a run may write there first
     # the caller's environment stays out (an answer could copy a token from it into its
     # report), and so does its TTSEM_POISON: the pattern is the run's own
     env = judge.run_env(cache, sandbox, {"TTSEM_POISON": poison} if poison else None)
     cmd: list[str] = []
     if sandbox:
-        cmd = judge.sandbox_prefix(out, cache, [script], env) + list(extra)
-    npz = report.with_suffix(".npz")
-    cmd += [sys.executable, "-P", "-m", RUNNER, str(script.resolve()), str(report.resolve())]
-    cmd += [str(npz.resolve())]
-    try:
-        done = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, env=env, cwd=out, check=False
-        )
-        if not report.exists():
-            tail = (done.stderr or "").strip().splitlines()[-1:] or [""]
-            report.write_text(json.dumps({"file": script.name, "run": "crash", "message": tail[0]}))
-    except subprocess.TimeoutExpired:
-        report.write_text(json.dumps({"file": script.name, "run": "timeout", "seconds": timeout}))
-    return read_report(report, script)
+        cmd = judge.sandbox_prefix(work, cache, [script], env, hide, strict) + list(extra)
+    cmd += [sys.executable, "-P", "-m", RUNNER, str(script.resolve())]
+    cmd += [str(work / "run.json"), str(work / "run.npz")]
+    return run_report(run_sandboxed(cmd, env, work, timeout), work, script, timeout)
 
 
-def hidden_tree(path: Path) -> Path | None:
-    """The highest directory above `path` that holds nothing the runs need (this package, the
-    Python running it, the directories on PYTHONPATH, the home directory), or None: the tree a
-    task or an output sits in, hidden from an answer whole (a TritonBench checkout, the outputs
-    of earlier runs next to OUT). Under /tmp there is nothing to hide: the sandbox's /tmp is its
-    own."""
-    needed = [p.resolve() for p in [*judge.runtime_paths(), Path.home()]]
-    top = None
-    for parent in path.resolve().parents:
-        if parent.is_relative_to("/tmp") or any(p.is_relative_to(parent) for p in needed):
-            break
-        top = parent
-    return top
-
-
-def answer_sandbox(task: Path, out: Path) -> list[str]:
-    """What an answer's sandbox adds to the judge's: the trees the task and OUT sit in under an
-    empty tmpfs (the task's file itself under /dev/null where its tree cannot go), then OUT
-    again, writable, and OUT/reference/, the reference runs and their Triton cache, under an
-    empty tmpfs. The answer sees neither the reference operator nor its results, and cannot
-    leave anything a reference run reads."""
-    out = out.resolve()
-    cmd: list[str] = []
-    trees = {tree for tree in (hidden_tree(task), hidden_tree(out)) if tree is not None}
-    for tree in sorted(trees):
-        cmd += ["--tmpfs", str(tree)]
+def answer_sandbox(task: Path, out: Path) -> tuple[list[Path], list[str]]:
+    """What an answer's sandbox hides besides the judge's own: the trees the task and OUT sit in
+    (`judge.hidden_tree`; OUT itself where its tree holds what the runs need), so the answer sees
+    neither the reference operator, nor the reference runs and their results, nor the other
+    answers' runs; and the task's file itself, under /dev/null, where no hidden tree holds it.
+    Returns (the directories to hide, the arguments that cover the file)."""
+    trees = {tree for tree in (judge.hidden_tree(task), *judge.out_tree(out)) if tree is not None}
+    extra: list[str] = []
     if not any(task.resolve().is_relative_to(tree) for tree in trees):
-        cmd += ["--ro-bind", "/dev/null", str(task.resolve())]
-    return cmd + ["--bind", str(out), str(out), "--tmpfs", str(out / "reference")]
-
-
-_LOCKS: dict[Path, threading.Lock] = {}
-_LOCKS_GUARD = threading.Lock()
+        extra = ["--ro-bind", "/dev/null", str(task.resolve())]
+    return sorted(trees), extra
 
 
 def reference(
-    task: Path, out: Path, timeout: int, sandbox: bool, second: bool = False
+    task: Path, out: Path, timeout: int, sandbox: bool, second: bool = False, strict: bool = False
 ) -> tuple[dict[str, Any], Path]:
     """The task file's own run (with `second`, under the second poison pattern), once per task
-    content, in OUT/reference with the Triton cache OUT/reference/.cache, which no answer sees:
-    its report and where its arrays are. Two answers of one task wait for one run."""
+    content, in OUT/reference/<task>-<digest>.<first|second>/ with its own Triton cache, which no
+    answer sees: its report and where its arrays are. The report is kept by this process in
+    OUT/reference/<task>-<digest>.<first|second>.json, and a rerun reads it back. Two answers of
+    one task wait for one run."""
     digest = hashlib.sha256(task.read_bytes()).hexdigest()[:12]
-    report = out / "reference" / f"{task.stem}-{digest}.{'second' if second else 'first'}.json"
-    report.parent.mkdir(parents=True, exist_ok=True)
-    cache = (out / "reference" / ".cache").resolve()
-    with _LOCKS_GUARD:
-        lock = _LOCKS.setdefault(report.resolve(), threading.Lock())
-    with lock:
-        poison = "second" if second else ""
-        run = run_file(task, report, out, timeout, sandbox, cache, poison=poison)
-    return run, report.with_suffix(".npz")
+    name = f"{task.stem}-{digest}.{'second' if second else 'first'}"
+    report = out / judge.REFERENCE / f"{name}.json"
+    work = out / judge.REFERENCE / name
+    with judge.locked(report):
+        run = read_json(report)
+        if not isinstance(run, dict):
+            judge.fresh(work)
+            poison = "second" if second else ""
+            run = run_file(task, work, timeout, sandbox, poison, judge.out_tree(out), (), strict)
+            report.write_text(json.dumps(run))
+    return run, work / "run.npz"
 
 
 def fault_fields(run: dict[str, Any]) -> dict[str, Any]:
@@ -387,9 +411,12 @@ def decide(
     kind = str(run.get("run"))
     gold_run, gold_npz = gold
     launches = run.get("launches", 0)
+    unchecked = run.get("races_unchecked", 0)
+    unchecked = unchecked if isinstance(unchecked, int) and unchecked > 0 else 0
+    counts = {"launches": launches} | ({"races_unchecked": unchecked} if unchecked else {})
 
     def verdict(value: str, name: str, **extra: Any) -> dict[str, Any]:
-        return {"verdict": value, "class": name, "launches": launches, **extra}
+        return {"verdict": value, "class": name, **counts, **extra}
 
     def unjudged(message: str) -> dict[str, Any]:
         return verdict("not_judged", "ran_reference_unjudged", message=message)
@@ -441,6 +468,11 @@ def decide(
             if ok:
                 if not launches:
                     return verdict("no_kernel", "verified_no_kernel", tolerance=tolerance)
+                if unchecked:  # right values, but a race was not looked for
+                    message = judge.unchecked_message(unchecked)
+                    return verdict(
+                        "not_judged", "races_unchecked", tolerance=tolerance, message=message
+                    )
                 return verdict("verified", name, tolerance=tolerance)
         return verdict("wrong", "wrong_result", message=why)
     if kind in FAULTS:
@@ -481,59 +513,94 @@ def build(task: Path, answer: Path, dest: Path) -> None:
 
 
 def read_record(path: Path) -> dict[str, Any] | None:
-    """A record judged before, or None where there is none that reads (cut short by a kill)."""
-    try:
-        found = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, RecursionError, OSError):
-        return None
+    """A record judged before (this process's own: no run writes in OUT), or None where there
+    is none that reads (cut short by a kill)."""
+    found = read_json(path)
     return found if isinstance(found, dict) and "verdict" in found else None
 
 
-def judge_item(item: dict[str, Any], out: Path, timeout: int, sandbox: bool) -> dict[str, Any]:
-    """One answer: its record, read back if it is already in OUT."""
-    record_path = out / f"{item['id']}.{RECORD}.json"
-    kept = read_record(record_path) if record_path.exists() else None
-    if kept is not None:
-        return {**item, RECORD: kept}
-    task, answer = Path(item["task"]), Path(item["answer"])
-    script = out / f"{item['id']}.{RECORD}.py"
+def record_of(
+    run: dict[str, Any],
+    npz: Path,
+    gold: tuple[dict[str, Any], Path],
+    second: Callable[[], tuple[dict[str, Any], Path]],
+    random: bool,
+    task: Path,
+    answer: Path,
+    script: str,
+) -> dict[str, Any]:
+    """An answer's record from its run report (`decide`), the lines of the file it ran put back
+    on the answer's own file or the task's test (`script` is that file's name). A report the
+    answer's process broke (it may write anything) is its crash."""
     try:
-        build(task, answer, script)
-    except BadTask as exc:
-        bad = {"answer": answer.name, "verdict": "not_judged", "class": "bad_task"}
-        return {**item, RECORD: {**bad, "launches": 0, "message": str(exc)}}
-    gold = reference(task, out, timeout, sandbox)
-    report = script.with_suffix(".run.json")
-    cache = (out / ".cache").resolve()
-    hide = answer_sandbox(task, out) if sandbox else []
-    run = run_file(script, report, out, timeout, sandbox, cache, extra=hide)
-    random = draws_random(
-        operator_part(task.read_text(encoding="utf-8")),
-        operator_part(answer.read_text(encoding="utf-8")),
-    )
-    second = functools.partial(reference, task, out, timeout, sandbox, True)
-    try:
-        record = decide(run, script.with_suffix(".run.npz"), gold, second, random)
+        record = decide(run, npz, gold, second, random)
         record = {"answer": answer.name, **record, "seconds": run.get("seconds")}
         # a line of the file run is the answer's own, or of the task's test after it
         lines = operator_part(answer.read_text(encoding="utf-8")).rstrip("\n").count("\n") + 1
         owner = {True: answer.name, False: f"{task.name} (its test)"}
-        if record.pop("fault_file", None) == script.name:
+        if record.pop("fault_file", None) == script:
             record["file"] = owner[int(record["line"]) <= lines]
         file, _, line = str(record.get("where", "")).rpartition(":")
-        if file == script.name and line.isdigit():
+        if file == script and line.isdigit():
             record["where"] = f"{owner[int(line) <= lines]}:{line}"
     except MALFORMED as exc:  # written by the answer's own process, which may write anything
         message = f"malformed run report: {type(exc).__name__}: {exc}"[:300]
         record = {"answer": answer.name, "verdict": "error", "class": "crash", "launches": 0}
         record["message"] = message
+    return record
+
+
+def judge_item(
+    item: dict[str, Any], out: Path, timeout: int, sandbox: bool, strict: bool = False
+) -> dict[str, Any]:
+    """One answer: its record, read back if it is already in OUT. The answer runs in a directory
+    of its own, OUT/work/<id>.tritonbench/, the only one its sandbox may write, with the file
+    TritonBench runs for it (`build`); no other run sees it."""
+    record_path = out / f"{item['id']}.{RECORD}.json"
+    kept = read_record(record_path)
+    if kept is not None:
+        return {**item, RECORD: kept}
+    task, answer = Path(item["task"]), Path(item["answer"])
+    reason = tamper_reason(answer)
+    if reason is not None:
+        bad = {"answer": answer.name, "verdict": "not_judged", "class": "tampered"}
+        record = {**bad, "launches": 0, "message": reason}
+        with contextlib.suppress(OSError):
+            record_path.write_text(json.dumps(record, indent=1))
+        return {**item, RECORD: record}
+    work = judge.fresh(out / judge.WORK / f"{item['id']}.{RECORD}")
+    script = work / f"{item['id']}.{RECORD}.py"
+    try:
+        build(task, answer, script)
+    except BadTask as exc:
+        bad = {"answer": answer.name, "verdict": "not_judged", "class": "bad_task"}
+        return {**item, RECORD: {**bad, "launches": 0, "message": str(exc)}}
+    gold = reference(task, out, timeout, sandbox, strict=strict)
+    hide, extra = answer_sandbox(task, out) if sandbox else ([], [])
+    run = run_file(script, work, timeout, sandbox, "", hide, extra, strict)
+    random = draws_random(
+        operator_part(task.read_text(encoding="utf-8")),
+        operator_part(answer.read_text(encoding="utf-8")),
+    )
+    second = functools.partial(reference, task, out, timeout, sandbox, True, strict)
+    record = record_of(run, work / "run.npz", gold, second, random, task, answer, script.name)
+    judge.tidy(work)
     with contextlib.suppress(OSError):
         record_path.write_text(json.dumps(record, indent=1))
     return {**item, RECORD: record}
 
 
 def describe(record: dict[str, Any]) -> str:
-    """One answer's verdict in a line."""
+    """One answer's verdict in a line, and, for a run with launches too large to be checked for
+    races, how many."""
+    text = verdict_line(record)
+    n = record.get("races_unchecked")
+    if isinstance(n, int) and n > 0 and record.get("class") != "races_unchecked":
+        text += f"; {n} launch(es) too large to be checked for races"
+    return text
+
+
+def verdict_line(record: dict[str, Any]) -> str:
     verdict, name = str(record["verdict"]), str(record.get("class"))
     if verdict == "verified":
         if record.get("tolerance") == "reduced":
@@ -573,7 +640,8 @@ def describe(record: dict[str, Any]) -> str:
 def columns(records: list[dict[str, Any]]) -> dict[str, int]:
     """The answers in columns: answers; verified (strict or lenient); reduced precision; wrong;
     unsafe; not compared (a random task, a reference that cannot be compared with, a fault the
-    task's test causes in the reference too, right values with no kernel); not judged (what the
+    task's test causes in the reference too, right values with no kernel or from a launch too large
+    to be checked for races); not judged (what the
     machine or the tool lacks, a timeout, a crash); ran (the file ran to the end, or stopped for
     a fault a GPU runs past: all but the last two and the answers that raised)."""
     tally = Counter(str(r.get("class")) for r in records)
@@ -617,16 +685,17 @@ def single(args: argparse.Namespace, sandbox: bool) -> int:
         sys.stderr.write(f"ttsem judge: {exc}\n")
         return 2
     timeout = args.timeout or 600
+    strict = bool(getattr(args, "strict", False))
     with contextlib.ExitStack() as stack:
         out = args.out or Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="ttsem-")))
         out.mkdir(parents=True, exist_ok=True)
         for stale in out.glob(f"{item['id']}.{RECORD}.*"):  # one pair is judged afresh
             stale.unlink()
-        row = judge_item(item, out, timeout, sandbox)
+        row = judge_item(item, out, timeout, sandbox, strict)
     if args.json:
         print(json.dumps(row, indent=1))
     else:
-        print(describe(row[RECORD]))
+        print(printable(describe(row[RECORD])))
     return 0 if row[RECORD]["verdict"] == "verified" else 1
 
 
@@ -642,13 +711,14 @@ def batch(args: argparse.Namespace, sandbox: bool) -> int:
     out: Path = args.out
     out.mkdir(parents=True, exist_ok=True)
     timeout = args.timeout or 300
+    strict = bool(getattr(args, "strict", False))
     rows: list[dict[str, Any]] = []
-    work = functools.partial(judge_item, out=out, timeout=timeout, sandbox=sandbox)
+    work = functools.partial(judge_item, out=out, timeout=timeout, sandbox=sandbox, strict=strict)
     with ThreadPoolExecutor(args.jobs) as pool, (out / "rows.jsonl").open("w") as sink:
         for row in pool.map(work, items):
             rows.append(row)
             sink.write(json.dumps(row) + "\n")
             sink.flush()
-            print(f"{row['id']}: {describe(row[RECORD])}", flush=True)
+            print(printable(f"{row['id']}: {describe(row[RECORD])}"), flush=True)
     print("\n".join(tally(rows)))
     return 0

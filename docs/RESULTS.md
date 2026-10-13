@@ -1,5 +1,29 @@
 # ttsem results
 
+## Summary
+
+The sections below are a dated record; this summary points into them.
+
+- **Level 1 on the fuzzer corpus (5 Sep)**: the 2,387 runnable programs of three families are
+  bit-exact with the device at TTIR and at the final TTGIR; in the fourth, every difference is
+  padding the device writes past the logical shape (triton#11583).
+- **Per pass**: 74,451 stage evaluations over three fuzzer families, 72,955 decided, 0 mismatches.
+- **Triton's `test_core.py`**: 14,235 launches at the final TTGIR, 12,548 `match`, 1,484 `approx`,
+  173 `mismatch` (every one of a class of device deviation documented in `SEMANTICS.md`),
+  29 `unsupported`, 1 `poison`.
+- **triton#11519**: the validator names `tritongpu-fuse-nested-loops` without being told about the
+  bug; after the fix of 8 Sep every decided stage matches.
+- **triton#11407**: from the pipeliner on, the module divides by zero on a trip the source never
+  takes (`poison`), still so on `main` on 8 Sep.
+- **Level 2**: 28,483 layout ops checked over the corpus, 0 violations; 57 cases of Triton's C++
+  unit tests for linear layouts reproduced exactly.
+- **Level 3**: 0 races with Membar's barriers in place over 9,372 modules of the test suite, 1,435
+  with every barrier stripped.
+- **Below `llvm.func`**, through a companion interpreter that is not shipped here: 13,396 launches
+  decided and consistent down to the last LLVM stage.
+- Later sections: a second machine, the Inductor corpus, `main` on sm_120 with tensor memory, and
+  the `triton_kernels` corpus.
+
 Numbers are from an RTX PRO 6000 (Blackwell, sm_120), Triton 3.8.0 wheel for the device side,
 `triton-opt` at `d4eb2dd39` for generic printing, the fuzzer corpus of 5 September 2026
 (the companion differential fuzzer, seeds 10 and 11 of every profile: 2,600 programs). A program is
@@ -39,8 +63,8 @@ dumps as their own stages: 24,817 stage evaluations per family.
 | narrow | 24,817 | 24,219 | 598 | 0 |
 | loops | 24,817 | 24,518 | 299 (the LLVM dialect; the token stage runs since the type became an opaque value) | 0 |
 
-**No pass of the three pipelines changed any result with respect to the device: 74,451 stage
-evaluations, 72,955 decided, 0 mismatches.** The first loops run had shown 2,557 mismatches in
+**On the three fuzzer families, no pass changed any result with respect to the device: 74,451
+stage evaluations, 72,955 decided, 0 mismatches.** The first loops run had shown 2,557 mismatches in
 32 programs; they were the validator's own defect, found by that run: `run_launch` registered the
 record's pre-launch arrays in the memory model without copying, so the first stage's stores
 leaked into the inputs of every later stage, and the 32 programs were exactly the ones whose
@@ -117,7 +141,7 @@ shows the device returning NaN for that row and the shipped interpreter (`TRITON
 returning +inf, because its `_e8m0_to_f32` shifts the byte into an exponent and never masks the
 NaN encoding; the semantics follows the device and the OCP MX definition.
 
-## An open miscompile, localised to its pass automatically
+## triton#11519, localised to its pass by the validator (open on 5 Sep, fixed on 8 Sep)
 
 triton#11519 (open, fix approved in #11521): `tritongpu-fuse-nested-loops` trusts a
 `tl.assume` that sits on the branch the loop nest cannot reach, and on `m=4, n=0` the device
@@ -137,13 +161,13 @@ program means, and the device faithfully executes the changed program. That boun
 knows what every op means and asks, after every pass, whether the device still agrees.
 
 **Closed upstream (8 Sep).** peterbell10 merged #11521 (`8f80860f1`) and closed #11519. On `main` at
-`27964b601`, built from source on an RTX 4070 (sm_89), `python -m ttsem validate examples/e15_repro.py --device cuda`
+`27964b601`, built from source on an RTX 4070 (sm_89), `python -m ttsem.validate examples/e15_repro.py --device cuda`
 now gives 63 decided stages, all `match`, and no culprit; the only remaining line is the `unsupported`
 past the LLVM lowering. The same reproducer, the same tool, the verdict flips from "the fusion pass
 changed the meaning" to "no pass changed the meaning": the fix is confirmed by the semantics, not by
 reading the patch.
 
-## Undefined behaviour introduced by a pass, on today's main
+## Undefined behaviour introduced by a pass (triton#11407, `main` at `e1f944a7a` and `27964b601`)
 
 triton#11407 (closed): the software pipeliner moves the address arithmetic of a later
 iteration into the current one and predicates the load but not the `arith.divsi` that
@@ -317,8 +341,8 @@ counted that barrier too. With it, the whole set:
 | race with Membar's barriers in place | **0** |
 | race with every barrier stripped | 1,435 |
 
-Every module the suite compiles is free of intra-group races under Membar's barriers, and one in
-six needs at least one of them. This is the column the bot now recomputes on every commit of
+No module that ran raced within a group under Membar's barriers, and about one in six needs at
+least one of them. This is the column the bot now recomputes on every commit of
 `main`: a module that races with the barriers in place is either a Membar regression or a
 detector gap, and either is worth a look the same day.
 

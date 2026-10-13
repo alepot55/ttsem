@@ -1,6 +1,6 @@
 ---
 name: triton-verify
-description: Use when writing, changing or reviewing a Triton GPU kernel and no GPU is available (or before trusting a GPU run) - runs the kernel's tests on the CPU under an executable semantics and reports out-of-bounds accesses, races between program instances and uninitialised reads with the kernel's own source line
+description: Use when writing, changing or reviewing a Triton GPU kernel and no GPU is available (or before trusting a GPU run) - runs the kernel's tests on the CPU under an executable semantics and reports out-of-bounds accesses and races between program instances with the kernel's own source line, while a read of memory nobody wrote shows up as NaN in the result
 ---
 
 # Verify a Triton kernel without a GPU
@@ -12,15 +12,22 @@ python -m ttsem.sanitize pytest <paths or pytest args>      # a suite written fo
 python -m ttsem.sanitize script.py                           # any script that launches kernels
 ```
 
-Install once with `pip install -e ".[triton]"` from a clone of https://github.com/alepot55/ttsem
-plus `pip install torch --index-url https://download.pytorch.org/whl/cpu`.
+Install once (Linux; Triton 3.8.0 and the CPU build of torch come with it):
+
+```
+pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+    'ttsem[triton] @ git+https://github.com/alepot55/ttsem'
+```
+
+Once ttsem is on PyPI, `'ttsem[triton]'` replaces the git requirement.
 
 What you get that a GPU run does not give you:
 
 - `oob_write` / `oob_read`: the line, the tensor argument, how many elements past the end. A GPU
   hides these because allocations are rounded up.
 - `race`: two program instances touch the same element and the result depends on the schedule.
-  The output is right when instances run one after the other, so no assertion on outputs fails.
+  One order of the instances may give the right values and another not, so an assertion on
+  outputs may not fail.
 - NaN everywhere in an output: the kernel read memory from `torch.empty` before writing it.
 - Compile errors that `TRITON_INTERPRET=1` does not raise: this runs the real frontend.
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+
 from ttsem import races
 from ttsem.layouts import parse_encoding, to_linear_layout
 

@@ -13,8 +13,9 @@ come out warp local. The check must separate the two.
 
 from __future__ import annotations
 
-from ttsem import mlir
 import pytest
+
+from ttsem import mlir
 from ttsem.interp2 import LayoutInterp, check_module, launch_config, module_attrs
 from ttsem.layout_checks import (
     LayoutViolation,

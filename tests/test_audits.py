@@ -51,7 +51,10 @@ def tritonbench(root: Path) -> Path:
     """A checkout in TritonBench's layout: one G task, one T task, one answer file for each."""
     g_ref = "import torch\n\ndef add(x, y):\n    return x + y\n"
     t_ref = "import torch\n\ndef relu(x):\n    return torch.relu(x)\n"
-    g_test = "\ndef test_add():\n    return {'a': add(torch.ones(3), torch.ones(3))}\n\nresult_gold = test_add()\n"
+    g_test = (
+        "\ndef test_add():\n    return {'a': add(torch.ones(3), torch.ones(3))}\n\n"
+        "result_gold = test_add()\n"
+    )
     t_test = (
         "\ndef test_relu():\n    return {'a': relu(torch.ones(3))}\n\ntest_results = test_relu()\n"
     )
@@ -200,7 +203,9 @@ def test_device_runner_writes_the_judge_format() -> None:
     mine: list[np.ndarray] = []
     theirs: list[np.ndarray] = []
     assert runner.plain(value, mine) == _tritonbench_runner.plain(value, theirs)
-    assert all(np.array_equal(a, b) and a.dtype == b.dtype for a, b in zip(mine, theirs))
+    assert all(
+        np.array_equal(a, b) and a.dtype == b.dtype for a, b in zip(mine, theirs, strict=True)
+    )
 
 
 @needs_device_sandbox
@@ -212,7 +217,10 @@ def test_device_control_runs_in_the_sandbox(tmp_path: Path, monkeypatch: Any) ->
     monkeypatch.setattr(device, "gpu_nodes", list)
     task = tmp_path / "data" / "relu.py"
     task.parent.mkdir()
-    test = "\ndef test_relu():\n    return {'a': relu(torch.arange(-3.0, 3.0))}\n\nresult_gold = test_relu()\n"
+    test = (
+        "\ndef test_relu():\n    return {'a': relu(torch.arange(-3.0, 3.0))}\n\n"
+        "result_gold = test_relu()\n"
+    )
     task.write_text("import torch\n\ndef relu(x):\n    return torch.relu(x)\n" + SEP + test)
     answers = {
         "right": "import torch\ndef relu(x):\n    return x.clamp(min=0)\n",
@@ -236,16 +244,16 @@ def test_the_device_control_shows_an_answer_no_secret_of_the_caller(
     planted: Planted, tmp_path: Path, monkeypatch: Any
 ) -> None:
     """The control's sandbox, on CPU tensors: what the file copies of a secret the caller holds,
-    in its environment and in its home's config, into OUT."""
+    in its environment and in its home's config, into its own directory."""
     device = load("tritonbench/device.py")
     monkeypatch.setattr(device, "gpu_nodes", list)
     script = tmp_path / "leak.py"
     script.write_text(planted.leak() + "import torch\nresult_gold = {'a': torch.ones(2)}\n")
-    out = tmp_path / "out"
-    out.mkdir()
-    got = device.run_file(script, out / "leak.device.json", out, 120, out / ".cache", [])
+    work = tmp_path / "work"
+    work.mkdir()
+    got = device.run_file(script, work, 120)
     assert got["run"] == "ok", got
-    seen = planted.check(out)
+    seen = planted.check(work)
     assert seen["environ"][device.SANDBOXED] == "1"  # set inside, for the runner
 
 

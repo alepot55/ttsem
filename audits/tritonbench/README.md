@@ -6,7 +6,8 @@ by value with the public judge, `python -m ttsem judge --tritonbench`, on a CPU.
 check compares the stdout of the answer's file with the reference's, and 342 of its 350 tests print
 nothing, so for those it asks only that the file runs. Here the answer file and the reference file each run in their own
 `bwrap` sandbox, every Triton launch is executed by ttsem, and what the two tests keep is compared by
-value. The README's numbers come from these commands. Nothing of the benchmark is in this
+value. The README's counts of wrong and unsafe answers come from these commands; its agreement
+with the device comes from the control at the end of this page. Nothing of the benchmark is in this
 repository: not its data, not its answers, not a list of the answers flagged.
 
 ## What you need
@@ -14,7 +15,10 @@ repository: not its data, not its answers, not a list of the answers flagged.
 - Linux with `bwrap` (bubblewrap) and unprivileged user namespaces: every answer is model-written
   code and runs only inside the sandbox (read-only filesystem, your home directory and the host's
   sockets in /run hidden, of your environment only the few variables a run needs, no network, its
-  own pid namespace).
+  own pid namespace and session, no capabilities). The verdict is computed in the parent from the
+  run's raw outputs, never written by the run; a fault ends the run out of band, so a try/except in
+  the answer cannot hide it. The run can still read the rest of the host read-only; `--strict`
+  (the judge) narrows that to what a run needs.
 - Python 3.12 and a clone of this repository, installed with the Triton wheel and CPU torch:
 
   ```console
@@ -22,9 +26,11 @@ repository: not its data, not its answers, not a list of the answers flagged.
                 --extra-index-url https://pypi.org/simple -e '.[triton]' torch==2.14.0
   ```
 
-  The published numbers were made with Triton 3.8.0, torch 2.14.0+cpu, numpy 2.5.3, the judge as it
-  is on `main` since `bf51173` (27 Sep 2026), a memory cap of 6 GB per run (`TTSEM_MEM_GB`, the
-  default) and 300 s per run.
+  The published numbers were made with Triton 3.8.0, torch 2.14.0+cpu, numpy 2.5.3, a memory cap
+  of 6 GB per run (`TTSEM_MEM_GB`, the default) and 300 s per run: the whole audit with the judge
+  of `e9b2025` on 7 Oct 2026, then, on 9 Oct, the 22 answers with a launch too large for the race
+  check's access log again with this release's judge, which moved 4 of them from verified to not
+  compared (`races_unchecked`).
 - About 160 MB for the benchmark and 5 GB for the output (Triton caches and the arrays the tests keep).
 - The benchmark, at the commit the numbers were made on (Apache-2.0):
 
@@ -66,23 +72,24 @@ finer class, and for a fault the kernel, the buffer and the answer's line), the 
 ```text
 | model | answers | ran | verified | reduced precision | wrong | unsafe | not compared | not judged | wrong or unsafe |
 ...
-| **total** | **4,764** | **596** | **335** | **7** | **58** | **48** | **148** | **53** | **106 of 448** |
+| **total** | **4,764** | **596** | **331** | **7** | **58** | **48** | **152** | **53** | **106 of 444** |
 
-G: of the 448 answers that ran and could be judged, 106 (24%) return wrong values or are unsafe.
+G: of the 444 answers that ran and could be judged, 106 (24%) return wrong values or are unsafe.
 ...
-| **total** | **2,988** | **406** | **180** | **0** | **89** | **50** | **87** | **76** | **139 of 319** |
+| **total** | **2,988** | **406** | **180** | **0** | **89** | **50** | **87** | **72** | **139 of 319** |
 
 T: of the 319 answers that ran and could be judged, 139 (44%) return wrong values or are unsafe.
 
-All: 7,752 answers; of the 767 that ran and could be judged, 245 (32%) return wrong values (147) or are unsafe (98).
+All: 7,752 answers; of the 763 that ran and could be judged, 245 (32%) return wrong values (147) or are unsafe (98).
 ```
 
 "ran" is what TritonBench's own check sees: the file ran to the end, plus the answers the semantics
-stopped for a fault a GPU runs past. "not compared" is a task or answer that draws random numbers,
-a reference that cannot be compared with, a fault the task's own test causes in the reference too,
-or right values with no Triton kernel launched. "not judged" is what this machine or the tool
-lacks, a timeout or a crash. The verdicts and their classes are those of
-`python -m ttsem judge --help` and of the docstring of `ttsem/judge_tritonbench.py`.
+stopped for a fault a GPU runs past. "not compared" is a task or answer that draws random numbers, a
+reference that cannot be compared with, a fault the task's own test causes in the reference too,
+right values with no Triton kernel launched, or right values from a launch too large to be checked
+for races (`races_unchecked`). "not judged" is what this machine or the tool lacks, a timeout or a
+crash. The verdicts and their classes are those of `python -m ttsem judge --help` and of the
+docstring of `ttsem/judge_tritonbench.py`.
 
 ## The control on a GPU (optional)
 
@@ -103,8 +110,15 @@ judged), prints the matrix and ends with the agreement over the answers both sid
 Both sides decide on 7,280 answers and agree on 7,264 (99.8%).
 ```
 
-That figure comes from the control runs of 19 Sep 2026 on an RTX 4070 (about two and a half hours,
-three processes on the card), which `device.py` ports onto the judge's current rules; the port itself
-has been run without a GPU only. A rerun can move a few answers: the 19 Sep table counts three T
-answers as random that the current rules compare, and a card with other limits runs other answers
-(on the 4070, 11 references stop at `OutOfResources`).
+That figure counts the answers that did not run on either side, which are most of the 7,280 and
+are easy to agree on. The informative cells are the `right` and `wrong` rows and columns, the
+answers both sides ran and compared, and the `fault` row: in the audit of 19-20 Sep 2026 (the judge
+of that date against the device), 636 of the 637 right or wrong decisions agree, and of the 95
+answers the judge stopped for a fault where the device decided, 86 crash on the device or return
+wrong values and 9 return the reference's values.
+
+The device side comes from the control runs of 19 Sep 2026 on an RTX 4070 (about two and a half
+hours, three processes on the card), which `device.py` ports onto the judge's current rules; the
+port itself has been run without a GPU only. A rerun can move a few answers: the 19 Sep table counts
+three T answers as random that the current rules compare, and a card with other limits runs other
+answers (on the 4070, 11 references stop at `OutOfResources`).

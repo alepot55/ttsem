@@ -9,6 +9,7 @@ from ttsem import __version__
 USAGE = f"""ttsem {__version__} - an executable semantics of Triton's TTIR and TTGIR.
 
 The package is a library first; every entry point below is a module you run with `-m`.
+After a pip install, the `ttsem` command is the same as `python -m ttsem`.
 
   python -m ttsem demo [--live]
       The whole idea on one real bug (triton#11519): replay the committed recording of a
@@ -22,7 +23,7 @@ The package is a library first; every entry point below is a module you run with
   python -m ttsem judge --manifest M.jsonl --out DIR [--jobs N]
       A KernelBench answer written with Triton, judged by KernelBench's own correctness
       rule with every launch executed by the semantics: verified, wrong, unsafe (with the
-      kernel's line), no_kernel (PyTorch does the work), error, too_slow or not_judged.
+      kernel's line), no_kernel (no Triton kernel launched), error, too_slow or not_judged.
       Each answer runs in its own bwrap sandbox. Needs torch and Triton; no GPU.
       With --tritonbench, a TritonBench answer against its task's reference, by value.
 
@@ -37,7 +38,8 @@ The package is a library first; every entry point below is a module you run with
   python -m ttsem.sanitize pytest [PYTEST ARGS] | SCRIPT.py
       Run a test suite or a script written for a GPU on a machine without one: every
       launch is executed by the semantics, and an out-of-bounds access, a race between
-      program instances or an undefined value fails the test with the kernel's own line.
+      program instances or an operation with an undefined result fails the test with the
+      kernel's own line.
 
   python -m ttsem.races MODULE.generic.mlir [--strip-barriers]
       Shared-memory races between the warps of a CTA, from one execution of the module.
@@ -75,6 +77,9 @@ def main(argv: list[str] | None = None) -> int:
         from ttsem.judge import main as judge_main
 
         return judge_main(argv[1:])
+    if argv and argv[0] in ("-h", "--help"):
+        sys.stdout.write(USAGE)
+        return 0
     if argv:
         sys.stderr.write(f"unknown command {argv[0]!r}\n\n")
         sys.stderr.write(USAGE)

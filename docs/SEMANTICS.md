@@ -336,8 +336,9 @@ only then multiplied, with the accumulation of `tt.dot`.
 - Both TMA copies read `operandSegmentSizes` rather than guessing positions, because the op has
   several variadic groups; a copy carrying im2col `offsets` raises `Unsupported`, since the
   gather it describes is not a plain block of the tensor.
-- Everything else in `ttng` (warp-group MMA, TMEM, the cluster ops) is unregistered and raises
-  `Unsupported` by name.
+- A `ttng` op the semantics does not register raises `Unsupported` by name. Warp-group MMA
+  (`ttng.warp_group_dot`) and tensor memory are modelled: see the `tt.dot` chain above and
+  "Tensor memory and tcgen05" below.
 - `p4.ttgir` still does not run at level 1, but no longer for want of an op name: its
   `ttg.warp_specialize` puts the TMA producer in a partition and the `tt.dot` consumer in the
   default region, so running the regions in sequence would read buffers before they are filled.

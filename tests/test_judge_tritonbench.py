@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -134,7 +135,8 @@ def test_the_references_are_out_of_sight_and_the_tasks_test_is_the_one_run(
 ) -> None:
     got = record(batch, "peeks")
     assert got["verdict"] == "verified", got
-    built = (batch["out"] / f"peeks.{tb.RECORD}.py").read_text()
+    work = batch["out"] / judge.WORK / f"peeks.{tb.RECORD}"
+    built = (work / f"peeks.{tb.RECORD}.py").read_text()
     assert "a test of the answer's own" not in built and "result_gold = test_relu()" in built
     assert len(list((batch["out"] / "reference").glob("task_relu-*.json"))) == 2  # both poisons
 
@@ -153,22 +155,37 @@ def test_the_batch_prints_a_line_per_answer_and_the_columns(batch: dict[str, Any
     )
 
 
+def test_an_answer_that_imports_the_judge_is_refused_before_it_runs(tmp_path: Path) -> None:
+    """`cheats` reads its task's file through `ttsem.__file__`: importing the judge is refused by
+    the static tamper scan, so the answer is `not_judged` and never runs (no sandbox needed, the
+    scan is in the parent)."""
+    item = {"id": "cheats", "task": str(TASK), "answer": str(FIXTURES / "answer_cheats.py")}
+    got = tb.judge_item(item, tmp_path, 300, sandbox=False)[tb.RECORD]
+    assert (got["verdict"], got["class"]) == ("not_judged", "tampered"), got
+    assert "imports the judge's own module `ttsem`" in got["message"]
+    assert not list(tmp_path.rglob("planted_ttsem_imported"))  # it never ran
+
+
 @needs_sandbox
-def test_an_answer_cannot_read_its_task_nor_reach_the_runs_after_it(tmp_path: Path) -> None:
-    """`cheats` runs first: its task's file is out of its sight (so it stays wrong), and neither
-    the module it leaves in OUT nor its cache entry reaches the reference's second run or the
-    answer judged after it, which run on the references' own cache."""
-    done = judge_manifest(tmp_path, ("cheats", "ok"), jobs=1)
+def test_a_planted_module_and_cache_entry_reach_no_later_run(tmp_path: Path) -> None:
+    """`plants` runs first and leaves a `ttsem` package in its directory and a file in its cache;
+    neither reaches the reference's second run or the answer judged after it, which run in
+    directories and on caches of their own. (`plants` copies its input, so it is wrong.)"""
+    done = judge_manifest(tmp_path, ("plants", "ok"), jobs=1)
     assert done.returncode == 0, done.stderr
     out, rows = tmp_path / "out", rows_of(tmp_path / "out")
-    cheats = rows["cheats"][tb.RECORD]
-    assert (cheats["verdict"], cheats["class"]) == ("wrong", "wrong_result"), cheats
+    plants = rows["plants"][tb.RECORD]
+    assert (plants["verdict"], plants["class"]) == ("wrong", "wrong_result"), plants
     assert rows["ok"][tb.RECORD]["verdict"] == "verified"
-    assert (out / "ttsem" / "__init__.py").exists() and (out / ".cache" / "planted").exists()
-    assert not (out / "planted_ttsem_imported").exists()  # no later run imported it
-    assert len(list((out / "reference").glob("task_relu-*.json"))) == 2  # the second ran after
-    assert any((out / "reference" / ".cache").iterdir())
-    assert not (out / "reference" / ".cache" / "planted").exists()
+    own = out / judge.WORK / f"plants.{tb.RECORD}"
+    assert (own / "ttsem" / "__init__.py").exists()  # left there (its cache entry went with it)
+    assert not list(out.rglob("planted_ttsem_imported"))  # no later run imported it
+    assert not (out / "ttsem").exists() and not (out / ".cache").exists()
+    references = sorted((out / "reference").glob("task_relu-*.json"))
+    assert len(references) == 2  # the second ran after
+    for report in references:
+        cache = report.with_suffix("") / ".cache"
+        assert any(cache.iterdir()) and not (cache / "planted").exists()
 
 
 @needs_sandbox
@@ -195,7 +212,7 @@ def test_one_pair_prints_its_verdict_and_exits_as_it_says(tmp_path: Path) -> Non
 @needs_sandbox
 def test_an_answer_sees_no_secret_of_the_caller(planted: Planted, tmp_path: Path) -> None:
     """An answer that copies whatever it can reach of a secret the caller holds, in its
-    environment and in its home's config, into OUT, then is judged as any other."""
+    environment and in its home's config, into its own directory, then is judged as any other."""
     answer = tmp_path / "answer_leak.py"
     answer.write_text(planted.leak() + (FIXTURES / "answer_ok.py").read_text())
     out = tmp_path / "out"
@@ -203,7 +220,7 @@ def test_an_answer_sees_no_secret_of_the_caller(planted: Planted, tmp_path: Path
     item = {"id": "leak", "task": str(TASK), "answer": str(answer)}
     got = tb.judge_item(item, out, 300, sandbox=True)[tb.RECORD]
     assert got["verdict"] == "verified", got
-    planted.check(out)
+    planted.check(out / judge.WORK / f"leak.{tb.RECORD}")
 
 
 def test_kernelbench_flags_are_refused_with_tritonbench(capsys: pytest.CaptureFixture[str]) -> None:
@@ -348,16 +365,55 @@ def test_the_columns() -> None:
         "answers": 13, "verified": 3, "reduced": 0, "wrong": 1, "unsafe": 1,
         "not_compared": 2, "not_judged": 1, "ran": 7,
     }  # fmt: skip
+    records.append({"class": "races_unchecked"})  # ran and compared, but not race-checked
+    assert tb.columns(records)["not_compared"] == 3
 
 
-def references(out: Path, values: list[float]) -> None:
-    """Both reference runs of `TASK`, as if they had run and kept `{"case": values}`."""
+@pytest.mark.parametrize(
+    ("value", "want"),
+    [([1.0, 2.0], "not_judged races_unchecked"), ([1.0, 3.0], "wrong wrong_result")],
+)
+def test_launches_too_large_for_the_race_check_are_never_verified(
+    tmp_path: Path, value: list[float], want: str
+) -> None:
+    """Right values from a run with a launch too large to be checked for races are `not_judged`
+    (`races_unchecked`), with the count and the budget; wrong ones are still `wrong`, a fault still
+    `unsafe`; the record keeps the count, and its line says it."""
+    gold = results(tmp_path, "gold", [1.0, 2.0])
+    run, npz = results(tmp_path, "answer", value)
+    run["races_unchecked"] = 2
+    got = tb.decide(run, npz, gold, lambda: gold, False)
+    assert (f"{got['verdict']} {got['class']}", got["races_unchecked"]) == (want, 2), got
+    line = tb.describe(got)
+    if got["verdict"] == "not_judged":
+        assert line.startswith("not_judged (races_unchecked): 2 launch(es) too large"), line
+        assert "4,000,000" in line and got["tolerance"] == "strict"
+    else:
+        assert line.endswith("; 2 launch(es) too large to be checked for races"), line
+    race = tb.decide({"run": "race", "races_unchecked": 2}, npz, gold, lambda: gold, False)
+    assert (race["verdict"], race["class"]) == ("unsafe", "race")
+
+
+def references(out: Path, values: list[float]) -> tuple[dict[str, Any], Path]:
+    """Both reference runs of `TASK`, as if they had run and kept `{"case": values}`, where the
+    judge keeps them (`tb.reference` reads them back); returns the first, as it does."""
     digest = hashlib.sha256(TASK.read_bytes()).hexdigest()[:12]
+    found = []
     for which in ("first", "second"):
-        report = out / "reference" / f"{TASK.stem}-{digest}.{which}.json"
-        report.parent.mkdir(parents=True, exist_ok=True)
-        run, npz = results(report.parent, report.stem, values)
-        report.write_text(json.dumps(run))
+        work = out / "reference" / f"{TASK.stem}-{digest}.{which}"
+        work.mkdir(parents=True, exist_ok=True)
+        run, npz = results(work, "run", values)
+        (out / "reference" / f"{work.name}.json").write_text(json.dumps(run))
+        found.append((run, npz))
+    return found[0]
+
+
+def done_run(work: Path, report: str) -> dict[str, Any]:
+    """The run report the judge takes from a run that said `done` and left `report`."""
+    from ttsem.judge_io import Ran
+
+    (work / "run.json").write_text(report)
+    return tb.run_report(Ran(0, "", [{"event": "done"}]), work, Path("a.tritonbench.py"), 10)
 
 
 @pytest.mark.parametrize(
@@ -372,31 +428,49 @@ def references(out: Path, values: list[float]) -> None:
         (json.dumps({"run": "verified"}), "malformed run report: ValueError"),
     ],
 )  # fmt: skip
-def test_a_report_that_cannot_be_read_is_the_answers_crash_for_good(
+def test_a_report_that_cannot_be_read_is_the_answers_crash(
     tmp_path: Path, report: str, message: str
 ) -> None:
     """The answer's report is written in its own process, which it may write anything from, or
-    cut short by a kill: nothing is run here (every report is on disk), and the record, which a
-    rerun reads back, is the answer's crash, not an exception out of the batch."""
-    references(tmp_path, [1.0, 2.0])
-    np.savez(tmp_path / "a.tritonbench.run.npz", np.zeros(2, dtype=np.float32))
-    (tmp_path / "a.tritonbench.run.json").write_text(report)
-    item = {"id": "a", "task": str(TASK), "answer": str(FIXTURES / "answer_ok.py")}
-    got = tb.judge_item(item, tmp_path, 10, sandbox=False)[tb.RECORD]
+    cut short by a kill: nothing is run here (every report is on disk), and the record is the
+    answer's crash, not an exception out of the batch."""
+    gold = references(tmp_path, [1.0, 2.0])
+    np.savez(tmp_path / "run.npz", np.zeros(2, dtype=np.float32))
+    run = done_run(tmp_path, report)
+    answer = FIXTURES / "answer_ok.py"
+    got = tb.record_of(
+        run, tmp_path / "run.npz", gold, lambda: gold, False, TASK, answer, "a.tritonbench.py"
+    )
     assert (got["verdict"], got["class"]) == ("error", "crash"), got
     assert got["message"].startswith(message)
-    assert tb.judge_item(item, tmp_path, 10, sandbox=False)[tb.RECORD] == got
 
 
-def test_a_reference_report_that_cannot_be_read_leaves_the_answer_unjudged(tmp_path: Path) -> None:
-    references(tmp_path, [1.0, 2.0])
-    first = next((tmp_path / "reference").glob("*.first.json"))
-    first.write_text('{"run": "o')
-    np.savez(tmp_path / "a.tritonbench.run.npz", np.asarray([1.0, 2.0], dtype=np.float32))
-    run = {"run": "ok", "launches": 1, "results": {"dict": [["case", {"array": 0}]]}}
-    (tmp_path / "a.tritonbench.run.json").write_text(json.dumps(run))
+def test_the_references_and_a_record_are_read_back_and_nothing_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reference runs and the records in OUT are this process's own (no answer's run writes
+    there): a rerun reads them back."""
+    monkeypatch.setattr(tb, "run_file", lambda *a, **k: pytest.fail("nothing runs"))
+    gold = references(tmp_path, [1.0, 2.0])
+    assert tb.reference(TASK, tmp_path, 10, sandbox=False) == gold
+    record = {"answer": "answer_ok.py", "verdict": "wrong", "class": "wrong_result"}
+    (tmp_path / f"a.{tb.RECORD}.json").write_text(json.dumps(record))
     item = {"id": "a", "task": str(TASK), "answer": str(FIXTURES / "answer_ok.py")}
-    got = tb.judge_item(item, tmp_path, 10, sandbox=False)[tb.RECORD]
+    assert tb.judge_item(item, tmp_path, 10, sandbox=False)[tb.RECORD] == record
+
+
+def test_a_reference_that_cannot_be_read_leaves_the_answer_unjudged(tmp_path: Path) -> None:
+    gold = references(tmp_path, [1.0, 2.0])
+    np.savez(tmp_path / "run.npz", np.asarray([1.0, 2.0], dtype=np.float32))
+    run = {"run": "ok", "launches": 1, "results": {"dict": [["case", {"array": 0}]]}}
+    answer = FIXTURES / "answer_ok.py"
+    # a reference run that died, or left a report that does not read
+    died = ({"run": "crash", "message": "unreadable report"}, gold[1])
+    got = tb.record_of(run, tmp_path / "run.npz", died, lambda: gold, False, TASK, answer, "a")
+    assert (got["verdict"], got["class"]) == ("not_judged", "ran_reference_unjudged"), got
+    # arrays that are not what np.savez writes (a compressed member): not read
+    np.savez_compressed(gold[1], np.asarray([1.0, 2.0], dtype=np.float32))
+    got = tb.record_of(run, tmp_path / "run.npz", gold, lambda: gold, False, TASK, answer, "a")
     assert (got["verdict"], got["class"]) == ("not_judged", "ran_reference_unjudged"), got
 
 
@@ -404,20 +478,16 @@ def test_an_answer_does_not_see_the_tree_its_task_or_out_sits_in(tmp_path: Path)
     home = Path.home()
     bench = home / "bench-not-there" / "data" / "TritonBench_G_v1"
     out = home / "runs-not-there" / "out"
-    got = tb.answer_sandbox(bench / "relu.py", out)
-    assert got == [
-        "--tmpfs", str(home / "bench-not-there"), "--tmpfs", str(home / "runs-not-there"),
-        "--bind", str(out), str(out), "--tmpfs", str(out / "reference"),
-    ]  # fmt: skip
+    hide, extra = tb.answer_sandbox(bench / "relu.py", out)
+    assert hide == [home / "bench-not-there", home / "runs-not-there"] and extra == []
     # a task in the home directory itself, OUT under /tmp (the sandbox's own /tmp hides it)
-    got = tb.answer_sandbox(home / "relu.py", tmp_path)
-    start = got.index("--ro-bind")
-    assert got[start : start + 3] == ["--ro-bind", "/dev/null", str(home / "relu.py")]
-    # a task inside this package's tree: the tree up to the package (OUT's own tree, where
-    # TMPDIR is outside /tmp, is hidden next to it)
+    with tempfile.TemporaryDirectory(dir="/tmp") as under_tmp:
+        hide, extra = tb.answer_sandbox(home / "relu.py", Path(under_tmp))
+    assert hide == [] and extra == ["--ro-bind", "/dev/null", str(home / "relu.py")]
+    # a task inside this package's tree: the tree up to the package
     if not ROOT.is_relative_to("/tmp"):
-        got = tb.answer_sandbox(TASK, tmp_path)
-        assert str(ROOT / "tests") in [got[i + 1] for i, arg in enumerate(got) if arg == "--tmpfs"]
+        hide, _ = tb.answer_sandbox(TASK, tmp_path)
+        assert ROOT / "tests" in hide
 
 
 def test_a_numpy_scalar_is_kept_as_a_value() -> None:

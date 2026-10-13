@@ -21,17 +21,17 @@ def test_validate_keeps_its_own_warnings_out_of_the_test(monkeypatch) -> None:
     monkeypatch.setattr(pytest_ttsem.harness, "ir_for_launch", noisy)
     monkeypatch.setattr(pytest_ttsem, "_target", lambda: None)
     log = io.StringIO()
-    for key, value in dict(
-        stage="ttgir",
-        triton_opt=None,
-        dump=None,
-        below=None,
-        log=log,
-        counts=collections.Counter(),
-        nodeid="t.py::test_x",
-        launch_idx=0,
-        max_launches=10**9,
-    ).items():
+    for key, value in {
+        "stage": "ttgir",
+        "triton_opt": None,
+        "dump": None,
+        "below": None,
+        "log": log,
+        "counts": collections.Counter(),
+        "nodeid": "t.py::test_x",
+        "launch_idx": 0,
+        "max_launches": 10**9,
+    }.items():
         monkeypatch.setitem(pytest_ttsem._state, key, value)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -50,17 +50,17 @@ def test_an_instrumented_launch_is_unsupported_not_compared(monkeypatch) -> None
     monkeypatch.setattr(pytest_ttsem, "_instrumentation_mode", lambda: "fpsan")
     log = io.StringIO()
     counts: collections.Counter[str] = collections.Counter()
-    for key, value in dict(
-        stage="ttgir",
-        triton_opt=None,
-        dump=None,
-        below=None,
-        log=log,
-        counts=counts,
-        nodeid="t.py::test_fpsan",
-        launch_idx=0,
-        max_launches=10**9,
-    ).items():
+    for key, value in {
+        "stage": "ttgir",
+        "triton_opt": None,
+        "dump": None,
+        "below": None,
+        "log": log,
+        "counts": counts,
+        "nodeid": "t.py::test_fpsan",
+        "launch_idx": 0,
+        "max_launches": 10**9,
+    }.items():
         monkeypatch.setitem(pytest_ttsem._state, key, value)
     pytest_ttsem._validate(types.SimpleNamespace(fn_name="k"))
     line = json.loads(log.getvalue())

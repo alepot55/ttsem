@@ -2,7 +2,7 @@
 
 ## Why
 
-Triton has 200k tests and no definition of what a pass must preserve. When the differential
+Triton has a large test suite and no definition of what a pass must preserve. When the differential
 fuzzer (a companion generator of layout, dtype and descriptor programs) finds a wrong output, the guilty pass is found by hand. This
 package gives the IR a reference execution, so that
 
@@ -13,8 +13,9 @@ package gives the IR a reference execution, so that
 3. the semantics is a document a maintainer can read, and later a Lean model can be checked
    against it.
 
-Alive2 did this for LLVM. Nothing does it for tile IRs, whose values are *distributed* tensors:
-here layouts are erased (level 1), then modelled (level 2, later).
+The values of a tile IR are *distributed* tensors: here layouts are erased (level 1), then
+modelled (level 2), and the warps of a CTA are made concurrent so that shared-memory races can be
+reported (level 3). All three levels ship in this package.
 
 ## Levels
 
@@ -128,9 +129,9 @@ measurable: `interp.unsupported` collects them.
 
 ### `ttsem/harness.py`
 
-Records launches (reusing `ttsem/oracle/launch_hook.py`), gets the IR of each
-launch (`compile_like_launch` from the oracle, or `TRITON_KERNEL_DUMP`), copies the argument
-tensors to host, registers them in a `Memory` at their device addresses, runs `Interp.run_grid`,
+Records launches (`record_launch`, which copies every tensor argument's storage before and after
+the launch), gets the IR of each launch by compiling it again with the launch's own
+specialization (`ir_for_launch`), copies the argument tensors to host, registers them in a `Memory` at their device addresses, runs `Interp.run_grid`,
 and compares every output buffer with the device result: bitwise for integers, booleans and
 every float buffer of a launch whose IR has no inexact float op; with a relative and a scaled
 absolute bound per element type (verdict `approx`) when the IR divides, reduces, scans, dots or

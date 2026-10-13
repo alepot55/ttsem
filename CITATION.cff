@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use ttsem in your work, please cite it with the metadata below."
+type: software
+title: "ttsem: an executable semantics of Triton's TTIR and TTGIR, with a per-pass validator"
+authors:
+  - family-names: Potenza
+    given-names: Alessandro
+version: 0.1.0
+# date-released is set when 0.1.0 is tagged and published
+license: MIT
+repository-code: "https://github.com/alepot55/ttsem"
+url: "https://github.com/alepot55/ttsem"
+keywords:
+  - triton
+  - mlir
+  - compiler
+  - semantics
+  - gpu
+  - interpreter

@@ -17,8 +17,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ttsem import mlir
 import pytest
+
+from ttsem import mlir
 from ttsem.layouts import (
     Blocked,
     DotOperand,

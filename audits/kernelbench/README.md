@@ -16,7 +16,10 @@ flagged.
 - Linux with `bwrap` (bubblewrap) and unprivileged user namespaces: every answer is model-written
   code and runs only inside the sandbox (read-only filesystem, your home directory and the host's
   sockets in /run hidden, of your environment only the few variables a run needs, no network, its
-  own pid namespace).
+  own pid namespace and session, no capabilities). The verdict is computed in the parent from the
+  run's raw outputs, never written by the run; a fault ends the run out of band, so a try/except in
+  the answer cannot hide it. The run can still read the rest of the host read-only; `--strict`
+  (the judge) narrows that to what a run needs.
 - Python 3.12 and a clone of this repository, installed with the Triton wheel and CPU torch:
 
   ```console
@@ -106,7 +109,7 @@ labelled correct: the judge decides on N, verifies N (P%), and judges N wrong, u
 then the full-shape pass where it ran and, with `--by model`, the answers labelled correct by model.
 A v3 file that the release evaluated twice, once correct and once not, is labelled `ambiguous`. The
 verdicts are those of `python -m ttsem judge --help`: `verified`, `wrong`, `unsafe`, `no_kernel`
-(PyTorch does the work), `error`, `too_slow`, `not_judged` (the tool cannot say). A verdict at
+(no Triton kernel launched), `error`, `too_slow`, `not_judged` (the tool cannot say). A verdict at
 reduced sizes says what the kernel does at those sizes: an answer that hard-codes the benchmark's
 shape can be right there and wrong at others, and an access out of bounds that only the real shape
 reaches is missed. Running the answers on a GPU through the benchmarks' own checks is not part of

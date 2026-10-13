@@ -13,7 +13,8 @@ the schedule:
 
 Two atomic updates of one address are not a race (that is what they are for), nor are two loads.
 A store of the bytes the address already holds (kind `s`, a silent store) is no conflict for a
-load: whoever loads sees the same bytes before and after it. Compilers write whole tensors back
+load: whoever loads sees the same bytes before and after it. Next to an atomic update it is one:
+whether it was silent depends on the order that ran. Compilers write whole tensors back
 after an update of a slice (`x[::2] += ...` stores the untouched rows of `x` again), and every
 instance that reads those rows would otherwise be a race with the one that rewrites them. A silent
 store still counts among the last stores of its address: if another instance leaves other bytes
@@ -22,7 +23,9 @@ there, the end state depends on the order.
 
 from __future__ import annotations
 
+import bisect
 import dataclasses
+from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
@@ -102,6 +105,28 @@ def _may_overlap(log: list[Entry]) -> bool:
     for agent, kind, _op, addrs, itemsize, _raw in log:
         span = (int(addrs.min()), int(addrs.max()) + itemsize - 1, agent)
         (reads if kind == "r" else writes).append(span)
+    return _spans_meet(writes, reads)
+
+
+def spans_may_race(
+    lo: Iterable[int], hi: Iterable[int], who: Iterable[Any], write: Iterable[int]
+) -> bool:
+    """Whether accesses known only by their spans can hold a race between program instances:
+    for each access the first and last byte it touched, its instance, and whether it wrote (a
+    store or an atomic update; `memory.AccessSpans`, kept past the access log's budget). False
+    only when every instance's writes stay inside bytes no other instance touches, but for reads
+    of bytes nobody writes. A race needs one byte two instances touch, one of them writing it, so
+    False rules every race out: those the exact check (`find_race`) would find among them."""
+    writes: list[tuple[int, int, Any]] = []
+    reads: list[tuple[int, int, Any]] = []
+    for first, last, agent, wrote in zip(lo, hi, who, write, strict=True):
+        (writes if wrote else reads).append((int(first), int(last), agent))
+    return _spans_meet(writes, reads)
+
+
+def _spans_meet(writes: list[tuple[int, int, Any]], reads: list[tuple[int, int, Any]]) -> bool:
+    """Whether a write span of one instance meets a write span of another, or a read span of
+    another (spans are (first byte, last byte, instance))."""
     if not writes:
         return False
     writes.sort(key=lambda w: (w[0], w[1]))
@@ -117,8 +142,6 @@ def _may_overlap(log: list[Entry]) -> bool:
     for w in writes:
         top = max(top, w[1])
         ends_running.append(top)
-    import bisect
-
     for lo, hi, agent in reads:
         k = bisect.bisect_right(starts, hi)  # writes starting at or before the read's end
         if k and ends_running[k - 1] >= lo:
@@ -171,9 +194,11 @@ def find_race(log: list[Entry] | None) -> PidRace | None:
     rw = cross(reads, w | atomics)
     if rw.size:
         found.append(("read-write", rw, reads, w | atomics))
-    wa = cross(w, atomics)
+    # a store next to an atomic update counts even when silent: it is silent only because of the
+    # order that ran (first, it finds the bytes it writes; last, it wipes the updates)
+    wa = cross(stores, atomics)
     if wa.size:
-        found.append(("write-atomic", wa, w, atomics))
+        found.append(("write-atomic", wa, stores, atomics))
     if not found:
         return None
 

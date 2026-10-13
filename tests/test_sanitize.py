@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -63,6 +64,70 @@ def test_a_pytest_suite_written_for_a_gpu_fails_where_the_kernel_is_wrong(capsys
     assert code != 0
     assert "1 failed, 1 passed" in out  # n = 1024 hides it, n = 1000 does not
     assert "24 element(s) past the end" in out and "suite_no_mask.py:15" in out
+    assert "too large to be checked for races" not in out  # no oversized launch here
+
+
+def test_a_pytest_suite_reports_launches_too_large_for_the_race_check(capsys) -> None:
+    """A launch over the race-check budget (over 4,000,000 accesses) whose access ranges cannot
+    rule a race out (tiles whose stores span rows the tiles beside them share) is run and its
+    values checked, so the test passes, but the session says how many such launches there were,
+    in the terminal summary, rather than dropping the count without a word (item 7)."""
+    code = sanitize.run_pytest([str(AGENTS / "suite_big_tiled.py"), "-q", "-p", "no:cacheprovider"])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "1 passed" in out
+    assert "1 launch(es) too large to be checked for races" in out
+    assert "4,000,000" in out
+
+
+def test_a_launch_past_the_budget_whose_ranges_do_not_meet_is_race_checked(capsys) -> None:
+    """Past the access log's budget the range of each access is kept: a launch whose program
+    instances each load and store their own block has ranges that never meet, which rules every
+    race out, so the launch counts as checked and nothing is reported."""
+    code = sanitize.run_pytest(
+        [str(AGENTS / "suite_big_launch.py"), "-q", "-p", "no:cacheprovider"]
+    )
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "1 passed" in out
+    assert "too large to be checked for races" not in out
+
+
+def test_a_session_tells_its_caller_of_each_launch_too_large_for_the_race_check() -> None:
+    """`on_unchecked` is called once per launch not race-checked, as `races_unchecked` counts
+    them: what a judge counts over its own channel."""
+    import importlib.util
+
+    suites = {}
+    for name in ("suite_big_launch", "suite_big_tiled"):
+        spec = importlib.util.spec_from_file_location(name, AGENTS / f"{name}.py")
+        assert spec is not None and spec.loader is not None
+        suites[name] = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(suites[name])
+    heard: list[int] = []
+    with sanitize.session(on_unchecked=lambda: heard.append(1)) as state:
+        suites["suite_big_tiled"].test_copy_in_tiles()
+        suites["suite_big_launch"].test_add_one_over_many_elements()  # its ranges rule races out
+        suites["suite_big_tiled"].test_copy_in_tiles()
+    assert (state.launches, state.races_unchecked, len(heard)) == (3, 2, 2)
+
+
+def test_the_command_line_names_itself_and_its_options() -> None:
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    done = subprocess.run(
+        [sys.executable, "-m", "ttsem.sanitize", "--help"],
+        capture_output=True,
+        text=True,
+        cwd=root,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.startswith("usage: python -m ttsem.sanitize ")
+    assert "--cc CC      the compute capability the kernels are compiled for" in done.stdout
+    assert "python -m ttsem.sanitize pytest" in done.stdout
 
 
 def test_memory_from_torch_empty_is_poisoned_so_reading_it_shows(capsys) -> None:
@@ -105,6 +170,7 @@ def test_the_source_line_is_found_through_named_and_aliased_locations(tmp_path: 
 def test_a_program_that_asks_whether_its_tensors_are_on_the_gpu_is_told_yes() -> None:
     import torch
 
+    before = pretend_state()
     with sanitize.session():
         x = torch.zeros(4, device="cuda")
         assert x.is_cuda and x.device.type == "cuda"
@@ -112,7 +178,36 @@ def test_a_program_that_asks_whether_its_tensors_are_on_the_gpu_is_told_yes() ->
         assert y.tolist() == [1.0] * 4 and torch.empty_like(x).shape == (4,)
         with torch.cuda.device(0):
             torch.cuda.set_device(0)
-    assert not torch.zeros(1).is_cuda and torch.zeros(1).device.type == "cpu"
+    assert pretend_state() == before
+
+
+def pretend_state() -> tuple[Any, ...]:
+    """What a tensor says of its device, and what `torch.Tensor` holds for it: outside any
+    session (False, "cpu", None, None); under `python -m ttsem.sanitize pytest`, the session
+    around the test's."""
+    import torch
+
+    x = torch.zeros(1)
+    return (
+        x.is_cuda,
+        x.device.type,
+        *(torch.Tensor.__dict__.get(k) for k in ("is_cuda", "device")),
+    )
+
+
+def test_a_session_inside_another_gives_the_outer_one_its_pretend_device_back() -> None:
+    """As under `python -m ttsem.sanitize pytest` on a suite whose tests open a session: the
+    inner session's exit leaves the outer one as it was, and the outer one's exit leaves torch
+    as it was."""
+    import torch
+
+    before = pretend_state()
+    with sanitize.session():
+        with sanitize.session():
+            assert torch.zeros(1, device="cuda").is_cuda
+        x = torch.zeros(1, device="cuda")
+        assert x.is_cuda and x.device.type == "cuda"
+    assert pretend_state() == before
 
 
 def test_a_launch_grid_that_is_a_bare_int_fails_as_it_does_on_a_gpu(tmp_path: Path) -> None:
@@ -327,14 +422,11 @@ def test_a_kernel_the_user_wrote_runs_from_the_output_code_with_its_constexprs()
         inductor_utils.print_performance = once  # type: ignore[assignment]
 
 
-def test_the_scratch_buffer_of_a_decoupled_lookback_scan_is_not_a_race() -> None:
-    """Inductor's split scan passes each block's partial to the next through a scratch buffer:
-    a plain store, then a flag exchanged with release order, which the next block spins on with
-    acquire order before its plain load. Run one after the other, the two plain accesses look
-    like a race; the spin makes the order hold in every schedule."""
+def _split_scan(**session: Any) -> tuple[Any, Any]:
+    """Inductor's split scan of `fixtures/inductor/split_scan_output_code.py`, run under a session
+    opened with `session`: what it returned and what eager returns."""
     import runpy
 
-    pytest.importorskip("torch._inductor.runtime.triton_heuristics")
     import torch
     import torch._inductor.utils as inductor_utils
 
@@ -343,16 +435,177 @@ def test_the_scratch_buffer_of_a_decoupled_lookback_scan_is_not_a_race() -> None
     inductor_utils.print_performance = lambda fn, *a, **k: fn()  # type: ignore[assignment]
     undo = sanitize.inductor_names()
     try:
-        with sanitize.session() as state:
+        with sanitize.session(**session) as state:
             code = runpy.run_path(str(fixtures / "split_scan_output_code.py"), run_name="code")
             (x,) = code["get_args"]()
             want = (x > 0.5).to(torch.int64).cumsum(0) * 2
             (got,) = code["call"]([x])
             assert state.launches == 1  # the scan and the multiply are one kernel
-        assert torch.equal(got.cpu(), want.cpu())
+        return got, want
     finally:
         undo()
         inductor_utils.print_performance = once  # type: ignore[assignment]
+
+
+def test_the_scratch_buffer_of_a_decoupled_lookback_scan_is_not_a_race() -> None:
+    """Inductor's split scan passes each block's partial to the next through a scratch buffer:
+    a plain store, then a flag exchanged with release order, which the next block spins on with
+    acquire order before its plain load. Run one after the other, the two plain accesses look
+    like a race; the spin makes the order hold in every schedule."""
+    pytest.importorskip("torch._inductor.runtime.triton_heuristics")
+    import torch
+
+    got, want = _split_scan()
+    assert torch.equal(got.cpu(), want.cpu())
+
+
+def test_a_judges_session_leaves_not_even_inductors_scratch_buffer_out() -> None:
+    """With `inductor_lookback=False`, as the judges open their sessions, no buffer is left out of
+    the race check, the one a real call of Inductor's helper passes either: the same scan stops at
+    the plain store and load of its scratch buffer."""
+    pytest.importorskip("torch._inductor.runtime.triton_heuristics")
+    with pytest.raises(sanitize.KernelFault) as stop:
+        _split_scan(inductor_lookback=False)
+    assert (stop.value.fault.kind, stop.value.fault.buffer) == ("race", "ws_ptr")
+
+
+LOOKBACK_CALLS = {
+    "a comment": """def k(ws_ptr, x_ptr):
+    # exclusive_scan_decoupled_lookback_64(ws_ptr, v, i, f)
+    return 0
+""",
+    "a string": """def k(ws_ptr, x_ptr):
+    _ = "exclusive_scan_decoupled_lookback_64(ws_ptr, v, i, f)"
+    return 0
+""",
+    "a function of the same name": """def k(ws_ptr, x_ptr):
+    exclusive_scan_decoupled_lookback_64(ws_ptr, v, i, f)
+""",
+    "Inductor's helper through its module": """def k(ws_ptr, x_ptr):
+    triton_helpers.exclusive_scan_decoupled_lookback_64(
+        ws_ptr.to(tl.pointer_type(tl.uint64)) + x * 3, v, i, f
+    )
+""",
+    "Inductor's helper by its name": """def k(ws_ptr, x_ptr):
+    lookback(scratch_base=ws_ptr, block_value=v, index=i, combine_fn=f)
+""",
+}
+
+
+@pytest.mark.parametrize(
+    ("case", "want"),
+    [
+        ("a comment", set()),
+        ("a string", set()),
+        ("a function of the same name", set()),
+        ("Inductor's helper through its module", {"ws_ptr"}),
+        ("Inductor's helper by its name", {"ws_ptr"}),
+    ],
+)
+def test_the_lookback_buffer_is_read_off_a_call_of_inductors_helper_not_off_text(
+    case: str, want: set[str]
+) -> None:
+    """Which buffer is the protocol's comes from a call the kernel makes, whose callee its globals
+    resolve to Inductor's own helper: never from a comment, a string, or a function that only has
+    the helper's name."""
+    from types import SimpleNamespace
+
+    helpers = pytest.importorskip("torch._inductor.runtime.triton_helpers")
+
+    def impostor(*args: Any) -> None:
+        return None
+
+    scope = {
+        "triton_helpers": helpers,
+        "lookback": helpers.exclusive_scan_decoupled_lookback_64,
+        "exclusive_scan_decoupled_lookback_64": impostor,
+    }
+    fn = SimpleNamespace(__globals__=scope)
+    assert sanitize.lookback_buffers(fn, LOOKBACK_CALLS[case]) == want
+
+
+def test_a_buffer_the_launch_never_exchanged_into_is_not_left_out() -> None:
+    """The protocol exchanges a flag into its buffer in every program instance: a buffer named by
+    the call that no exchange of this launch landed in stays in the race check."""
+    from types import SimpleNamespace
+
+    record = SimpleNamespace(bases={"tmp": 1000}, pre={"tmp": np.zeros(4, dtype=np.int32)})
+    assert sanitize._protocol_spans(record, {"tmp"}, []) == []
+    outside = [np.array([2000], dtype=np.int64)]
+    assert sanitize._protocol_spans(record, {"tmp"}, outside) == []
+    inside = [np.array([1004], dtype=np.int64)]
+    assert sanitize._protocol_spans(record, {"tmp"}, inside) == [(1000, 1016)]
+
+
+@pytest.mark.parametrize("answer", ["answer_protocol_marker.py", "answer_protocol_big.py"])
+def test_a_comment_naming_the_lookback_helper_does_not_hide_a_race(answer: str) -> None:
+    """Round 5: a comment that spells a call of Inductor's helper on the racing buffer once left
+    that buffer out of both race checks (by the log, and past its budget by the ranges). Under a
+    session as `python -m ttsem.sanitize` opens it, with Inductor's helpers loaded, the small
+    launch is a race and the padded one is counted as not checked."""
+    import importlib.util
+
+    import torch
+
+    pytest.importorskip("torch._inductor.runtime.triton_helpers")
+    path = Path(__file__).resolve().parent / "fixtures" / "judge" / answer
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    x = torch.randn(4000)
+    with sanitize.session() as state:
+        if answer == "answer_protocol_marker.py":
+            with pytest.raises(sanitize.KernelFault) as stop:
+                module.ModelNew()(x)
+            assert (stop.value.fault.kind, stop.value.fault.buffer) == ("race", "scratch_ptr")
+        else:
+            module.ModelNew()(x)
+    if answer == "answer_protocol_big.py":
+        assert (state.launches, state.races_unchecked) == (1, 1)
+
+
+def test_the_lookback_exemption_trusts_the_kernel_so_a_judge_turns_it_off() -> None:
+    """The exemption is a matter of trust: a kernel that calls Inductor's helper for real can race
+    on the same scratch buffer outside the protocol, and a session that trusts it (the default,
+    for Inductor's own code) leaves the whole buffer out and misses that race. A judge's session
+    (`inductor_lookback=False`) finds it."""
+    import importlib.util
+
+    import torch
+
+    pytest.importorskip("torch._inductor.runtime.triton_helpers")
+    path = Path(__file__).resolve().parent / "fixtures" / "judge" / "answer_lookback_helper.py"
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    x = torch.randn(4000)
+    with sanitize.session():
+        got = module.ModelNew()(x)
+    # no race reported, and the order ttsem runs the instances in gives ReLU (+ 1 - 1)
+    assert torch.allclose(got, torch.relu(x), rtol=0, atol=1e-6)
+    with sanitize.session(inductor_lookback=False), pytest.raises(sanitize.KernelFault) as stop:
+        module.ModelNew()(x)
+    assert (stop.value.fault.kind, stop.value.fault.buffer) == ("race", "ws_ptr")
+
+
+def test_past_the_budget_the_scratch_buffer_of_a_lookback_scan_is_left_out_of_the_spans() -> None:
+    """The spans kept past the access log's budget leave out the scratch buffer of a
+    decoupled-lookback scan as the exact check does: a span inside it is dropped, one that only
+    meets it stays whole."""
+    from ttsem.memory import AccessSpans
+
+    protocol = [(1000, 1016)]  # the scratch buffer: four int32 at 1000
+    inside = AccessSpans()
+    inside.add((0, 0, 0), True, 1000, 1003)  # a store of block 0's partial
+    inside.add((1, 0, 0), False, 1000, 1003)  # block 1 loads it, after the flag
+    assert sanitize._spans_may_race(inside, [])  # without the protocol: maybe a race
+    assert not sanitize._spans_may_race(inside, protocol)
+    across = AccessSpans()
+    across.add((0, 0, 0), True, 996, 1003)  # reaches out of the scratch buffer
+    across.add((1, 0, 0), False, 996, 999)
+    assert sanitize._spans_may_race(across, protocol)
 
 
 def test_a_kernel_that_writes_back_rows_it_did_not_change_does_not_race_with_their_readers() -> (
@@ -410,4 +663,113 @@ def test_a_race_whose_first_store_leaves_the_bytes_it_found_is_reported() -> Non
             pid_to_first[(2,)](out)
     assert stop.value.fault.kind == "race"
     text = sanitize.message(stop.value.fault)
+    # here one serial order already gives a wrong value, so the message must not claim that
+    # comparing outputs never shows a race
+    assert "comparing outputs may not show it" in text and "cannot see" not in text
     assert "(0, 0, 0) stores to it, (1, 0, 0) stores to it" in text
+
+
+def test_a_recorded_race_lets_the_program_go_on_and_another_order_witnesses_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With `races="record"` the race is kept and the launch completes; the element then holds
+    what the last instance stored, and `TTSEM_GRID_ORDER=reverse` makes that the other one: the
+    result depends on the schedule, seen in the values without a GPU."""
+    import torch
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def pid_to_first(out_ptr):
+        tl.store(out_ptr, tl.program_id(0).to(tl.float32))
+
+    got = {}
+    for order in ("", "reverse"):
+        monkeypatch.setenv("TTSEM_GRID_ORDER", order)
+        with sanitize.session(races="record") as state:
+            out = torch.zeros(4, dtype=torch.float32, device="cuda")
+            pid_to_first[(2,)](out)
+        assert [fault.kind for fault in state.races] == ["race"]
+        got[order] = float(out[0])
+    assert got == {"": 1.0, "reverse": 0.0}
+    monkeypatch.setenv("TTSEM_GRID_ORDER", "")
+    with sanitize.session(races="off") as state:
+        pid_to_first[(2,)](torch.zeros(4, dtype=torch.float32, device="cuda"))
+    assert state.races == []
+
+
+def test_a_block_cap_shrinks_the_block_of_a_direct_launch_whose_grid_reads_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`TTSEM_BLOCK_CAP` does for a launch written as `kernel[grid](..., XBLOCK=64)` (the style of
+    older Inductor output, KernelBook's) what `inductor_names(block=...)` does for the autotuner:
+    the block shrinks and the grid, which reads XBLOCK from the meta, grows to cover the same
+    elements. A grid given as numbers is left alone, since a smaller block would leave elements
+    out."""
+    import torch
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def stamp(out_ptr, n, XBLOCK: tl.constexpr):
+        offs = tl.program_id(0) * XBLOCK + tl.arange(0, XBLOCK)
+        tl.store(out_ptr + offs, tl.program_id(0).to(tl.float32), mask=offs < n)
+
+    def grid(meta):  # type: ignore[no-untyped-def]
+        return (triton.cdiv(64, meta["XBLOCK"]),)
+
+    got = {}
+    for cap, launch_grid in (("", grid), ("16", grid), ("16", (1,))):
+        monkeypatch.setenv("TTSEM_BLOCK_CAP", cap)
+        with sanitize.session(races="off"):
+            out = torch.full((64,), -1.0, device="cuda")
+            stamp[launch_grid](out, 64, XBLOCK=64)
+            got[(cap, callable(launch_grid))] = out.cpu().clone()
+    assert torch.equal(got[("", True)], torch.zeros(64))
+    assert torch.equal(got[("16", True)], torch.arange(4).repeat_interleave(16).float())
+    assert torch.equal(got[("16", False)], torch.zeros(64))
+
+
+def test_source_line_falls_back_to_the_kernels_own_file_when_the_loc_path_is_gone(
+    tmp_path: Path,
+) -> None:
+    """When the `loc` baked into the IR points at a path this checkout does not have (a Triton
+    cache filled from another checkout), the line's text cannot be read from it; the kernel's own
+    file has the same line numbers, so it is read there instead (bug B)."""
+    kernel = tmp_path / "here" / "k.py"
+    kernel.parent.mkdir()
+    kernel.write_text("import triton\n# a pad line\nx = tl.load(ptr)  # faulting line 3\n")
+    gone = "/a/checkout/that/is/not/here/k.py"
+    op = f'tt.load %x loc("{gone}":3:9)'
+    # the loc path is unreadable: fall back to the kernel's own file at the same line
+    path, line, text = sanitize._source_of(op, "", str(kernel))
+    assert (line, text, path) == (3, "x = tl.load(ptr)  # faulting line 3", str(kernel))
+    # without the kernel file there is nothing to read: the old behaviour, an empty source line
+    path0, line0, text0 = sanitize._source_of(op, "", "")
+    assert (line0, text0, path0) == (3, "", gone)
+
+
+def test_a_fault_from_a_cache_filled_elsewhere_still_names_the_line(tmp_path: Path) -> None:
+    """End to end: compile a no-mask kernel in one directory, then delete it and resolve the same
+    op against a copy in another directory. The loc's own path is gone, but the copy's line
+    numbers match, so the fault still carries its source line."""
+    first = tmp_path / "checkoutA"
+    first.mkdir()
+    (first / "k.py").write_text((AGENTS / "add_no_load_mask.py").read_text())
+    report = sanitize.run_program(first / "k.py")
+    assert report.verdict == "oob_read" and report.fault is not None
+    op, line, had = report.fault.op, report.fault.source_line, report.fault.source_text
+    assert had  # with the file present, the line was read
+    second = tmp_path / "checkoutB"
+    second.mkdir()
+    (second / "k.py").write_text((AGENTS / "add_no_load_mask.py").read_text())
+    import shutil
+
+    shutil.rmtree(first)  # the loc's own path no longer exists
+    # resolve the recorded op: nothing without a fallback, the copy's line with it
+    _, line_gone, text_gone = sanitize._source_of(op, "", "")
+    _, line_back, text_back = sanitize._source_of(op, "", str(second / "k.py"))
+    if text_gone == "":  # the loc held an absolute path that is now gone
+        assert line_back == line and text_back == had
+    else:  # a relative or still-present path: the line was there all along
+        assert text_back == had

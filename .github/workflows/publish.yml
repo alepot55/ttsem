@@ -47,12 +47,13 @@ jobs:
           python -m twine check --strict dist/*
 
       # the wheel alone, numpy its only dependency, away from the checkout: the recorded demo
-      # travels inside it
+      # travels inside it, and the `ttsem` command is the module's entry point
       - name: The wheel runs the demo
         run: |
           python -m venv "$RUNNER_TEMP/wheel"
           "$RUNNER_TEMP/wheel/bin/pip" install dist/*.whl
           cd "$RUNNER_TEMP" && "$RUNNER_TEMP/wheel/bin/python" -m ttsem demo
+          "$RUNNER_TEMP/wheel/bin/ttsem" demo
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:

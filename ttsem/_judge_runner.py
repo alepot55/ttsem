@@ -1,10 +1,12 @@
-"""Subprocess entry point for ``ttsem.judge``: one KernelBench answer, judged in this process.
+"""Subprocess entry point for ``ttsem.judge``: a KernelBench task's reference, or one answer, run
+in this process.
 
 Not meant to be imported: ``ttsem.judge`` runs it, under ``bwrap`` and with a timeout, as
 
-    python -m ttsem._judge_runner TASK.py ANSWER.py OUT.json [--scale auto|none] [--budget N]
-                                  [--trials 5] [--seed 42] [--atol 1e-2] [--rtol 1e-2]
-                                  [--precision fp32|keep] [--rule kernelbench|v3] [--gpu NAME]
+    python -m ttsem._judge_runner TASK.py WORK [--answer ANSWER.py] [--scale auto|none]
+                                  [--budget N] [--trials 5] [--seed 42] [--atol 1e-2]
+                                  [--rtol 1e-2] [--precision fp32|keep]
+                                  [--rule kernelbench|v3] [--gpu NAME] [--events FD]
 
 KernelBench's correctness rule (`src/kernelbench/eval.py`, `eval_kernel_against_ref` and
 `run_and_check_correctness`, read at commit 423217d): seed 42 for the init inputs and both
@@ -12,8 +14,9 @@ models' weights, five trials whose seeds are drawn from `torch.manual_seed(42)`,
 the reference first, then `ModelNew` on the same inputs, a shape check, then
 `torch.allclose(atol, rtol)`; every trial must pass. The only change: every Triton launch is
 compiled by the real frontend and executed by ttsem on CPU tensors (`sanitize.session`), which
-stops the run at an out-of-bounds access, a race between program instances or a use of memory
-nobody wrote, with the kernel's source line.
+stops the run at an out-of-bounds access, a race between program instances or an operation with
+an undefined result, with the kernel's source line (memory nobody wrote is filled with NaN
+instead, so it shows up in the values the judge compares).
 
 With `--rule v3`, the rule of the KernelBench-v3 harness instead (github.com/Infatoshi/
 KernelBench-v3, `src/eval/benchmark.py`, read on 23 Sep 2026): the two models are built one after
@@ -25,11 +28,24 @@ and 1337, outputs must be finite, and `max|diff| < atol + rtol * max|ref|` with 
 (two runs bitwise equal) is not repeated: under the semantics every run is deterministic, and a
 race between program instances is reported as such.
 
-Verdicts: verified | wrong | unsafe | no_kernel | error (with `why: shared_memory` when every
-config of an autotuner was skipped and the one it falls back to needs more shared memory than the
-GPU has, by Triton 3.8.0's count), and, when the tool cannot judge, not_judged (an op ttsem does
-not model, an internal error, the memory cap, a full /tmp, a broken task). The report records the
-rule, the precision and the GPU it was judged under (`settings`).
+The rule is split between two runs, each in its own sandbox, and neither says whether the answer
+is right. Without `--answer`, the reference run: the task's `Model` on every trial's inputs, and
+once more on the inputs the autotune sweep uses. With `--answer`, the answer's run: both models
+built as the rule builds them (the v3 harness copies the reference's weights over), and on each
+trial's inputs the reference first (it may change them in place) and `ModelNew` after it, as the
+rule runs them; then each autotune config the sweep forces. Each run keeps what it computed in
+WORK/run.json (its account) and WORK/run.npz (the outputs' bytes), and ``ttsem.judge`` compares
+the answer's outputs with the reference run's, which this process never sees. The answer's run
+stops at the first output that differs from its own copy of the reference's, which only saves
+time. A fault, or a launch the semantics cannot judge, goes to the judge at once on the events
+pipe and ends the process (`ttsem.judge_io.Channel`): the answer cannot catch it and fall back on
+PyTorch. A run that ends otherwise sends `done` and leaves the same way, so no exit handler of the
+answer's runs after it.
+
+What ended a run early is its `failure`: error (with `why: shared_memory` when every config of
+an autotuner was skipped and the one it falls back to needs more shared memory than the GPU has,
+by Triton 3.8.0's count), or, when the tool cannot judge, not_judged (an op ttsem does not model,
+an internal error, the memory cap, a full /tmp, a broken task).
 """
 
 from __future__ import annotations
@@ -40,6 +56,7 @@ import importlib.util
 import json
 import os
 import resource
+import signal
 import sys
 import time
 import traceback
@@ -47,18 +64,20 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from torch.overrides import TorchFunctionMode
 from triton.compiler.errors import CompileTimeAssertionFailure
 from triton.runtime.errors import OutOfResources, PTXASError
 
+from ttsem import _guard, sanitize
 from ttsem import judge_shapes as shapes
-from ttsem import sanitize
+from ttsem.judge_io import Channel, compare, tensor_bytes, v3_precision
 
 PACKAGE = Path(__file__).resolve().parent
 # the judge's own files: an exception raised in them is the answer's or the task's (a result
 # that cannot be compared, a task without `Model`), not a failure of the semantics
-JUDGE_FILES = {"_judge_runner.py", "judge_shapes.py"}
+JUDGE_FILES = {"_judge_runner.py", "judge_shapes.py", "judge_io.py"}
 
 # the high-level PyTorch compute ops of KernelBench's own static checker
 # (`kernel_static_checker.TORCH_COMPUTATION_OPS` and its `F.*` patterns), plus the matmul
@@ -160,10 +179,10 @@ def cast(value: Any, precision: str) -> Any:
     return value
 
 
-def scaled_copy(out: Path) -> Path:
-    """Where the answer rewritten to the scaled sizes goes: next to the report, named after it,
-    so that two answers with the same file name never share one."""
-    return out.parent / f"{out.stem}_answer.py"
+def scaled_copy(work: Path, answer: Path) -> Path:
+    """Where the answer rewritten to the scaled sizes goes: the run's own directory, under the
+    answer's name."""
+    return work / f"{answer.stem}_answer.py"
 
 
 def trial_seeds(seed: int, trials: int) -> list[int]:
@@ -171,7 +190,37 @@ def trial_seeds(seed: int, trials: int) -> list[int]:
     return [int(torch.randint(0, 2**32 - 1, (1,)).item()) for _ in range(trials)]
 
 
-def judge(args: argparse.Namespace, report: dict[str, Any]) -> None:
+class Raw:
+    """What a run keeps: its account (`data`, WORK/run.json) and its outputs (WORK/run.npz: each
+    tensor's bytes under its key; `output` returns what the account says of it)."""
+
+    def __init__(self, work: Path) -> None:
+        self.work = work
+        self.data: dict[str, Any] = {}
+        self.arrays: dict[str, np.ndarray] = {}
+
+    def output(self, key: str, value: Any) -> dict[str, Any]:
+        spec, data = tensor_bytes(value)
+        if data is not None:
+            self.arrays[key] = data
+        return spec
+
+    def write(self) -> None:
+        """The account and the arrays, to the run's directory. Both are plain data the runner
+        built (strings, numbers, uint8 arrays): writing them runs no code of the answer's, so
+        nothing can change between the run's last integrity check and what the judge reads."""
+        np.savez(self.work / "run.npz", allow_pickle=False, **self.arrays)
+        (self.work / "run.json").write_text(json.dumps(self.data, indent=1, default=opaque))
+
+
+def opaque(value: Any) -> str:
+    """What the account says of a value that is not plain data: nothing the value itself says."""
+    return "<object>"
+
+
+def load_task(args: argparse.Namespace, report: dict[str, Any]) -> tuple[Any, ...]:
+    """The task at the pass's sizes: its `Model`, `get_init_inputs` and `get_inputs`, then the
+    sizes rewritten and the task's own."""
     report["stage"] = "task"  # the task itself (a package it imports may be missing here)
     task_src = args.task.read_text(encoding="utf-8")
     overrides: dict[str, shapes.Size] = {}
@@ -182,96 +231,236 @@ def judge(args: argparse.Namespace, report: dict[str, Any]) -> None:
     report["shapes"] = {k: [original.get(k), v] for k, v in overrides.items()}
     context: dict[str, Any] = {}
     exec(shapes.rewrite(task_src, overrides), context)  # noqa: S102  inside the sandbox
-    Model, get_init_inputs, get_inputs = (
-        context["Model"],
-        context["get_init_inputs"],
-        context["get_inputs"],
-    )
-    # an answer that keeps its own copy of the task's sizes gets the scaled ones too, in a copy
-    # of the file with the same line numbers (the fault messages point into it)
-    answer_src = args.answer.read_text(encoding="utf-8")
-    answer_run = shapes.rewrite(answer_src, overrides, only_if=original)
-    own = shapes.roots(answer_src)
-    report["answer_overrides"] = {
-        n: v for n, v in overrides.items() if n in own and own[n] == original.get(n)
-    }
-    answer = args.answer
-    if answer_run != answer_src:
-        answer = scaled_copy(args.out)
-        answer.write_text(answer_run, encoding="utf-8")
-    precision = "keep" if args.rule == "v3" else args.precision
+    found = (context["Model"], context["get_init_inputs"], context["get_inputs"])
+    return (*found, overrides, original)
 
-    with sanitize.session(source=str(answer)) as state:
-        watch_launches(state, GPUS.get(args.gpu, DEFAULT_GPU))
+
+def run_reference(args: argparse.Namespace, raw: Raw) -> None:
+    """The reference run: the task's `Model` on each trial's inputs, then on the sweep's."""
+    report = raw.data
+    Model, get_init_inputs, get_inputs, _, _ = load_task(args, report)
+    precision = "keep" if args.rule == "v3" else args.precision
+    # the judge's sessions leave no buffer out of the race check (`inductor_lookback`)
+    with sanitize.session(source=str(args.task), inductor_lookback=False):
         report["stage"] = "reference"
         torch.manual_seed(args.seed)
         init_inputs = [cast(x, precision) for x in get_init_inputs()]
         with torch.no_grad():
             torch.manual_seed(args.seed)
             reference = Model(*init_inputs)
-
-        report["stage"] = "load"
-        module = load_answer(answer)
-        entry = "ModelNew" if hasattr(module, "ModelNew") else "Model"
-        report["entry"] = entry
-
-        report["stage"] = "init"
-        with torch.no_grad():
-            if args.rule != "v3":  # KernelBench seeds both models alike; the v3 harness does not
-                torch.manual_seed(args.seed)
-            candidate = getattr(module, entry)(*init_inputs)
-            if args.rule == "v3":  # the v3 harness copies the reference's weights over, by name
-                reference, candidate = reference.eval(), candidate.eval()
-                try:
-                    keys = candidate.load_state_dict(reference.state_dict(), strict=False)
-                    report["not_copied"] = sorted(keys.missing_keys)
-                except Exception as exc:  # noqa: BLE001  as the harness: a mismatch is ignored
-                    report["not_copied"] = [f"load_state_dict failed: {type(exc).__name__}"]
+            if args.rule == "v3":
+                reference = reference.eval()
             elif precision == "fp32":
                 reference = reference.to(dtype=torch.float32)
-                candidate = candidate.to(dtype=torch.float32)
-        report["launches_init"] = state.launches
-
-        report["stage"] = "forward"
-        ops = TorchOps()
-        trials: list[dict[str, Any]] = []
-        report["trials"] = trials
-        seeds = V3_SEEDS if args.rule == "v3" else trial_seeds(args.seed, args.trials)
-        with torch.no_grad():
-            for seed in seeds:
-                start = time.time()
+            seeds = V3_SEEDS if args.rule == "v3" else trial_seeds(args.seed, args.trials)
+            trials: list[dict[str, Any]] = []
+            report["trials"] = trials
+            for index, seed in enumerate(seeds):
                 torch.manual_seed(seed)
                 inputs = [cast(x, precision) for x in get_inputs()]
                 torch.manual_seed(seed)
                 want = reference(*inputs)
-                torch.manual_seed(seed)
-                before = state.launches
-                with ops:
-                    got = candidate(*inputs)
-                row = compare(want, got, inputs, args)
-                row.update(seed=seed, launches=state.launches - before)
-                row["seconds"] = round(time.time() - start, 1)
-                trials.append(row)
-                if not row["pass"]:
-                    break
-            passed = all(t["pass"] for t in trials) and len(trials) == len(seeds)
-            if passed and TUNERS:
-                report["stage"] = "configs"
-                report["configs"] = {"tuners": len(TUNERS), "checked": 0}
-                sweep_configs(reference, candidate, get_inputs, seeds, args, report["configs"])
-        report["launches"] = state.launches
-        report["races_unchecked"] = state.races_unchecked
-        report["gpu"] = args.gpu if args.gpu in GPUS else "unknown"
-        report["shared_unknown"] = state.shared_unknown
-        report["torch_ops"] = dict(ops.seen)
-        report["atomics"] = sorted(ATOMIC_KERNELS)
+                spec = raw.output(f"trial{index}", want)
+                trials.append({"seed": seed, "precision": v3_precision(inputs), "output": spec})
+            # what the sweep compares with: the first trial's inputs, after every trial
+            torch.manual_seed(seeds[0])
+            inputs = [cast(x, precision) for x in get_inputs()]
+            torch.manual_seed(seeds[0])
+            want = reference(*inputs)
+            report["sweep"] = {
+                "precision": v3_precision(inputs),
+                "output": raw.output("sweep", want),
+            }
     report.pop("stage")
-    if not any(t["launches"] for t in trials):  # a launch at init only does not do the task
-        report["verdict"] = "no_kernel"
-    elif passed and "failed" not in report.get("configs", {}):
-        report["verdict"] = "verified"
-    else:
-        report["verdict"] = "wrong"
+
+
+def same_locally(want: Any, got: Any, inputs: list[Any], args: argparse.Namespace) -> bool:
+    """Whether `got` matches this process's own copy of the reference's output: whether to go on
+    to the next trial or config. The judge decides on the reference run's outputs."""
+    try:
+        row = compare(want, got, v3_precision(inputs), args.rule, args.atol, args.rtol)
+    except Exception:  # noqa: BLE001  the judge's own comparison will say what this is
+        return False
+    return bool(row["pass"])
+
+
+def run_answer(
+    args: argparse.Namespace,
+    raw: Raw,
+    channel: Channel,
+    own: set[Path],
+    guards: dict[str, Any],
+) -> None:
+    """The answer's run: the rule's trials, then the sweep, every output kept. `guards` receives,
+    at the snapshot, the integrity check bound to the channel (`enforce`) and the last check
+    before the account is written (`seal`)."""
+    report = raw.data
+    Model, get_init_inputs, get_inputs, overrides, original = load_task(args, report)
+    # an answer that keeps its own copy of the task's sizes gets the scaled ones too, in a copy
+    # of the file with the same line numbers (the fault messages point into it)
+    answer_src = args.answer.read_text(encoding="utf-8")
+    answer_run = shapes.rewrite(answer_src, overrides, only_if=original)
+    mine = shapes.roots(answer_src)
+    report["answer_overrides"] = {
+        n: v for n, v in overrides.items() if n in mine and mine[n] == original.get(n)
+    }
+    answer = args.answer
+    if answer_run != answer_src:
+        answer = scaled_copy(args.work, args.answer)
+        answer.write_text(answer_run, encoding="utf-8")
+    precision = "keep" if args.rule == "v3" else args.precision
+    live: dict[str, Any] = {}  # what the account reads at any point: the session, the op counts
+    # the channel's own closures, held here
+    stop, launch, unchecked = channel.stop, channel.launch, channel.unchecked
+
+    def on_launch(n: int) -> None:
+        """Before the semantics run this launch: the count over the channel (where a forged
+        run.json cannot reach it)."""
+        launch(n)
+
+    def on_check() -> None:
+        """Around the semantics' run of each launch: the checker's own code is the code it was
+        before the answer was imported, or the judge hears `tampered` and the run ends there."""
+        enforce = guards.get("enforce")
+        if enforce is not None:
+            enforce()
+
+    def account() -> None:
+        """What the run did so far, into its account."""
+        state, ops = live.get("state"), live.get("ops")
+        if state is not None:
+            report["launches"] = state.launches
+            report["races_unchecked"] = state.races_unchecked
+            report["shared_unknown"] = state.shared_unknown
+        report["gpu"] = args.gpu if args.gpu in GPUS else "unknown"
+        report["torch_ops"] = dict(ops.seen) if ops is not None else {}
+        report["atomics"] = sorted(ATOMIC_KERNELS)
+        report["tuners"] = len(TUNERS)
+        if TUNERS:  # whatever the outcome: under which config it was reached, what was skipped
+            report["autotune"] = tuned()
+
+    def on_stop(fault: sanitize.KernelFault | sanitize.Unjudged) -> None:
+        """A launch faulted, or cannot be judged: the judge hears it now, and the answer never
+        gets control back. The tool's own exception raised by the answer's code is the answer's
+        error, and goes on as any other."""
+        if isinstance(fault, sanitize.Unjudged) and raised_by_answer(fault, own):
+            return
+        if isinstance(fault, sanitize.KernelFault):
+            event = {"kind": "fault", **fault_fields(fault.fault, args)}
+        else:
+            event = {"kind": "unjudged", "why": fault.verdict, "message": fault.detail[:300]}
+
+        def written() -> None:
+            account()
+            raw.write()
+
+        stop(event, then=written)  # the event first: what the account says after it is a courtesy
+
+    session = sanitize.session(
+        source=str(answer),
+        on_stop=on_stop,
+        on_launch=on_launch,
+        on_check=on_check,
+        on_unchecked=unchecked,  # a launch too large for the race check, counted by the channel
+        inductor_lookback=False,  # an answer is untrusted: every buffer it touches is race-checked
+    )
+    # held to the end: the process leaves by the channel, never through the session's
+    # exit, so the snapshot below (which includes what the session installed) holds
+    guards["session"] = session
+    state = session.__enter__()
+    live["state"] = state
+    watch_launches(state, GPUS.get(args.gpu, DEFAULT_GPU))
+    report["stage"] = "reference"
+    torch.manual_seed(args.seed)
+    init_inputs = [cast(x, precision) for x in get_init_inputs()]
+    with torch.no_grad():
+        torch.manual_seed(args.seed)
+        reference = Model(*init_inputs)
+
+    # every legitimate install (the session hook, then watch_launches' wrappers) is now in
+    # place: snapshot the checker before the answer is imported (`_guard`)
+    from triton.runtime.autotuner import Autotuner
+    from triton.runtime.jit import JITFunction
+
+    hooks = {
+        "JITFunction.run": JITFunction.run,
+        "Autotuner.run": Autotuner.run,
+        "Autotuner.prune_configs": Autotuner.prune_configs,
+    }
+    guard = _guard.checker_integrity(roots=[PACKAGE], hooks=hooks)
+    tampered = {"kind": "unjudged", "why": "tampered"}
+    guards["enforce"] = _guard.enforcer(guard.arm(), stop, tampered)
+    guards["seal"] = _guard.sealer(guards["enforce"])
+    report["stage"] = "load"
+    module = load_answer(answer)
+    entry = "ModelNew" if hasattr(module, "ModelNew") else "Model"
+    report["entry"] = entry
+
+    report["stage"] = "init"
+    with torch.no_grad():
+        if args.rule != "v3":  # KernelBench seeds both models alike; the v3 harness does not
+            torch.manual_seed(args.seed)
+        candidate = getattr(module, entry)(*init_inputs)
+        if args.rule == "v3":  # the v3 harness copies the reference's weights over, by name
+            reference, candidate = reference.eval(), candidate.eval()
+            try:
+                keys = candidate.load_state_dict(reference.state_dict(), strict=False)
+                report["not_copied"] = sorted(keys.missing_keys)
+            except Exception as exc:  # noqa: BLE001  as the harness: a mismatch is ignored
+                report["not_copied"] = [f"load_state_dict failed: {type(exc).__name__}"]
+        elif precision == "fp32":
+            reference = reference.to(dtype=torch.float32)
+            candidate = candidate.to(dtype=torch.float32)
+    report["launches_init"] = state.launches
+
+    report["stage"] = "forward"
+    ops = TorchOps()
+    live["ops"] = ops
+    trials: list[dict[str, Any]] = []
+    report["trials"] = trials
+    seeds = V3_SEEDS if args.rule == "v3" else trial_seeds(args.seed, args.trials)
+    alike = True
+    with torch.no_grad():
+        for index, seed in enumerate(seeds):
+            start = time.time()
+            torch.manual_seed(seed)
+            inputs = [cast(x, precision) for x in get_inputs()]
+            torch.manual_seed(seed)
+            want = reference(*inputs)
+            torch.manual_seed(seed)
+            before = state.launches
+            with ops:
+                got = candidate(*inputs)
+            row: dict[str, Any] = {"seed": seed, "launches": state.launches - before}
+            row["output"] = raw.output(f"trial{index}", got)
+            row["seconds"] = round(time.time() - start, 1)
+            trials.append(row)
+            alike = same_locally(want, got, inputs, args)
+            if not alike:
+                break
+        if alike and TUNERS:
+            report["stage"] = "configs"
+            report["sweep"] = {"runs": []}
+            sweep_configs(reference, candidate, get_inputs, seeds, args, report["sweep"], raw)
+    account()
+    report.pop("stage")
+
+
+def fault_fields(fault: sanitize.Fault, args: argparse.Namespace) -> dict[str, Any]:
+    """A fault as the report gives it: its kind, the kernel, the buffer, and the line in the
+    answer's own file (the scaled copy has the answer's line numbers)."""
+    file = Path(fault.source_file).name
+    if args.answer is not None and file == scaled_copy(args.work, args.answer).name:
+        file = args.answer.name
+    return {
+        "fault": fault.kind,
+        "kernel": fault.kernel,
+        "buffer": fault.buffer,
+        "file": file,
+        "line": fault.source_line,
+        "source": fault.source_text,
+        "message": sanitize.message(fault)[:600],
+    }
 
 
 TUNERS: list[Any] = []  # every autotuner the answer ran, in the order it first ran
@@ -405,24 +594,27 @@ def sweep_configs(
     seeds: list[int],
     args: argparse.Namespace,
     done: dict[str, Any],
+    raw: Raw,
 ) -> None:
     """The trials ran with each autotuner's first config that fits the GPU (here every config
     times the same, so the first wins); a GPU's autotuner picks the fastest, which depends on the
-    card. So every other config is forced in turn, on the first trial's inputs, and compared
-    under the same rule: an answer is only correct if it is correct under the config the
-    autotuner may pick. A config the autotuner skips cannot be picked (`CONFIG_ERRORS`: its
-    kernel needs more shared memory than the GPU has, or does not compile): it is listed as not
-    applicable, with the reason (and, for shared memory, Triton's count and the limit). Nor can
-    a config its `prune_configs_by` drops before benchmarking (`KEPT`, for each key it tuned):
-    for that key the trial's config stays, and a config dropped wherever it was not already
-    judged is listed as not applicable, reason `pruned`, with the configs dropped of every
-    autotuner. Whether a config compiles is judged for sm_90a, the target every launch here is
-    compiled for, whatever `--gpu` says: only the shared-memory limit is the GPU's.
+    card. So every other config is forced in turn, on the first trial's inputs, and its output
+    kept (`runs`; the judge compares it under the same rule): an answer is only correct if it is
+    correct under the config the autotuner may pick. A config the autotuner skips cannot be
+    picked (`CONFIG_ERRORS`: its kernel needs more shared memory than the GPU has, or does not
+    compile): it is listed as not applicable, with the reason (and, for shared memory, Triton's
+    count and the limit). Nor can a config its `prune_configs_by` drops before benchmarking
+    (`KEPT`, for each key it tuned): for that key the trial's config stays, and a config dropped
+    wherever it was not already judged is listed as not applicable, reason `pruned`, with the
+    configs dropped of every autotuner. Whether a config compiles is judged for sm_90a, the
+    target every launch here is compiled for, whatever `--gpu` says: only the shared-memory
+    limit is the GPU's.
 
-    The outcome goes into `done` (the report's `configs`) as it comes: while a config is
-    forced, `forcing` names it, so a fault or an error that ends the run under it says which.
-    Only a sweep that ends puts back the autotuners' state, so that the report's `autotune` says
-    what the trials ran with; after a fault it names the config forced."""
+    The outcome goes into `done` (the account's `sweep`) as it comes: while a config is forced,
+    `forcing` names it, so a fault or an error that ends the run under it says which. The sweep
+    stops at the first output that differs from this process's own copy of the reference's.
+    Only a sweep that ends puts back the autotuners' state, so that the account's `autotune`
+    says what the trials ran with; after a fault it names the config forced."""
     precision = "keep" if args.rule == "v3" else args.precision
     torch.manual_seed(seeds[0])
     inputs = [cast(x, precision) for x in get_inputs()]
@@ -463,14 +655,9 @@ def sweep_configs(
             done.setdefault("not_applicable", []).append(not_applicable(index, picks[0], exc))
             continue
         del done["forcing"]
-        row = compare(want, got, inputs, args)
-        done["checked"] += 1
-        if not row["pass"]:
-            done["failed"] = {
-                "index": index,
-                "config": str(picks[0]),
-                **{k: v for k, v in row.items() if k != "pass"},
-            }
+        output = raw.output(f"config{index}", got)
+        done["runs"].append({"index": index, "config": str(picks[0]), "output": output})
+        if not same_locally(want, got, inputs, args):
             break
     for tuner, (cache, best) in zip(TUNERS, saved, strict=True):
         tuner.cache.clear()
@@ -479,60 +666,13 @@ def sweep_configs(
 
 
 V3_SEEDS = [42, 123, 456, 789, 1337]
-V3_TOLERANCE = {  # KernelBench-v3 `src/eval/benchmark.py`, by the dtype of the first input
-    "fp4": (0.5, 0.1),
-    "fp8": (0.1, 0.05),
-    "fp16": (0.01, 0.01),
-    "bf16": (0.01, 0.01),
-    "fp32": (0.001, 0.001),
-}
 
 
-def v3_precision(inputs: list[Any]) -> str:
-    for value in inputs:
-        if isinstance(value, torch.Tensor):
-            text = str(value.dtype)
-            for key, name in (("float8", "fp8"), ("bfloat16", "bf16"), ("float16", "fp16")):
-                if key in text:
-                    return name
-            return "fp32" if "float32" in text else text.replace("torch.", "")
-    return "fp32"
-
-
-def compare(want: Any, got: Any, inputs: list[Any], args: argparse.Namespace) -> dict[str, Any]:
-    """One trial under the chosen rule (`pass`), with the other rules' answers alongside:
-    KernelBench's elementwise `torch.allclose` at 1e-2 (v0.1) and 1e-4 (its fp32 default now), and
-    KernelBench-v3's `max|diff| < atol + rtol * max|ref|` with finite outputs."""
-    row: dict[str, Any] = {}
-    if not isinstance(want, torch.Tensor) or not isinstance(got, torch.Tensor):
-        row.update(pass_=False, why="not a tensor")
-    elif got.shape != want.shape:
-        row.update(pass_=False, shape=[list(want.shape), list(got.shape)])
-    else:
-        w, g = want.float(), got.float()
-        diff = (w - g).abs()
-        max_diff = float(diff.max()) if diff.numel() else 0.0
-        max_ref = float(w.abs().max()) if w.numel() else 0.0
-        atol, rtol = V3_TOLERANCE.get(v3_precision(inputs), (0.05, 0.02))
-        finite = bool(torch.isfinite(w).all()) and bool(torch.isfinite(g).all())
-        row.update(
-            max_abs_diff=max_diff,
-            max_ref=max_ref,
-            ref_nan=bool(torch.isnan(w).any()),
-            allclose=bool(torch.allclose(want, got, atol=args.atol, rtol=args.rtol)),
-            allclose_1e4=bool(torch.allclose(want, got, atol=1e-4, rtol=1e-4)),
-            v3=finite and max_diff < atol + rtol * max_ref,
-        )
-        row["pass_"] = row["v3"] if args.rule == "v3" else row["allclose"]
-    row["pass"] = row.pop("pass_")
-    return row
-
-
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "")
     ap.add_argument("task", type=Path)
-    ap.add_argument("answer", type=Path)
-    ap.add_argument("out", type=Path)
+    ap.add_argument("work", type=Path, help="the run's own directory (run.json, run.npz)")
+    ap.add_argument("--answer", type=Path, help="the answer (without it: the reference run)")
     ap.add_argument("--scale", choices=("auto", "none"), default="auto")
     ap.add_argument("--budget", type=int, default=shapes.BUDGET)
     ap.add_argument("--trials", type=int, default=5)
@@ -542,98 +682,109 @@ def main() -> int:
     ap.add_argument("--precision", choices=("fp32", "keep"), default="fp32")
     ap.add_argument("--rule", choices=("kernelbench", "v3"), default="kernelbench")
     ap.add_argument("--gpu", default="", help="the dataset's GPU (its shared-memory limit)")
-    args = ap.parse_args()
+    ap.add_argument("--events", type=int, help="the pipe to the judge (`judge_io.Channel`)")
+    args = ap.parse_args(argv)
+    channel = Channel(args.events)  # before anything of the answer's is imported
+    stop, finish = channel.stop, channel.finish  # its closures, held here
+    # a SIGINT in the middle of a launch would raise KeyboardInterrupt into the answer, which
+    # could catch it and go on without the launch's verdict; nothing interrupts a judged run
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     cap_memory()
-    report: dict[str, Any] = {"answer": args.answer.name, "scale": args.scale, "launches": 0}
-    # what the verdict was reached under: a rerun with other settings judges again
-    report["settings"] = {"rule": args.rule, "precision": args.precision, "gpu": args.gpu}
-    own = {args.answer.resolve(), scaled_copy(args.out).resolve()}  # the answer's own code
+    raw = Raw(args.work)
+    report = raw.data
+    guards: dict[str, Any] = {}  # the integrity checks, once armed, and the session
+    own: set[Path] = set()  # the answer's own code: its file, and its copy at the scaled sizes
+    if args.answer is not None:
+        own = {args.answer.resolve(), scaled_copy(args.work, args.answer).resolve()}
 
     def where(frame: traceback.FrameSummary) -> str:
         """A frame as `file:line`: the scaled copy has the answer's line numbers, and is named
         after the answer."""
-        name = args.answer.name if in_answer(frame, own) else Path(frame.filename).name
+        name = Path(frame.filename).name
+        if args.answer is not None and in_answer(frame, own):
+            name = args.answer.name
         return f"{name}:{frame.lineno}"
 
-    def failed(exc: BaseException) -> None:
+    def failed(exc: BaseException) -> dict[str, Any]:
         """An exception of the answer's, the task's or the tool's: a full disk or the memory
         cap is a limit of the machine unless the answer's own code raised it."""
         inside, frame = blame(exc, own)
         stage = report.get("stage", "")
         limit = not raised_by_answer(exc, own)
+        found: dict[str, Any] = {"verdict": "error"}
         if limit and "can't allocate memory" in str(exc):  # torch's CPU allocator, same cap
-            report.update(verdict="not_judged", why="memory")
+            found = {"verdict": "not_judged", "why": "memory"}
         elif limit and isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
             # the sandbox's /tmp is a tmpfs of half the machine's RAM: what fills it says
             # something about the machine, not about the answer
-            report.update(verdict="not_judged", why="disk")
+            found = {"verdict": "not_judged", "why": "disk"}
         elif inside:
-            report.update(verdict="not_judged", why="tool_error")
+            found = {"verdict": "not_judged", "why": "tool_error"}
         elif stage in ("task", "reference"):
-            report.update(verdict="not_judged", why="task_error")
-        else:
-            report.update(verdict="error")
+            found = {"verdict": "not_judged", "why": "task_error"}
         lines = [ln.strip() for ln in str(exc).strip().splitlines() if ln.strip()]
-        report.update(
+        found.update(
             message=first_line(exc),
             detail=" | ".join(lines[-2:])[:300],  # a compilation error says what went wrong last
             where=where(frame),
         )
+        return found
 
     start = time.time()
     try:
-        judge(args, report)
-    except sanitize.KernelFault as stop:
-        fault = stop.fault
-        file = Path(fault.source_file).name
-        report.update(
-            verdict="unsafe",
-            kind=fault.kind,
-            kernel=fault.kernel,
-            buffer=fault.buffer,
-            # the scaled copy has the answer's line numbers: the line is the answer's own
-            file=args.answer.name if file == scaled_copy(args.out).name else file,
-            line=fault.source_line,
-            source=fault.source_text,
-            message=sanitize.message(fault)[:600],
-        )
+        if args.answer is None:
+            run_reference(args, raw)
+        else:
+            run_answer(args, raw, channel, own, guards)
+    except sanitize.KernelFault as fault:  # out of a launch the session does not watch
+        stop({"kind": "fault", **fault_fields(fault.fault, args)}, then=raw.write)
     except sanitize.SharedOverLimit as exc:
         # every config of an autotuner skipped, then its launch with the config it falls back
         # to needs more shared memory than the GPU has: on the GPU, with this Triton, it fails
         import triton
 
         gpu = args.gpu if args.gpu in GPUS else "H100 (the default GPU)"
-        report.update(
-            verdict="error",
-            why="shared_memory",
-            message=(
+        failure: dict[str, Any] = {
+            "verdict": "error",
+            "why": "shared_memory",
+            "message": (
                 f"every autotune config of `{exc.kernel}` was skipped, and the one it falls back "
                 f"to needs {exc.required:,} B of shared memory, over the {gpu}'s {exc.limit:,} B "
                 f"(Triton {triton.__version__}'s count)"
             ),
-            shared=exc.required,
-            limit=exc.limit,
-        )
+            "shared": exc.required,
+            "limit": exc.limit,
+        }
         frame = answer_frame(exc, own)
         if frame is not None:
-            report["where"] = where(frame)
-    except sanitize.Unjudged as stop:
-        if raised_by_answer(stop, own):  # the tool's own exception, raised by the answer
-            failed(stop)
+            failure["where"] = where(frame)
+        report["failure"] = failure
+    except sanitize.Unjudged as unjudged:
+        if raised_by_answer(unjudged, own):  # the tool's own exception, raised by the answer
+            report["failure"] = failed(unjudged)
         else:
-            report.update(verdict="not_judged", why=stop.verdict, message=stop.detail[:300])
+            report["failure"] = {
+                "verdict": "not_judged", "why": unjudged.verdict, "message": unjudged.detail[:300]
+            }  # fmt: skip
     except MemoryError as exc:
         if raised_by_answer(exc, own):
-            failed(exc)
+            report["failure"] = failed(exc)
         else:
-            report.update(verdict="not_judged", why="memory", message="over the run's memory cap")
+            report["failure"] = {
+                "verdict": "not_judged", "why": "memory", "message": "over the run's memory cap"
+            }  # fmt: skip
     except BaseException as exc:  # noqa: BLE001  the answer may raise anything
-        failed(exc)
-    if TUNERS:  # whatever the verdict: under which config it was reached, and what was skipped
+        report["failure"] = failed(exc)
+    if args.answer is not None and TUNERS:
         report["autotune"] = tuned()
     report["seconds"] = round(time.time() - start, 1)
-    args.out.write_text(json.dumps(report, indent=1))
-    return 0
+    seal = guards.get("seal")
+    if seal is not None:
+        # the last code of the answer's has run (its objects' finalizers too): the checker must
+        # still be the one snapshotted, or the judge hears `tampered` and the account is not written
+        seal()
+    raw.write()
+    finish(0)
 
 
 if __name__ == "__main__":

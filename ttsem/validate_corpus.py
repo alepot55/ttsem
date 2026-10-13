@@ -106,7 +106,7 @@ def main() -> None:
     summary = summarize(reports)
     (a.results / "summary.json").write_text(json.dumps(summary, indent=1))
     print(f"{summary['programs']} programs, {summary['errors']} errors")
-    print("first bad pass:", summary["first_bad_pass"])
+    print("first stage whose input differs:", summary["first_bad_pass"])
     for sig, n in collections.Counter(summary["error_programs"].values()).most_common(5):
         print(f"  {n} programs not captured: {sig}")
     worst = sorted(summary["per_pass"].items(), key=lambda kv: -kv[1].get("mismatch", 0))[:5]

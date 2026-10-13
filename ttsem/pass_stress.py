@@ -18,8 +18,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from ttsem import minimize
-from ttsem import validate
+from ttsem import minimize, validate
 
 
 def changed_stages(program: Path, device: str, cc: int) -> list[tuple[str, bool]] | None:

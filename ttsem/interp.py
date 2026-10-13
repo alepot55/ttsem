@@ -3,7 +3,9 @@
 One program instance at a time. `run_grid` runs every program id in the grid in order, which
 is a legal schedule of a Triton launch as long as the kernel does not depend on the order in
 which programs reach the same address; the only ops that could tell the difference are the
-atomics, and they see the same set of updates.
+atomics, and they see the same set of updates. `TTSEM_GRID_ORDER` picks another of those
+schedules (`reverse`, or `shuffle:SEED`): a kernel whose result depends on the schedule shows it
+in its values, which is how a race report is witnessed without a GPU.
 
 Names are bound in a stack of scopes, one per entered region, so that a combine region's block
 arguments do not leak out of `tt.reduce` and a loop body rebinds its induction variable each
@@ -13,13 +15,33 @@ iteration. A value defined in a dominating block stays visible to the blocks it 
 from __future__ import annotations
 
 import itertools
+import os
+import random
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from ttsem.ir_types import Module, Op, Region
 from ttsem.memory import Memory
 from ttsem.ops import OPS, Branch, Condition, Yield
 from ttsem.values import Barrier, Unsupported, Value
+
+
+def grid_order(num_programs: tuple[int, ...], order: str = "") -> Iterable[tuple[int, int, int]]:
+    """The program ids of a grid in the order they run: x fastest, then y, then z (`""`, lazily:
+    a grid can have millions), the reverse of that (`"reverse"`), or a permutation drawn from a
+    seed (`"shuffle:SEED"`)."""
+    nx, ny, nz = num_programs
+    in_order = ((x, y, z) for z, y, x in itertools.product(range(nz), range(ny), range(nx)))
+    if not order:
+        return in_order
+    pids = list(in_order)
+    if order == "reverse":
+        pids.reverse()
+    elif order.startswith("shuffle:"):
+        random.Random(int(order.removeprefix("shuffle:"))).shuffle(pids)
+    else:
+        raise ValueError(f"TTSEM_GRID_ORDER: unknown order {order!r}")
+    return pids
 
 
 class Interp:
@@ -65,15 +87,14 @@ class Interp:
             raise KeyError(f"no function {fn!r}; module has {sorted(self.module.funcs)}")
         func = self.module.funcs[fn]
         self.program_id = tuple(program_id)
-        if getattr(self.memory, "access_log", None) is not None:
+        if getattr(self.memory, "tracing", False):
             self.memory.agent = self.program_id
         self.scopes = []
         return self.run_region(func.regions[0], list(args))
 
     def run_grid(self, fn: str, args: list[Value]) -> None:
-        nx, ny, nz = self.num_programs
-        for z, y, x in itertools.product(range(nz), range(ny), range(nx)):
-            self.run(fn, args, (x, y, z))
+        for pid in grid_order(self.num_programs, os.environ.get("TTSEM_GRID_ORDER", "")):
+            self.run(fn, args, pid)
 
     # ---------------------------------------------------------------- partitions
 
@@ -169,7 +190,7 @@ class Interp:
         if handler is None:
             self.unsupported.add(op.name)
             raise Unsupported(op.name, op.text or "")
-        if getattr(self.memory, "access_log", None) is not None:
+        if getattr(self.memory, "access_log", None) is not None:  # the spans need no op
             self.memory.current_op = op.text or op.name
         try:
             results = handler(self, op, [self.value(n) for n in op.operands])
