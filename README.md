@@ -11,12 +11,13 @@ the CPU.
 
 ```console
 $ pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-      'ttsem[triton] @ git+https://github.com/alepot55/ttsem'
+      'ttsem[triton]'
 $ python -m ttsem.sanitize pytest tests/ -q        # your suite, written for device="cuda"
 ```
 
-The first command installs ttsem with Triton 3.8.0 and the CPU build of torch 2.14.0 (Linux,
-Python 3.12 or 3.13); once ttsem is on PyPI, `'ttsem[triton]'` replaces the git requirement. The
+The first command installs ttsem from PyPI with Triton 3.8.0 and the CPU build of torch 2.14.0
+(Linux, Python 3.12 or 3.13); `pip install ttsem` alone, numpy its only dependency, runs
+`python -m ttsem demo`. The
 second runs a pytest suite written for `device="cuda"`, unchanged. On [suite_no_mask.py][nomask], a
 test file whose kernel forgets the mask on its store, the size that is a multiple of the block
 passes and the other one fails at line 15 (from a clone; the last lines of the output):
@@ -31,10 +32,10 @@ FAILED tests/fixtures/agents/suite_no_mask.py::test_add[1000] - KernelFault: ...
 ```
 
 `python -m ttsem.sanitize script.py` does the same for a script. In CI, the action runs your suite
-this way on a CPU runner (pin it to `@v0.1.0` once that release is tagged):
+this way on a CPU runner:
 
 ```yaml
-- uses: alepot55/ttsem@main
+- uses: alepot55/ttsem@v0.1.0
   with:
     install: pip install -e .        # your project
     args: tests/kernels -q           # pytest arguments
