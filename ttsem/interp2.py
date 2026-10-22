@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections import Counter
 
 from ttsem import mlir
+from ttsem._compat import add_note
 from ttsem.interp import Interp
 from ttsem.ir_types import Module, Op, Type
 from ttsem.layout_checks import LayoutOf, LayoutViolation, check, has_check
@@ -105,7 +106,7 @@ class LayoutInterp(Interp):
         try:
             check(op, args, results, self.layout_of)
         except LayoutViolation as violation:
-            violation.add_note(f"while checking {(op.text or op.name)[:300]}")
+            add_note(violation, f"while checking {(op.text or op.name)[:300]}")
             raise
         if has_check(op.name):
             self.checked[op.name] += 1

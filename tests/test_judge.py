@@ -26,6 +26,7 @@ import pytest
 from conftest import Planted
 
 from ttsem import judge, judge_shapes
+from ttsem._compat import python_module
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "judge"
 TASK = FIXTURES / "task_relu.py"
@@ -736,7 +737,8 @@ def test_a_report_is_read_back_only_under_the_settings_it_was_judged_under(
     assert json.loads(report.read_text()) == got  # kept for the next rerun
     assert len(ran) == 1  # judged again
     # the runner's working directory is the run's own, which the answer writes: off the path
-    assert ran[0][:3] == [sys.executable, "-P", "-m"]
+    prefix = python_module(sys.executable, judge.RUNNER)
+    assert ran[0][: len(prefix)] == prefix
     assert ran[0][ran[0].index("--rule") + 1] == "v3"
     report.write_text(json.dumps({"verdict": "wrong"}))  # a report from before `settings`
     assert judge.judge_one(TASK, answer, report, 60, "auto", v3, sandbox=False)["verdict"] == (

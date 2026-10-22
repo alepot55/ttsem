@@ -12,7 +12,7 @@ readme = "README.md"
 # TritonBench judge: before PEP 701 the tokenizer reads an f-string as a single string, so a call
 # such as `torch.rand` inside an f-string's braces goes unseen. On 3.12 and 3.13 the CPU suite
 # passes in full; CI runs the tests that need Triton and torch on 3.12.
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Alessandro Potenza" }]
@@ -24,6 +24,8 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Compilers",
@@ -92,7 +94,7 @@ testpaths = ["tests"]
 [tool.ruff]
 extend-exclude = ["tests/fixtures/inductor"]
 line-length = 100
-target-version = "py312"
+target-version = "py310"
 
 # The rules are listed rather than left to ruff's default, which changes between releases. These
 # are the families the code passes; CI runs the ruff version it pins.
@@ -113,7 +115,7 @@ exclude = ["*.md"]
 # result does not depend on whether they are installed. A module comes off the list when it
 # passes; the tests are not checked yet.
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.10"
 files = ["ttsem"]
 warn_unused_configs = true
 warn_redundant_casts = true

@@ -100,6 +100,7 @@ from pathlib import Path
 from typing import Any
 
 from ttsem import _guard
+from ttsem._compat import python_module
 from ttsem.judge_io import (
     Ran,
     compare,
@@ -398,7 +399,11 @@ def reference_run(
             cache.mkdir(parents=True, exist_ok=True)  # a run may write there first
             env = run_env(cache, sandbox)
             cmd = sandbox_prefix(work, cache, [task], env, out_tree(out), strict) if sandbox else []
-            cmd += [sys.executable, "-P", "-m", RUNNER, str(task.resolve()), str(work.resolve())]
+            cmd += [
+                *python_module(sys.executable, RUNNER),
+                str(task.resolve()),
+                str(work.resolve()),
+            ]
             cmd += ["--scale", scale, "--rule", settings["rule"]]
             cmd += ["--precision", settings["precision"]]
             ran = run_sandboxed(cmd, env, work, timeout)
@@ -512,7 +517,7 @@ def judge_one(
         )
         # -P: the working directory, the run's own, stays off the path, so a module the answer
         # leaves there is not what the runner imports as ttsem
-        cmd += [sys.executable, "-P", "-m", RUNNER, str(task.resolve()), str(work.resolve())]
+        cmd += [*python_module(sys.executable, RUNNER), str(task.resolve()), str(work.resolve())]
         cmd += ["--answer", str(answer.resolve()), "--scale", scale, *settings_flags(settings)]
         ran = run_sandboxed(cmd, env, work, timeout)
         record = verdict_of(head, reference, ran, work, settings["rule"], timeout)

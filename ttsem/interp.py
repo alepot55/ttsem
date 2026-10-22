@@ -20,6 +20,7 @@ import random
 import threading
 from collections.abc import Callable, Iterable
 
+from ttsem._compat import add_note
 from ttsem.ir_types import Module, Op, Region
 from ttsem.memory import Memory
 from ttsem.ops import OPS, Branch, Condition, Yield
@@ -199,7 +200,7 @@ class Interp:
                 text = op.text or op.name
                 at = text.rfind(" loc(")  # the location is kept whole: it names the source line
                 head, where = (text[:at], text[at:]) if at > 0 else (text, "")
-                e.add_note(f"while evaluating {head[:300]}{where}")
+                add_note(e, f"while evaluating {head[:300]}{where}")
             raise
         self.bind_results(op, results)
 

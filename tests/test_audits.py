@@ -24,6 +24,7 @@ import pytest
 from conftest import Planted
 
 from ttsem import judge
+from ttsem._compat import python_script
 
 AUDITS = Path(__file__).resolve().parent.parent / "audits"
 SEP = "#" * 146
@@ -273,7 +274,7 @@ def test_the_device_runner_refuses_to_run_a_file_outside_the_sandbox(
         env["TTSEM_DEVICE_SANDBOX"] = "1"
     runner = AUDITS / "tritonbench" / "device_runner.py"
     done = subprocess.run(
-        [sys.executable, "-P", str(runner), str(script), "out.json", "out.npz"],
+        [*python_script(sys.executable, str(runner)), str(script), "out.json", "out.npz"],
         capture_output=True,
         text=True,
         cwd=tmp_path,

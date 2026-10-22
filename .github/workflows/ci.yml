@@ -52,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
@@ -77,14 +77,19 @@ jobs:
   # target). Required like the job above: torch and Triton are pinned in the extra, so a failure
   # here is a change in this repository, not in a dependency.
   wheel:
-    name: with the Triton wheel (no GPU)
+    name: with the Triton wheel (no GPU, Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 runs the judge's runner without `python -P` (ttsem/_compat.py)
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       # The judge runs every answer under bwrap, and its tests skip where bwrap cannot create a

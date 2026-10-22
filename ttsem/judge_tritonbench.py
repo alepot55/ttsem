@@ -80,6 +80,7 @@ from typing import Any
 import numpy as np
 
 from ttsem import _guard, judge
+from ttsem._compat import python_module
 from ttsem.judge_io import Ran, load_npz, printable, read_json, run_sandboxed
 
 RUNNER = "ttsem._tritonbench_runner"
@@ -176,13 +177,22 @@ _LITERALS = {tokenize.COMMENT, tokenize.STRING} | {
 }
 
 
+def _fstring(token: tokenize.TokenInfo) -> bool:
+    """Before Python 3.12 an f-string is one STRING token, its replacement fields inside it: it is
+    kept whole, which can count a word of its literal part too (the safe side: `draws_random`)."""
+    if token.type != tokenize.STRING:
+        return False
+    prefix = token.string[: len(token.string) - len(token.string.lstrip("rRbBuUfF"))]
+    return "f" in prefix.lower()
+
+
 def code_only(text: str) -> str:
     """`text` without its comments and string literals (a line commented out, a docstring's
     example), its tokens joined so that a dotted name stays whole; `text` itself where it does
     not tokenize."""
     try:
         tokens = tokenize.generate_tokens(io.StringIO(text).readline)
-        kept = [t.string for t in tokens if t.type not in _LITERALS]
+        kept = [t.string for t in tokens if t.type not in _LITERALS or _fstring(t)]
     except (tokenize.TokenError, SyntaxError):
         return text
     return re.sub(r" ?\. ?", ".", " ".join(kept))
@@ -352,7 +362,7 @@ def run_file(
     cmd: list[str] = []
     if sandbox:
         cmd = judge.sandbox_prefix(work, cache, [script], env, hide, strict) + list(extra)
-    cmd += [sys.executable, "-P", "-m", RUNNER, str(script.resolve())]
+    cmd += [*python_module(sys.executable, RUNNER), str(script.resolve())]
     cmd += [str(work / "run.json"), str(work / "run.npz")]
     return run_report(run_sandboxed(cmd, env, work, timeout), work, script, timeout)
 
