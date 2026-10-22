@@ -115,7 +115,9 @@ exclude = ["*.md"]
 # result does not depend on whether they are installed. A module comes off the list when it
 # passes; the tests are not checked yet.
 [tool.mypy]
-python_version = "3.10"
+# 3.12, not the 3.10 floor: numpy's own stubs use `type` statements. Code that 3.10 cannot run is
+# caught by ruff (target py310) and by the 3.10 test jobs.
+python_version = "3.12"
 files = ["ttsem"]
 warn_unused_configs = true
 warn_redundant_casts = true
