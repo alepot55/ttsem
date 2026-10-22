@@ -230,6 +230,10 @@ def load_task(args: argparse.Namespace, report: dict[str, Any]) -> tuple[Any, ..
     original = shapes.roots(task_src)
     report["shapes"] = {k: [original.get(k), v] for k, v in overrides.items()}
     context: dict[str, Any] = {}
+    # a task may draw values at module level (`bias_list = [nn.Parameter(torch.randn(1))]`) and
+    # pass them to both models through `get_init_inputs`; the reference and the answer run in two
+    # processes here, where KernelBench runs them in one, so both seed before the task's import
+    torch.manual_seed(args.seed)
     exec(shapes.rewrite(task_src, overrides), context)  # noqa: S102  inside the sandbox
     found = (context["Model"], context["get_init_inputs"], context["get_inputs"])
     return (*found, overrides, original)
