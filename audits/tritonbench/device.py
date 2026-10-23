@@ -36,6 +36,7 @@ from typing import Any
 
 from ttsem import judge
 from ttsem import judge_tritonbench as tb
+from ttsem._compat import python_script
 from ttsem.judge_io import printable, read_json, run_sandboxed
 
 RUNNER = Path(__file__).resolve().parent / "device_runner.py"
@@ -86,7 +87,7 @@ def run_file(
         env["PYTHONPATH"] = os.environ["PYTHONPATH"]
     cmd = judge.sandbox_prefix(work, cache, [script], env, hide) + gpu_nodes() + list(extra)
     cmd += ["--ro-bind", str(RUNNER), str(RUNNER)]  # whatever /tmp or `hide` hide
-    cmd += [sys.executable, "-P", str(RUNNER), str(script.resolve())]
+    cmd += [*python_script(sys.executable, str(RUNNER)), str(script.resolve())]
     cmd += [str(work / "run.json"), str(work / "run.npz")]
     return tb.run_report(run_sandboxed(cmd, env, work, timeout), work, script, timeout)
 
