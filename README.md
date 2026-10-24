@@ -16,7 +16,7 @@ $ python -m ttsem.sanitize pytest tests/ -q        # your suite, written for dev
 ```
 
 The first command installs ttsem from PyPI with Triton 3.8.0 and the CPU build of torch 2.14.0
-(Linux, Python 3.10 to 3.13 from ttsem 0.1.1; 0.1.0 needs 3.12 or 3.13); `pip install ttsem` alone, numpy its only dependency, runs
+(Linux, Python 3.10 to 3.13); `pip install ttsem` alone, numpy its only dependency, runs
 `python -m ttsem demo`. The
 second runs a pytest suite written for `device="cuda"`, unchanged. On [suite_no_mask.py][nomask], a
 test file whose kernel forgets the mask on its store, the size that is a multiple of the block
@@ -35,7 +35,7 @@ FAILED tests/fixtures/agents/suite_no_mask.py::test_add[1000] - KernelFault: ...
 this way on a CPU runner:
 
 ```yaml
-- uses: alepot55/ttsem@v0.1.0
+- uses: alepot55/ttsem@v0.1.1
   with:
     install: pip install -e .        # your project
     args: tests/kernels -q           # pytest arguments

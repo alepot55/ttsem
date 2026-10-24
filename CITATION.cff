@@ -5,8 +5,8 @@ title: "ttsem: an executable semantics of Triton's TTIR and TTGIR, with a per-pa
 authors:
   - family-names: Potenza
     given-names: Alessandro
-version: 0.1.0
-# date-released is set when 0.1.0 is tagged and published
+version: 0.1.1
+# date-released is set when 0.1.1 is tagged and published
 license: MIT
 repository-code: "https://github.com/alepot55/ttsem"
 url: "https://github.com/alepot55/ttsem"

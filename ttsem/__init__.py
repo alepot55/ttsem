@@ -37,7 +37,7 @@ from ttsem.mlir import NotGeneric, ParseError, parse, to_generic, unparse
 from ttsem.races import detect
 from ttsem.values import Poison, Unsupported, Value
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # The names below pull in `triton`, so they are resolved on first use rather than at import.
 _LAZY = {
