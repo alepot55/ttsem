@@ -399,10 +399,12 @@ def test_no_autotune_config_that_fits_the_gpu_is_an_error_of_the_answer(
     assert report["shared"] == 262144 and report["limit"] == 232448
     assert report["where"] == "answer_no_config_fits.py:41"
     assert len(report["autotune"][0]["skipped"]) == 2
+    import triton  # the message names the version that counted, whichever is installed
+
     assert judge.describe(report).startswith(
         "error (shared_memory): every autotune config of `matmul_kernel` was skipped, and the one "
         "it falls back to needs 262,144 B of shared memory, over the H100 (the default GPU)'s "
-        "232,448 B (Triton 3.8.0's count)"
+        f"232,448 B (Triton {triton.__version__}'s count)"
     )
 
 

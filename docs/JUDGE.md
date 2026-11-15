@@ -145,7 +145,7 @@ into the checker. What each verdict holds against is therefore worth stating pla
   race; the 32-bit helper packs value and flag into one word updated only atomically, which is
   never a race. None of the 7,752 published TritonBench answers calls either.
 - Full separation of the answer from the checker (running the semantics in a process the answer's
-  code cannot reach at all) is planned for 0.2. Until then the judge is fit for auditing published
+  code cannot reach at all) is planned, and is not in 0.2. Until then the judge is fit for auditing published
   answers and for evaluation, where the answers were not written to defeat it. Used as an RL reward
   against an optimiser that is free to write anything, treat `unsafe` and `no_kernel` with this
   caveat: the two stop-gaps block every attack in the test suite, but they are not a proof, and
