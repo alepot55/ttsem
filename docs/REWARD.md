@@ -233,6 +233,38 @@ real ceiling on concurrent passes is that number times `TTSEM_REWARD_WORKERS`; a
 spread over the nodes of the job, so ttsem, the judge's venv, `bwrap` and the `TTSEM_REWARD_*`
 variables must be present on each of them.
 
+## The OpenEnv adapter
+
+`ttsem.reward.openenv_adapter` serves the judge as an [OpenEnv](https://github.com/openenv/OpenEnv)
+environment (BSD-3; `pip install "ttsem[openenv]"`, written against `openenv` 0.13.0): `reset` hands
+out a KernelBench-style task as a prompt, `step` takes a completion, extracts its code, judges it in
+score mode and returns the observation with the verdict, the judge's paragraph and the reward.
+
+```python
+from ttsem.reward.openenv_adapter import KernelAction, KernelEnv, create_kernel_app
+
+env = KernelEnv({"train": [reference_src, ...]}, max_attempts=3)
+obs = env.reset(split="train", index=0)              # obs.prompt is what the model is shown
+obs = env.step(KernelAction(completion=text))        # obs.reward, obs.verdict, obs.feedback, obs.done
+app = create_kernel_app({"train": [...]})            # the server: uvicorn.run(app)
+```
+
+- **Reward.** The judge's CPU-only score (1.0 verified, 0.0 rejected), taken through a `Rubric`
+  (`env.rubric.last_score`). An abstention is `abstain_value` (0.0 by default, as in the verl
+  adapter) and sets `abstain` on the observation, so a trainer that can drop those samples should.
+- **Attempts.** With `max_attempts` above 1 an episode lasts until a kernel is verified or the
+  attempts are spent; `feedback` is what the next attempt is shown.
+- **Tasks.** `list_splits`, `num_tasks`, `get_task` and `get_task_range` answer OpenEnv's task
+  discovery without building a judge; `reset(split=, index=, task=, seed=)` picks the task.
+- **Judge.** Pass one, or it is built once per process from the `TTSEM_REWARD_*` variables, as for
+  verl; every answer runs in its `bwrap` sandbox. `SUPPORTS_CONCURRENT_SESSIONS` is true: the
+  sessions of a server share that judge's worker pool.
+
+An episode lives in one WebSocket session (`/ws`, which OpenEnv's `EnvClient` uses). OpenEnv's REST
+routes make a fresh environment for each request, so a `/step` there answers "step before reset".
+Tested here against a fake worker, directly and through OpenEnv's app over a WebSocket; not in a
+training run, and not against an OpenEnv version other than 0.13.0.
+
 ## The worker: the judge runs in its own venv
 
 The judge needs Triton and torch (CPU), pinned in ttsem's `triton` extra, and a trainer usually

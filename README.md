@@ -288,8 +288,8 @@ names the kernel, the buffer and the line. In gate mode a reward you already hav
 verified answer and lowered to the fail value for a rejected one, never raised; in score mode the
 score is the reward. The trainer's process imports neither torch nor Triton: the passes run
 in a worker in the judge's own venv, every answer and every reference in its own `bwrap` sandbox,
-and nothing runs without one. A verl adapter is included, tested against a fake worker and not yet
-against a verl release.
+and nothing runs without one. A verl adapter and an OpenEnv adapter are included, tested against a fake worker and not yet
+against a verl release or in a training run.
 
 ```python
 from ttsem.reward import Judge, extract_answer
@@ -338,7 +338,7 @@ after the system was found to exploit its evaluation harness ([TechCrunch][sakan
 | [docs/DESIGN.md][design] | the three levels, the interfaces between them, and why they are drawn there |
 | [docs/RESULTS.md][results] | the corpora, the counts, and the calibration of the semantics against the device |
 | [docs/JUDGE.md][judge] | the judge of model-written kernels: rules, verdicts, batches, the sandbox |
-| [docs/REWARD.md][reward] | the judge as an RL reward: gate and score mode, abstentions, the API, the verl adapter, the worker, what it does not catch |
+| [docs/REWARD.md][reward] | the judge as an RL reward: gate and score mode, abstentions, the API, the verl and OpenEnv adapters, the worker, what it does not catch |
 | [docs/INDUCTOR.md][inductor] | the Triton code of `torch.compile` under ttsem |
 | [docs/AGENTS.md][agents] | for coding agents that write Triton kernels |
 | [audits/](https://github.com/alepot55/ttsem/tree/main/audits) | the commands that redo the TritonBench and KernelBench audits from a clone |
