@@ -35,7 +35,7 @@ FAILED tests/fixtures/agents/suite_no_mask.py::test_add[1000] - KernelFault: ...
 this way on a CPU runner:
 
 ```yaml
-- uses: alepot55/ttsem@v0.1.1
+- uses: alepot55/ttsem@v0.2.0
   with:
     install: pip install -e .        # your project
     args: tests/kernels -q           # pytest arguments
