@@ -12,11 +12,14 @@ KernelBench's correctness rule (`src/kernelbench/eval.py`, `eval_kernel_against_
 `run_and_check_correctness`, read at commit 423217d): seed 42 for the init inputs and both
 models' weights, five trials whose seeds are drawn from `torch.manual_seed(42)`, fp32 inputs,
 the reference first, then `ModelNew` on the same inputs, a shape check, then
-`torch.allclose(atol, rtol)`; every trial must pass. The only change: every Triton launch is
+`torch.allclose(atol, rtol)`; every trial must pass. Two changes. Every Triton launch is
 compiled by the real frontend and executed by ttsem on CPU tensors (`sanitize.session`), which
 stops the run at an out-of-bounds access, a race between program instances or an operation with
 an undefined result, with the kernel's source line (memory nobody wrote is filled with NaN
-instead, so it shows up in the values the judge compares).
+instead, so it shows up in the values the judge compares). And each call of a model gets its own
+copy of the trial's inputs (`fresh`): a reference that changes its input in place (`x += y;
+return x`) would otherwise change what `ModelNew` runs on, and every correct answer to such a
+task would be wrong, the operation applied twice.
 
 With `--rule v3`, the rule of the KernelBench-v3 harness instead (github.com/Infatoshi/
 KernelBench-v3, `src/eval/benchmark.py`, read on 23 Sep 2026): the two models are built one after
@@ -32,15 +35,15 @@ The rule is split between two runs, each in its own sandbox, and neither says wh
 is right. Without `--answer`, the reference run: the task's `Model` on every trial's inputs, and
 once more on the inputs the autotune sweep uses. With `--answer`, the answer's run: both models
 built as the rule builds them (the v3 harness copies the reference's weights over), and on each
-trial's inputs the reference first (it may change them in place) and `ModelNew` after it, as the
-rule runs them; then each autotune config the sweep forces. Each run keeps what it computed in
-WORK/run.json (its account) and WORK/run.npz (the outputs' bytes), and ``ttsem.judge`` compares
-the answer's outputs with the reference run's, which this process never sees. The answer's run
-stops at the first output that differs from its own copy of the reference's, which only saves
-time. A fault, or a launch the semantics cannot judge, goes to the judge at once on the events
-pipe and ends the process (`ttsem.judge_io.Channel`): the answer cannot catch it and fall back on
-PyTorch. A run that ends otherwise sends `done` and leaves the same way, so no exit handler of the
-answer's runs after it.
+trial's inputs the reference first and `ModelNew` after it, each on its own copy (`fresh`: either
+may change its inputs in place); then each autotune config the sweep forces, on a copy too. Each
+run keeps what it computed in WORK/run.json (its account) and WORK/run.npz (the outputs' bytes),
+and ``ttsem.judge`` compares the answer's outputs with the reference run's, which this process
+never sees. The answer's run stops at the first output that differs from its own copy of the
+reference's, which only saves time. A fault, or a launch the semantics cannot judge, goes to the
+judge at once on the events pipe and ends the process (`ttsem.judge_io.Channel`): the answer
+cannot catch it and fall back on PyTorch. A run that ends otherwise sends `done` and leaves the
+same way, so no exit handler of the answer's runs after it.
 
 What ended a run early is its `failure`: error (with `why: shared_memory` when every config of
 an autotuner was skipped and the one it falls back to needs more shared memory than the GPU has,
@@ -179,6 +182,58 @@ def cast(value: Any, precision: str) -> Any:
     return value
 
 
+def _copy_tensor(x: torch.Tensor, storages: dict[int, Any]) -> torch.Tensor:
+    """A tensor with the same dtype, shape, strides and storage offset as `x`, on a copy of its
+    storage (one copy for every tensor of the call that shares it: two views of one buffer stay
+    two views of one buffer). A tensor that is not a plain strided one (sparse, quantized, nested,
+    a conjugate or negated view) is cloned as it is."""
+    plain = (
+        x.layout is torch.strided
+        and not (x.is_quantized or x.is_nested or x.is_conj() or x.is_neg())
+        and x.device.type != "meta"
+    )
+    if plain:
+        try:
+            storage = x.untyped_storage()
+            copy = storages.get(storage.data_ptr()) if storage.nbytes() else storage
+            if copy is None:
+                copy = storages[storage.data_ptr()] = storage.clone()
+            out = torch.empty(0, dtype=x.dtype, device=x.device)
+            out.set_(copy, x.storage_offset(), x.size(), x.stride())
+            return out.requires_grad_(x.requires_grad)
+        except RuntimeError:
+            pass
+    return x.detach().clone().requires_grad_(x.requires_grad)
+
+
+def fresh(value: Any, storages: dict[int, Any] | None = None) -> Any:
+    """A copy of a task's inputs that shares no storage with them, for one call of a model: each
+    tensor on a copy of its own storage with its own strides (so an answer sees the layout the
+    task made, an expanded or sliced input included), a list, tuple (a named one too) or dict of
+    them copied, anything else (numbers, strings, modules, generators) passed on as it is. A
+    reference may change its inputs in place (`x += y`, `x.mul_(...)`) and so may an answer: with
+    one set of tensors for every call, the next call would run on what the last one left (a
+    task that keeps its tensors at module level, on what every trial before it left). Each call
+    gets its own copy, so each starts from what `get_inputs` made."""
+    storages = {} if storages is None else storages
+    if isinstance(value, torch.Tensor):
+        return _copy_tensor(value, storages)
+    if isinstance(value, list | tuple):
+        items = [fresh(v, storages) for v in value]
+        if hasattr(value, "_fields"):  # a namedtuple
+            return type(value)(*items)
+        try:
+            return type(value)(items)
+        except TypeError:
+            return value
+    if isinstance(value, dict):
+        try:
+            return type(value)((k, fresh(v, storages)) for k, v in value.items())
+        except TypeError:
+            return value
+    return value
+
+
 def scaled_copy(work: Path, answer: Path) -> Path:
     """Where the answer rewritten to the scaled sizes goes: the run's own directory, under the
     answer's name."""
@@ -263,14 +318,14 @@ def run_reference(args: argparse.Namespace, raw: Raw) -> None:
                 torch.manual_seed(seed)
                 inputs = [cast(x, precision) for x in get_inputs()]
                 torch.manual_seed(seed)
-                want = reference(*inputs)
+                want = reference(*fresh(inputs))
                 spec = raw.output(f"trial{index}", want)
                 trials.append({"seed": seed, "precision": v3_precision(inputs), "output": spec})
             # what the sweep compares with: the first trial's inputs, after every trial
             torch.manual_seed(seeds[0])
             inputs = [cast(x, precision) for x in get_inputs()]
             torch.manual_seed(seeds[0])
-            want = reference(*inputs)
+            want = reference(*fresh(inputs))
             report["sweep"] = {
                 "precision": v3_precision(inputs),
                 "output": raw.output("sweep", want),
@@ -430,11 +485,11 @@ def run_answer(
             torch.manual_seed(seed)
             inputs = [cast(x, precision) for x in get_inputs()]
             torch.manual_seed(seed)
-            want = reference(*inputs)
+            want = reference(*fresh(inputs))
             torch.manual_seed(seed)
             before = state.launches
             with ops:
-                got = candidate(*inputs)
+                got = candidate(*fresh(inputs))
             row: dict[str, Any] = {"seed": seed, "launches": state.launches - before}
             row["output"] = raw.output(f"trial{index}", got)
             row["seconds"] = round(time.time() - start, 1)
@@ -623,7 +678,7 @@ def sweep_configs(
     torch.manual_seed(seeds[0])
     inputs = [cast(x, precision) for x in get_inputs()]
     torch.manual_seed(seeds[0])
-    want = reference(*inputs)
+    want = reference(*fresh(inputs))
     saved = [(dict(t.cache), getattr(t, "best_config", None)) for t in TUNERS]
     configs = [candidates(t) for t in TUNERS]
     most = max(len(c) for c in configs)
@@ -653,7 +708,7 @@ def sweep_configs(
         torch.manual_seed(seeds[0])
         done["forcing"] = {"index": index, "config": str(picks[0])}
         try:
-            got = candidate(*inputs)
+            got = candidate(*fresh(inputs))
         except CONFIG_ERRORS as exc:
             del done["forcing"]
             done.setdefault("not_applicable", []).append(not_applicable(index, picks[0], exc))

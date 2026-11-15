@@ -10,7 +10,11 @@ Triton launch executed by ttsem. It needs the Triton extra (see the README) and,
 [KernelBench](https://github.com/ScalingIntelligence/KernelBench) answer written with Triton: the
 answer's `ModelNew` against the task's `Model`, by KernelBench's own rule (five seeded trials,
 `allclose` at 1e-2; `--rule v3` for the KernelBench-v3 harness), every Triton launch executed by
-ttsem, large tasks shrunk to sizes an interpreter runs. The verdict is `verified` (exit 0), `wrong`
+ttsem, large tasks shrunk to sizes an interpreter runs. One departure from the rule as written:
+the reference and the answer each get their own copy of a trial's inputs, where KernelBench hands
+both the same tensors. A reference that changes its input in place (`x += y; return x`) then no
+longer changes what the answer runs on; judged on the same tensors, every correct answer to such
+a task is `wrong`. The verdict is `verified` (exit 0), `wrong`
 (where memory nobody wrote shows up, as NaN in the values), `unsafe` (an out-of-bounds access or a
 race between program instances at the answer's own line, or an operation with an undefined result:
 a division by zero, MIN / -1, two lanes of one store writing different values), `no_kernel`

@@ -747,3 +747,88 @@ def test_a_report_is_read_back_only_under_the_settings_it_was_judged_under(
         "error"
     )
     assert len(ran) == 2
+
+
+INPLACE_TASK = FIXTURES / "task_inplace.py"
+INPLACE_SHARED = FIXTURES / "task_inplace_shared.py"
+TRIALS = "verified: 5 trial(s), max abs diff 0  [real sizes]"
+
+
+@needs_sandbox
+@pytest.mark.parametrize(
+    ("task", "name", "verdict_line"),
+    [
+        (INPLACE_TASK, "new", TRIALS),
+        (INPLACE_TASK, "inplace", TRIALS),
+        (
+            INPLACE_TASK,
+            "tuned",
+            "verified: 5 trial(s), max abs diff 0, and under 2 other autotune config(s)"
+            "  [real sizes]",
+        ),
+        (INPLACE_SHARED, "new", TRIALS),
+        (INPLACE_SHARED, "inplace", TRIALS),
+    ],
+)
+def test_a_reference_that_changes_its_input_in_place_does_not_change_what_an_answer_gets(
+    task: Path, name: str, verdict_line: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The reference runs `x += y` and returns x. Right answers to it, one that writes a new
+    tensor, one that adds into x itself and one whose autotuned kernel does (every config the
+    sweep forces), were all judged wrong because the answer ran on the x the reference had
+    already changed: the operation was applied twice. With the tensors kept at module level, the
+    next trial ran on what the last one left, in both processes."""
+    code = judge.main([str(task), str(FIXTURES / f"answer_inplace_{name}.py")])
+    assert capsys.readouterr().out.strip() == verdict_line
+    assert code == 0
+
+
+@needs_semantics
+def test_fresh_inputs_share_no_storage_with_the_task_inputs() -> None:
+    import collections
+
+    import torch
+
+    from ttsem._judge_runner import fresh
+
+    base = torch.arange(24.0).reshape(4, 6)
+    cases = {
+        "transposed": base.t(),  # dense, not contiguous
+        "sliced": base[:, ::2],  # strided, with gaps
+        "offset": base[1:, 1:],  # a view that starts inside its storage
+        "expanded": torch.arange(3.0).expand(4, 3),  # stride 0
+        "bf16": base.to(torch.bfloat16),
+        "fp8": base.to(torch.float8_e4m3fn),
+        "complex": torch.complex(base, base),
+        "int": base.to(torch.int32),
+        "bool": base > 5,
+        "param": torch.nn.Parameter(torch.ones(3)),
+    }
+    for name, x in cases.items():
+        mine = fresh(x)
+        assert mine.data_ptr() != x.data_ptr(), name
+        assert mine.stride() == x.stride() and mine.shape == x.shape, name
+        assert mine.dtype == x.dtype and mine.requires_grad == x.requires_grad, name
+        assert mine.storage_offset() == x.storage_offset(), name
+        left, right = (torch.view_as_real(v) if v.is_complex() else v for v in (mine, x))
+        assert torch.equal(left.to(torch.float32), right.to(torch.float32)), name
+
+    inputs: Any = [base, [cases["param"], (cases["sliced"], 2.5)], {"k": base, "n": "mean"}, 7]
+    pair = collections.namedtuple("pair", "a b")  # noqa: PYI024
+    inputs += [None, pair(base, 3), collections.OrderedDict(v=base), torch.Size([2, 3])]
+    copy = fresh(inputs)
+    assert isinstance(copy[1], list) and isinstance(copy[1][1], tuple)
+    assert isinstance(copy[2], dict) and copy[3:5] == [7, None]
+    assert isinstance(copy[5], pair) and isinstance(copy[6], collections.OrderedDict)
+    assert copy[7] == torch.Size([2, 3]) and copy[1][1][1] == 2.5 and copy[2]["n"] == "mean"
+    for mine in (copy[0], copy[1][0], copy[1][1][0], copy[2]["k"], copy[5].a, copy[6]["v"]):
+        assert all(mine.data_ptr() != t.data_ptr() for t in (base, cases["param"], base[:, ::2]))
+    # views of one buffer stay views of one buffer, and a call that changes its input changes the
+    # copy only
+    one, two = fresh([base, base[1:, 1:]])
+    assert two.storage_offset() == 7 and two.untyped_storage().data_ptr() == (
+        one.untyped_storage().data_ptr()
+    )
+    one.add_(1)
+    assert torch.equal(two, base[1:, 1:] + 1)
+    assert torch.equal(base, torch.arange(24.0).reshape(4, 6))
