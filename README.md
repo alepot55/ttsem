@@ -274,10 +274,35 @@ right and holds against an adversarial answer, since the comparison rests on a r
 cannot touch (`verified` means right values; a kernel launched with the work then done in PyTorch
 still verifies). `unsafe` and `no_kernel` rest on two stop-gaps, a source scan and a run-time
 integrity check of the whole checker, that block every attack in the test suite but are not a
-proof: until the answer and the checker run in separate processes (planned for 0.2), use the judge
+proof: until the answer and the checker run in separate processes (planned, not in 0.2), use the judge
 as an auditor and an evaluation tool, and as an RL reward against adversarial optimisation with that
 caveat. The rules, the batch mode, the classes, the sandbox and what each verdict guarantees are in
 [docs/JUDGE.md][judge].
+
+## Reward
+
+New in 0.2, prototype-grade: `ttsem.reward` turns the judge's verdict into a reward for training
+models that write Triton kernels, with no GPU in the reward loop. `Judge.score(reference, answer)`
+returns a verdict: a score of 1.0, 0.0 or none (an abstention), and a paragraph for the model that
+names the kernel, the buffer and the line. In gate mode a reward you already have is kept for a
+verified answer and lowered to the fail value for a rejected one, never raised; in score mode the
+score is the reward. The trainer's process imports neither torch nor Triton: the passes run
+in a worker in the judge's own venv, every answer and every reference in its own `bwrap` sandbox,
+and nothing runs without one. A verl adapter is included, tested against a fake worker and not yet
+against a verl release.
+
+```python
+from ttsem.reward import Judge, extract_answer
+
+judge = Judge(cache_dir=cache, python=judge_venv_python, mode="gate")
+verdict = judge.score(reference_src, extract_answer(completion))
+reward = judge.gate(gpu_reward, verdict)
+```
+
+It carries the judge's own caveat (`unsafe` and `no_kernel` are not proofs against an optimiser free
+to write anything), prices no speed, and abstains where it cannot say whose fault an outcome is, which
+an answer can sometimes provoke. What it does and does not catch, its API, the adapter and how the
+worker runs are in [docs/REWARD.md][reward].
 
 ## How it was built
 
@@ -313,6 +338,7 @@ after the system was found to exploit its evaluation harness ([TechCrunch][sakan
 | [docs/DESIGN.md][design] | the three levels, the interfaces between them, and why they are drawn there |
 | [docs/RESULTS.md][results] | the corpora, the counts, and the calibration of the semantics against the device |
 | [docs/JUDGE.md][judge] | the judge of model-written kernels: rules, verdicts, batches, the sandbox |
+| [docs/REWARD.md][reward] | the judge as an RL reward: gate and score mode, abstentions, the API, the verl adapter, the worker, what it does not catch |
 | [docs/INDUCTOR.md][inductor] | the Triton code of `torch.compile` under ttsem |
 | [docs/AGENTS.md][agents] | for coding agents that write Triton kernels |
 | [audits/](https://github.com/alepot55/ttsem/tree/main/audits) | the commands that redo the TritonBench and KernelBench audits from a clone |
@@ -327,6 +353,7 @@ this repository with the metadata in `CITATION.cff` and the commit you used. MIT
 [agents]: https://github.com/alepot55/ttsem/blob/main/docs/AGENTS.md
 [skill]: https://github.com/alepot55/ttsem/blob/main/skills/triton-verify/SKILL.md
 [judge]: https://github.com/alepot55/ttsem/blob/main/docs/JUDGE.md
+[reward]: https://github.com/alepot55/ttsem/blob/main/docs/REWARD.md
 [ledger]: https://github.com/alepot55/ttsem/blob/main/LEDGER.md
 [overview]: https://github.com/alepot55/ttsem/blob/main/docs/OVERVIEW.md
 [semantics]: https://github.com/alepot55/ttsem/blob/main/docs/SEMANTICS.md
