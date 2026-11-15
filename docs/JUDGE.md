@@ -16,9 +16,11 @@ both the same tensors. A reference that changes its input in place (`x += y; ret
 longer changes what the answer runs on. Judged on the same tensors, a correct answer to such a task
 was `wrong` (the operation applied twice) and a wrong one could be `verified` (an answer that only
 copies `x` equals what the reference had left in it). What is copied: tensors, with their strides
-and views of one buffer kept, and the lists, tuples, namedtuples and dicts that hold them; anything
-else an input contains (a number, a numpy array, a module) is passed on as it is, so a reference
-that changes a numpy array in place is judged as it always was. A report, or a reference's result,
+and views of one buffer kept (views made by torch; tensors wrapped separately around overlapping
+memory, as `from_numpy` of a slice and of its base, are two buffers), and the lists, tuples,
+namedtuples and dicts that hold them; anything else an input contains (a number, a numpy array, a
+module) is passed on as it is, so a reference that changes a numpy array in place is judged as it
+always was. A report, or a reference's result,
 kept in an `--out` directory from before this change is read back as it was: judge in a new one.
 The verdict is `verified` (exit 0), `wrong`
 (where memory nobody wrote shows up, as NaN in the values), `unsafe` (an out-of-bounds access or a

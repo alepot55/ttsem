@@ -188,22 +188,30 @@ def cast(value: Any, precision: str) -> Any:
 def _copy_tensor(x: torch.Tensor, storages: dict[tuple[int, int], Any]) -> torch.Tensor:
     """A tensor with the same dtype, shape, strides and storage offset as `x`, on a copy of its
     storage (one copy for every tensor of the call that shares it: two views of one buffer stay
-    two views of one buffer; a storage is told apart by its address and its size, since a numpy
-    slice and its base are two storages at one address). A zero-byte storage is not copied: it
-    has nothing to change. A tensor that is not a plain strided one (sparse, quantized, nested,
-    a conjugate or negated view) is cloned as it is. A copy that cannot be allocated raises
-    (`RuntimeError`, which the run reports as `not_judged`): the answer is never given another
-    layout than the task made."""
+    two views of one buffer). A storage is told apart by its address and its size, since a numpy
+    slice and its base are two storages at one address, so tensors wrapped separately around
+    overlapping memory (`from_numpy`, `from_dlpack`) do not stay views of one buffer; an empty
+    storage has no address, so it is told apart by its identity (`out=` and `resize_` change it).
+    A tensor that is not a plain strided one (sparse, quantized, nested, a conjugate or negated
+    view, or one with no storage of its own such as a zero tensor) is cloned as it is. A copy that
+    cannot be allocated raises (`RuntimeError`, which the run reports as `not_judged`): the
+    answer is never given another layout than the task made."""
     plain = (
         x.layout is torch.strided
         and not (x.is_quantized or x.is_nested or x.is_conj() or x.is_neg())
         and x.device.type != "meta"
     )
+    if plain:
+        try:
+            storage = x.untyped_storage()
+            key = (
+                (storage.data_ptr(), storage.nbytes()) if storage.nbytes() else (0, storage._cdata)
+            )
+        except RuntimeError:  # a zero tensor, a fake one: no address to copy from
+            plain = False
     if not plain:
         return x.detach().clone().requires_grad_(x.requires_grad)
-    storage = x.untyped_storage()
-    key = (storage.data_ptr(), storage.nbytes())
-    clone = storages.get(key) if key[1] else storage
+    clone = storages.get(key)
     if clone is None:
         clone = storages[key] = storage.clone()
     out = torch.empty(0, dtype=x.dtype, device=x.device)
@@ -235,12 +243,15 @@ def copy_inputs(value: Any, storages: dict[tuple[int, int], Any] | None = None) 
         except TypeError:
             return value
     if isinstance(value, dict):
+        held = {k: copy_inputs(v, storages) for k, v in value.items()}  # an allocation error shows
         try:
             out = copy.copy(value)  # the same type, with its attributes (a defaultdict's factory)
-            for k, v in value.items():
-                out[k] = copy_inputs(v, storages)
+            if out is value:
+                return value
+            for k, v in held.items():
+                dict.__setitem__(out, k, v)  # every key is there: no `__setitem__` of the subclass
             return out
-        except TypeError:
+        except Exception:  # noqa: BLE001  # a subclass that cannot be copied is passed on
             return value
     return value
 

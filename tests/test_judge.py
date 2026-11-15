@@ -887,13 +887,30 @@ def test_containers_are_copied_with_what_they_hold() -> None:
         def __new__(cls, a: Any) -> Any:  # a constructor that is not the fields
             return super().__new__(cls, a, 1)
 
+    class WriteOnce(dict):  # type: ignore[type-arg]
+        def __setitem__(self, key: Any, value: Any) -> None:
+            if key in self:
+                raise KeyError(f"{key} already set")
+            super().__setitem__(key, value)
+
+    class Itself(dict):  # type: ignore[type-arg]
+        def __copy__(self) -> Any:
+            return self
+
     x = torch.ones(3)
     box = collections.defaultdict(list, a=x)
-    copy = copy_inputs([Own(x), box, collections.Counter(a=3)])
+    once = WriteOnce()
+    once["a"] = x
+    itself = Itself(a=x)
+    copy = copy_inputs([Own(x), box, collections.Counter(a=3), once, itself])
     assert isinstance(copy[0], Own) and not _same_storage(copy[0].a, x)
     assert isinstance(copy[1], collections.defaultdict) and copy[1].default_factory is list
     assert not _same_storage(copy[1]["a"], x)
     assert copy[2] == collections.Counter(a=3)
+    # a subclass whose `__setitem__` refuses a second write is still copied, one whose copy is
+    # itself is passed on (and its values stay what they were)
+    assert isinstance(copy[3], WriteOnce) and not _same_storage(copy[3]["a"], x)
+    assert copy[4] is itself and itself["a"] is x
 
 
 @needs_semantics
@@ -913,3 +930,21 @@ def test_a_copy_that_cannot_be_allocated_is_an_error_not_another_layout(
     monkeypatch.setattr(torch.UntypedStorage, "clone", no_memory)
     with pytest.raises(RuntimeError, match="can't allocate"):
         copy_inputs(view)
+
+
+@needs_semantics
+def test_an_empty_storage_and_a_tensor_without_one_are_copied_too() -> None:
+    """`out=` and `resize_` change an empty tensor's storage: shared, what a reference leaves in
+    it is what the answer finds. A zero tensor has no storage to copy, and is cloned."""
+    import torch
+
+    from ttsem._judge_runner import copy_inputs
+
+    empty, other = torch.empty(0), torch.empty(0)
+    mine, theirs = copy_inputs([empty, other])
+    mine.resize_(5).fill_(7.0)
+    assert empty.untyped_storage().nbytes() == 0 and empty.numel() == 0
+    assert theirs.untyped_storage().nbytes() == 0  # two empty tensors are two storages
+    assert copy_inputs([empty])[0].untyped_storage().nbytes() == 0
+    zero = torch._efficientzerotensor(2, 3)
+    assert torch.equal(copy_inputs(zero), torch.zeros(2, 3))
