@@ -48,7 +48,7 @@ dependencies = ["numpy"]
 triton = ["triton==3.8.0", "torch==2.14.0", "pytest"]
 test = ["pytest", "pytest-xdist"]
 # `ttsem.reward.openenv_adapter`: the judge as an OpenEnv environment (written against 0.13.0)
-openenv = ["openenv>=0.13"]
+openenv = ["openenv>=0.13,<0.14"]
 
 [project.scripts]
 ttsem = "ttsem.__main__:main"
@@ -132,7 +132,7 @@ ignore_missing_imports = true
 # openenv and its FastAPI only for `ttsem.reward.openenv_adapter`: an optional extra, left untyped
 # here so that the result does not depend on whether it is installed
 [[tool.mypy.overrides]]
-module = ["openenv", "openenv.*", "fastapi", "fastapi.*"]
+module = ["openenv.*", "fastapi"]
 follow_imports = "skip"
 ignore_missing_imports = true
 

@@ -1,28 +1,34 @@
 """An OpenEnv environment over the exact judge: `reset` hands out a task, `step` judges one answer.
 
-Needs `openenv` (BSD-3, `pip install openenv`; written against 0.13.0), which `ttsem` does not
-depend on: nothing else in the package imports this module. The reward is the judge's CPU-only
-score (`mode="cpu"`: 1.0 for a verified kernel, 0.0 for a rejected one, no GPU in the loop), taken
-through a `Rubric` so that a trainer can read it back (`env.rubric.last_score`). An abstention (a
-failure that may be the judge's environment, not the answer's) is `abstain_value` as a reward,
-0.0 as in the verl adapter, and says so in `abstain`: drop those samples if the trainer can.
+Needs `openenv` (BSD-3, `pip install "ttsem[openenv]"`; written against 0.13.0), which `ttsem` does
+not depend on: nothing else in the package imports this module. The reward is the judge's CPU-only
+score (a `Judge` in `mode="cpu"`: 1.0 for a verified kernel, 0.0 for a rejected one, no GPU in the
+loop; a judge in another mode is refused), taken through a `Rubric` so that a trainer can read it
+back (`env.rubric.last_score`). An abstention (a failure that may be the judge's environment, not
+the answer's) is the reward `abstain_value`: the environment's, else the judge's own, else 0.0 as
+in the verl adapter. It says so in `abstain`: drop those samples if the trainer can. An abstention
+uses up an attempt.
 
-    from ttsem.reward.openenv_adapter import KernelEnv, create_kernel_app
+    from ttsem.reward.openenv_adapter import KernelAction, KernelEnv, create_kernel_app
 
     env = KernelEnv({"train": [reference_src, ...]})   # a KernelBench-style reference per task
     obs = env.reset(split="train", index=0)            # obs.prompt: what the model is shown
     obs = env.step(KernelAction(completion=text))      # obs.reward, obs.verdict, obs.feedback
 
-    app = create_kernel_app({"train": [...]})          # the OpenEnv server, `uvicorn` serves it
+    app = create_kernel_app({"train": [...]}, max_concurrent_envs=8)  # `uvicorn` serves it
 
 With `max_attempts` above 1 an episode lasts until the kernel is verified or the attempts are
 spent, and `obs.feedback` (the judge's paragraph, at the line of the defect) is what the next
-attempt is shown. The judge is configured by the same environment variables as the verl adapter
-(`Judge.from_env`: TTSEM_REWARD_PYTHON, TTSEM_REWARD_CACHE, TTSEM_REWARD_WORKERS, ...) unless one
-is passed in. Every answer runs in the judge's `bwrap` sandbox, never in this process.
+attempt is shown; the prompt is in the observation of `reset` only, the trainer keeps it. The judge
+is the one passed in, else one built once per process from the environment variables of the verl
+adapter (`Judge.from_env`: TTSEM_REWARD_PYTHON, TTSEM_REWARD_CACHE, TTSEM_REWARD_WORKERS, ...).
+Every answer runs in the judge's `bwrap` sandbox, never in this process, and so does the reference
+that `reset(task=...)` takes from the caller.
 
 An episode lives in one WebSocket session (`/ws`, what OpenEnv's `EnvClient` uses): OpenEnv's REST
-routes make a fresh environment per request, so a `/step` there answers "step before reset".
+routes make a fresh environment per request, so a REST `/step` fails (HTTP 500; the server log says
+"step before reset"). A server takes one session at a time unless `max_concurrent_envs` is given:
+that is OpenEnv's default, and parallel rollouts need more.
 
 Status: tested against a fake worker and through OpenEnv's app over a WebSocket (0.13.0); not
 tested in a training run.
@@ -39,11 +45,18 @@ from typing import Any
 from fastapi import FastAPI
 from openenv.core.env_server.http_server import create_fastapi_app
 from openenv.core.env_server.interfaces import Environment
-from openenv.core.env_server.types import Action, EnvironmentMetadata, Observation, State
+from openenv.core.env_server.types import (
+    Action,
+    EnvironmentMetadata,
+    Observation,
+    ResetRequest,
+    State,
+)
 from openenv.core.rubrics import Rubric
 
 from ttsem.reward.core import Judge, Verdict, extract_answer
 
+ENV_NAME = "ttsem-kernel"
 PROMPT = (
     "Rewrite the PyTorch module below as `ModelNew`, with the same `forward` signature as `Model`, "
     "so that its operators run in Triton kernels that you write. Reply with one ```python block "
@@ -51,10 +64,23 @@ PROMPT = (
 )
 
 
+class UnknownSplit(IndexError, ValueError):
+    """No such split. An `IndexError` because OpenEnv's task routes answer only that one with a
+    400 and every other exception with a 500; a `ValueError` for `reset`."""
+
+
 class KernelAction(Action):
     """A model's completion: the answer's code is the last fenced Python block in it."""
 
     completion: str
+
+
+class KernelReset(ResetRequest):
+    """What `reset` takes besides OpenEnv's `seed` and `episode_id`, so that `/schema` shows it."""
+
+    split: str = "train"
+    index: int | None = None
+    task: str | None = None
 
 
 class KernelObservation(Observation):
@@ -75,21 +101,27 @@ class KernelObservation(Observation):
 
 
 class KernelState(State):
+    """`hacks` counts the attempts of the episode that reached into the checker: the last
+    observation shows only its own."""
+
     task_id: str = ""
     attempts: int = 0
-    best: float = 0.0
+    verified: bool = False
+    hacks: int = 0
 
 
 class VerdictRubric(Rubric):
-    """The judge's score as the reward; an abstention is `abstain_value`."""
+    """The judge's score as the reward; an abstention is `abstain_value`, 0.0 when it is None."""
 
-    def __init__(self, abstain_value: float = 0.0) -> None:
+    def __init__(self, abstain_value: float | None = None) -> None:
         super().__init__()
         self.abstain_value = abstain_value
 
     def forward(self, action: Any, observation: Any) -> float:
         score = observation.score
-        return self.abstain_value if score is None else float(score)
+        if score is not None:
+            return float(score)
+        return 0.0 if self.abstain_value is None else float(self.abstain_value)
 
 
 _SHARED: dict[str, Judge] = {}
@@ -118,17 +150,24 @@ class KernelEnv(Environment[KernelAction, KernelObservation, KernelState]):
         judge: Judge | None = None,
         *,
         max_attempts: int = 1,
-        abstain_value: float = 0.0,
+        abstain_value: float | None = None,
     ) -> None:
         super().__init__(rubric=VerdictRubric(abstain_value))
         if max_attempts < 1:
             raise ValueError("max_attempts is at least 1")
+        if judge is not None and judge.mode != "cpu":
+            raise ValueError(
+                f"the reward is the judge's CPU-only score: Judge(mode='cpu'), not {judge.mode!r}"
+            )
+        if isinstance(tasks, str):
+            raise TypeError("tasks is a list of references or a mapping of lists, not a string")
         self._splits: dict[str, list[str]] = {}
         if isinstance(tasks, Mapping):
             self._splits = {name: list(pool) for name, pool in tasks.items()}
         elif tasks is not None:
             self._splits = {"train": list(tasks)}
         self._judge = judge
+        self._abstain_value = abstain_value
         self.max_attempts = max_attempts
         self._task = ""
         self._state = KernelState()
@@ -148,7 +187,7 @@ class KernelEnv(Environment[KernelAction, KernelObservation, KernelState]):
         from ttsem import __version__
 
         return EnvironmentMetadata(
-            name="ttsem-kernel",
+            name=ENV_NAME,
             description="Write a Triton kernel for a PyTorch module; a CPU-only judge checks it "
             "for correctness, out-of-bounds accesses and races.",
             version=__version__,
@@ -166,12 +205,16 @@ class KernelEnv(Environment[KernelAction, KernelObservation, KernelState]):
         task: str | None = None,
         **kwargs: Any,
     ) -> KernelObservation:
+        if kwargs:
+            raise TypeError(
+                f"reset takes split, index, task, seed and episode_id, not {sorted(kwargs)}"
+            )
         if task is not None:
+            if not task.strip():
+                raise ValueError("task is empty")
             task_id, source = "adhoc", task
         else:
-            if split not in self._splits:
-                raise ValueError(f"no split {split!r}: {sorted(self._splits)}")
-            pool = self._splits[split]
+            pool = self._pool(split)
             if not pool:
                 raise ValueError(f"split {split!r} has no task")
             i = (
@@ -183,7 +226,10 @@ class KernelEnv(Environment[KernelAction, KernelObservation, KernelState]):
         self._task = source
         self._state = KernelState(episode_id=episode_id, task_id=task_id)
         return KernelObservation(
-            task_id=task_id, prompt=PROMPT.format(task=source), done=False, reward=None
+            task_id=task_id,
+            prompt=PROMPT.format(task=source.rstrip() + "\n"),
+            done=False,
+            reward=None,
         )
 
     def step(
@@ -192,11 +238,14 @@ class KernelEnv(Environment[KernelAction, KernelObservation, KernelState]):
         """`timeout_s` is not used: the judge's own timeouts (`Judge(timeout_s=)`) apply."""
         if not self._task:
             raise RuntimeError("step before reset")
-        if self._state.attempts >= self.max_attempts or self._state.best >= 1.0:
+        if self._state.verified or self._state.attempts >= self.max_attempts:
             raise RuntimeError("the episode is over: reset")
-        v: Verdict = self.judge.score(self._task, extract_answer(action.completion))
+        judge = self.judge
+        v: Verdict = judge.score(self._task, extract_answer(action.completion))
         self._state.attempts += 1
         self._state.step_count += 1
+        self._state.hacks += int(v.hack)
+        self._state.verified = v.score is not None and v.score >= 1.0
         obs = KernelObservation(
             task_id=self._state.task_id,
             attempt=self._state.attempts,
@@ -209,10 +258,12 @@ class KernelEnv(Environment[KernelAction, KernelObservation, KernelState]):
             hack=v.hack,
             seconds=v.seconds,
         )
-        assert self.rubric is not None
+        assert isinstance(self.rubric, VerdictRubric)
+        self.rubric.abstain_value = (
+            self._abstain_value if self._abstain_value is not None else judge.abstain_value
+        )
         obs.reward = self.rubric(action, obs)
-        self._state.best = max(self._state.best, v.score or 0.0)
-        obs.done = self._state.best >= 1.0 or self._state.attempts >= self.max_attempts
+        obs.done = self._state.verified or self._state.attempts >= self.max_attempts
         return obs
 
     async def step_async(
@@ -222,16 +273,22 @@ class KernelEnv(Environment[KernelAction, KernelObservation, KernelState]):
 
     # ------------------------------------------------------------ task discovery (TaskProvider)
 
+    def _pool(self, split: str) -> list[str]:
+        if split not in self._splits:
+            raise UnknownSplit(f"no split {split!r}: {sorted(self._splits)}")
+        return self._splits[split]
+
     def _index(self, split: str, index: int) -> int:
-        if not 0 <= index < len(self._splits[split]):
-            raise IndexError(f"split {split!r} has {len(self._splits[split])} tasks, not {index}")
+        n = len(self._pool(split))
+        if not 0 <= index < n:
+            raise IndexError(f"split {split!r} has {n} tasks, not {index}")
         return index
 
     def list_splits(self) -> list[str]:
         return sorted(self._splits)
 
     def num_tasks(self, split: str) -> int:
-        return len(self._splits[split])
+        return len(self._pool(split))
 
     def get_task(self, split: str, index: int) -> dict[str, Any]:
         return {"id": f"{split}-{self._index(split, index)}", "index": index}
@@ -251,15 +308,19 @@ def create_kernel_app(
     judge: Judge | None = None,
     *,
     max_attempts: int = 1,
-    abstain_value: float = 0.0,
+    abstain_value: float | None = None,
     max_concurrent_envs: int | None = None,
 ) -> FastAPI:
-    """The OpenEnv server for `KernelEnv`: `uvicorn.run(create_kernel_app(tasks))`."""
+    """The OpenEnv server for `KernelEnv`: `uvicorn.run(create_kernel_app(tasks, ...))`.
+    `max_concurrent_envs` is OpenEnv's: left out, the server takes one WebSocket session at a time
+    and a second one is refused with CAPACITY_REACHED; parallel rollouts need it above 1 (the
+    sessions share the judge's worker pool, so `Judge(workers=)` is the other ceiling)."""
     return create_fastapi_app(
         lambda: KernelEnv(tasks, judge, max_attempts=max_attempts, abstain_value=abstain_value),
         KernelAction,
         KernelObservation,
         max_concurrent_envs=max_concurrent_envs,
-        env_name="ttsem_kernel",
+        env_name=ENV_NAME,
         state_cls=KernelState,
+        reset_cls=KernelReset,
     )

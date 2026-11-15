@@ -236,34 +236,47 @@ variables must be present on each of them.
 ## The OpenEnv adapter
 
 `ttsem.reward.openenv_adapter` serves the judge as an [OpenEnv](https://github.com/openenv/OpenEnv)
-environment (BSD-3; `pip install "ttsem[openenv]"`, written against `openenv` 0.13.0): `reset` hands
-out a KernelBench-style task as a prompt, `step` takes a completion, extracts its code, judges it in
-score mode and returns the observation with the verdict, the judge's paragraph and the reward.
+environment (BSD-3; `pip install "ttsem[openenv]"`, written against `openenv` 0.13.0, the extra stops
+at that minor): `reset` hands out a KernelBench-style task as a prompt, `step` takes a completion,
+extracts its code, judges it in score mode and returns the observation with the verdict, the
+judge's paragraph and the reward.
 
 ```python
 from ttsem.reward.openenv_adapter import KernelAction, KernelEnv, create_kernel_app
 
 env = KernelEnv({"train": [reference_src, ...]}, max_attempts=3)
-obs = env.reset(split="train", index=0)              # obs.prompt is what the model is shown
-obs = env.step(KernelAction(completion=text))        # obs.reward, obs.verdict, obs.feedback, obs.done
-app = create_kernel_app({"train": [...]})            # the server: uvicorn.run(app)
+obs = env.reset(split="train", index=0)           # obs.prompt: what the model is shown
+obs = env.step(KernelAction(completion=text))     # obs.reward, obs.verdict, obs.feedback, obs.done
+app = create_kernel_app({"train": [...]}, max_concurrent_envs=8)   # uvicorn.run(app)
 ```
 
 - **Reward.** The judge's CPU-only score (1.0 verified, 0.0 rejected), taken through a `Rubric`
-  (`env.rubric.last_score`). An abstention is `abstain_value` (0.0 by default, as in the verl
-  adapter) and sets `abstain` on the observation, so a trainer that can drop those samples should.
+  (`env.rubric.last_score`). The judge must be a `Judge(mode="cpu")`: a judge in gate mode is
+  refused, because its score is a multiplier and abstains where score mode gives 0.0. An abstention
+  is the reward `abstain_value`: the environment's, else the judge's own, else 0.0 as in the verl
+  adapter. It sets `abstain` on the observation, so a trainer that can drop those samples should,
+  and it uses up an attempt.
 - **Attempts.** With `max_attempts` above 1 an episode lasts until a kernel is verified or the
-  attempts are spent; `feedback` is what the next attempt is shown.
+  attempts are spent; `feedback` is what the next attempt is shown. Only the observation of
+  `reset` carries the prompt: the trainer keeps it. `hack` on an observation is that step's; the
+  state counts them (`hacks`).
 - **Tasks.** `list_splits`, `num_tasks`, `get_task` and `get_task_range` answer OpenEnv's task
-  discovery without building a judge; `reset(split=, index=, task=, seed=)` picks the task.
+  discovery without building a judge; `reset(split=, index=, task=, seed=)` picks the task, and
+  takes nothing else. `reset(task=...)` takes the reference from the caller: it runs in the same
+  sandbox as an answer, but a reward from a reference the caller chose says nothing about the
+  caller's answer.
 - **Judge.** Pass one, or it is built once per process from the `TTSEM_REWARD_*` variables, as for
-  verl; every answer runs in its `bwrap` sandbox. `SUPPORTS_CONCURRENT_SESSIONS` is true: the
-  sessions of a server share that judge's worker pool.
+  verl; every answer and reference runs in its `bwrap` sandbox.
+- **Sessions.** An episode lives in one WebSocket session (`/ws`, which OpenEnv's `EnvClient`
+  uses). A server takes one session at a time unless `max_concurrent_envs` is given (OpenEnv's
+  default; the second session is refused with `CAPACITY_REACHED`): parallel rollouts need it above
+  1, and the sessions share the judge's worker pool, so `Judge(workers=)` is the other ceiling.
+  OpenEnv's REST routes make a fresh environment for each request, so a REST `/step` fails (HTTP
+  500; the server log says "step before reset").
 
-An episode lives in one WebSocket session (`/ws`, which OpenEnv's `EnvClient` uses). OpenEnv's REST
-routes make a fresh environment for each request, so a `/step` there answers "step before reset".
-Tested here against a fake worker, directly and through OpenEnv's app over a WebSocket; not in a
-training run, and not against an OpenEnv version other than 0.13.0.
+Tested here against a fake worker, directly and through OpenEnv's app over a WebSocket (CI has a
+job for it, since the tests skip without `openenv`); not in a training run, and not against an
+OpenEnv version other than 0.13.0.
 
 ## The worker: the judge runs in its own venv
 
@@ -363,7 +376,7 @@ reference's outputs on disk and turn `wrong` into `verified`.
 
 ## Environment variables
 
-`Judge.from_env()` and the verl adapter read:
+`Judge.from_env()`, the verl adapter and the OpenEnv adapter read:
 
 | variable | argument |
 |---|---|
@@ -384,7 +397,8 @@ environment: pass them to `Judge.from_env(...)`.
 
 ## Tests
 
-`pytest tests/test_reward*.py` runs the unit tests with no GPU and no Triton, and the integration
+`pytest tests/test_reward*.py` runs the unit tests with no GPU and no Triton (the OpenEnv adapter's
+need the `openenv` extra and skip without it), and the integration
 tests where the judge's interpreter has torch and Triton and `bwrap` works (they skip otherwise).
 `tests/test_reward_hygiene.py` fails if the package or this page names a path of the machine it was
 written on or anything that does not belong in public text.
