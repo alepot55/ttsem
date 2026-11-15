@@ -1,6 +1,7 @@
-"""A task whose reference changes its first input in place (`x += y`) and returns it, as 10 of the
-GFT tasks do (`x += y`, `x *= y`, `x.mul_(...)`). An answer that is judged on the same tensors the
-reference already changed applies the operation twice."""
+"""A task whose reference changes its first input in place (`x += y`) and returns it, as some
+KernelBench-style tasks do (`x += y`, `x *= y`, `x.mul_(...)`). An answer judged on the tensors the
+reference already changed applies the operation twice if it is right, and is right with a copy of
+x if it is wrong."""
 
 import torch
 from torch import nn

@@ -274,7 +274,9 @@ never the verdict.
 `cache_dir` holds the tasks and answers (named by the hash of their text), one reference run per
 task and tier, reused across a GRPO group and across epochs, and every pass's record. It also holds
 every model-written answer the run saw. Put it on disk, not on a RAM-backed `/tmp`, and clear it
-when the run is done. No answer's sandbox sees it, except its own working directory.
+when the run is done, and after a change to the judge: a record and a reference run are read back
+as they were, so a verdict from before the change stays until the directory is new. No answer's
+sandbox sees it, except its own working directory.
 
 ## The sandbox
 

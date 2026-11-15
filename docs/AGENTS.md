@@ -34,6 +34,11 @@ KernelFault: kernel `add_kernel`, launch 1: `kernel.py:15: tl.store(out_ptr + of
 every program id and for sizes that are not a multiple of the block.
 ```
 
+The count of elements past the end is a lower bound. The semantics map the addresses of the
+tensors of one launch into one space and fault on what lies outside all of them, so an access that
+runs past one tensor into the next is not a fault, and how many elements fault depends on where the
+allocator put the tensors. Mask the access, and the count stops mattering.
+
 What to test once it runs: sizes that are **not** a multiple of the block (a test on n = 1024
 cannot see a missing mask; n = 1000 can), n = 0 and n = 1, non-contiguous inputs, and more than
 one program instance writing to the same output.
