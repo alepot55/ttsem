@@ -6,7 +6,7 @@ authors:
   - family-names: Potenza
     given-names: Alessandro
 version: 0.2.1
-# date-released is set when 0.2.1 is tagged and published
+date-released: 2026-11-16
 license: MIT
 repository-code: "https://github.com/alepot55/ttsem"
 url: "https://github.com/alepot55/ttsem"
