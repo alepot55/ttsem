@@ -72,6 +72,27 @@ jobs:
       - name: Demo
         run: python -m ttsem demo
 
+  # The optional OpenEnv adapter of ttsem.reward: its tests skip without `openenv`, so no other job
+  # would notice an OpenEnv release that breaks it (the extra stops at the tested minor).
+  openenv:
+    name: OpenEnv adapter (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,openenv]"
+
+      - name: Tests
+        run: pytest -q tests/test_reward_openenv.py
+
   # The wheel adds what only a compiler can do: recording a launch, dumping the module every
   # pass receives, and judging an answer in its sandbox. Still no GPU (the fake driver supplies a
   # target). Required like the job above: torch and Triton are pinned in the extra, so a failure

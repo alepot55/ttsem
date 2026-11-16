@@ -47,6 +47,8 @@ dependencies = ["numpy"]
 # it. `test` keeps pytest-xdist, which only ttsem's own suite uses.
 triton = ["triton==3.8.0", "torch==2.14.0", "pytest"]
 test = ["pytest", "pytest-xdist"]
+# `ttsem.reward.openenv_adapter`: the judge as an OpenEnv environment (written against 0.13.0)
+openenv = ["openenv>=0.13,<0.14"]
 
 [project.scripts]
 ttsem = "ttsem.__main__:main"
@@ -124,6 +126,13 @@ warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
 module = ["torch", "torch.*", "triton", "triton.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+# openenv and its FastAPI only for `ttsem.reward.openenv_adapter`: an optional extra, left untyped
+# here so that the result does not depend on whether it is installed
+[[tool.mypy.overrides]]
+module = ["openenv.*", "fastapi"]
 follow_imports = "skip"
 ignore_missing_imports = true
 

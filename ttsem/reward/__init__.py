@@ -4,7 +4,8 @@
 sandboxed processes; `Verdict` is what it returns, `extract_answer` takes the code out of a
 completion, `kind_of` and `scores` are the table from a judge's record to a reward. The core is
 `core.py`; the cap that exposes races between program instances `cap.py`; the verl adapter
-`verl_adapter.py`; the worker, which runs in the judge's own venv, `worker.py`. See
+`verl_adapter.py`; the OpenEnv adapter (optional, needs the `openenv` extra) `openenv_adapter.py`;
+the worker, which runs in the judge's own venv, `worker.py`. See
 `docs/REWARD.md`: what it checks, what it does not, and what it needs.
 
 Importing this package imports neither torch nor Triton.
