@@ -10,7 +10,19 @@ Triton launch executed by ttsem. It needs the Triton extra (see the README) and,
 [KernelBench](https://github.com/ScalingIntelligence/KernelBench) answer written with Triton: the
 answer's `ModelNew` against the task's `Model`, by KernelBench's own rule (five seeded trials,
 `allclose` at 1e-2; `--rule v3` for the KernelBench-v3 harness), every Triton launch executed by
-ttsem, large tasks shrunk to sizes an interpreter runs. The verdict is `verified` (exit 0), `wrong`
+ttsem, large tasks shrunk to sizes an interpreter runs. One departure from the rule as written:
+the reference and the answer each get their own copy of a trial's inputs, where KernelBench hands
+both the same tensors. A reference that changes its input in place (`x += y; return x`) then no
+longer changes what the answer runs on. Judged on the same tensors, a correct answer to such a task
+was `wrong` (the operation applied twice) and a wrong one could be `verified` (an answer that only
+copies `x` equals what the reference had left in it). What is copied: tensors, with their strides
+and views of one buffer kept (views made by torch; tensors wrapped separately around overlapping
+memory, as `from_numpy` of a slice and of its base, are two buffers), and the lists, tuples,
+namedtuples and dicts that hold them; anything else an input contains (a number, a numpy array, a
+module) is passed on as it is, so a reference that changes a numpy array in place is judged as it
+always was. A report, or a reference's result,
+kept in an `--out` directory from before this change is read back as it was: judge in a new one.
+The verdict is `verified` (exit 0), `wrong`
 (where memory nobody wrote shows up, as NaN in the values), `unsafe` (an out-of-bounds access or a
 race between program instances at the answer's own line, or an operation with an undefined result:
 a division by zero, MIN / -1, two lanes of one store writing different values), `no_kernel`

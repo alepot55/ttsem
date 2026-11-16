@@ -96,7 +96,10 @@ def test_a_load_without_its_mask_is_unsafe_at_the_answers_own_line(
     lines = (FIXTURES / "answer_unsafe.py").read_text().splitlines()
     assert lines[report["line"] - 1].strip() == report["source"] == "x = tl.load(x_ptr + offs)"
     assert report["file"] == "answer_unsafe.py"
-    assert "96 element(s) past the end" in report["message"]
+    # how many elements past the end is a lower bound: the sanitizer sees one address space of
+    # the launch's tensors, so what an overrun reads from the tensor placed next to this one is
+    # no fault, and where the allocator puts them changes from run to run (16 here, or up to 96)
+    assert re.search(r"reads \d+ element\(s\) past the end", report["message"]), report["message"]
 
 
 @needs_sandbox
@@ -747,3 +750,201 @@ def test_a_report_is_read_back_only_under_the_settings_it_was_judged_under(
         "error"
     )
     assert len(ran) == 2
+
+
+INPLACE_TASK = FIXTURES / "task_inplace.py"
+INPLACE_SHARED = FIXTURES / "task_inplace_shared.py"
+TRIALS = "verified: 5 trial(s), max abs diff 0  [real sizes]"
+
+
+@needs_sandbox
+@pytest.mark.parametrize(
+    ("task", "name", "verdict_line"),
+    [
+        (INPLACE_TASK, "new", TRIALS),
+        (INPLACE_TASK, "inplace", TRIALS),
+        (
+            INPLACE_TASK,
+            "tuned",
+            "verified: 5 trial(s), max abs diff 0, and under 2 other autotune config(s)"
+            "  [real sizes]",
+        ),
+        (INPLACE_SHARED, "new", TRIALS),
+        (INPLACE_SHARED, "inplace", TRIALS),
+    ],
+)
+def test_a_reference_that_changes_its_input_in_place_does_not_change_what_an_answer_gets(
+    task: Path, name: str, verdict_line: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The reference runs `x += y` and returns x. Right answers to it, one that writes a new
+    tensor, one that adds into x itself and one whose autotuned kernel does (every config the
+    sweep forces), were all judged wrong because the answer ran on the x the reference had
+    already changed: the operation was applied twice. With the tensors kept at module level, the
+    next trial ran on what the last one left, in both processes."""
+    code = judge.main([str(task), str(FIXTURES / f"answer_inplace_{name}.py")])
+    assert capsys.readouterr().out.strip() == verdict_line
+    assert code == 0
+
+
+@needs_sandbox
+def test_an_answer_that_ignores_what_a_reference_changes_in_place_is_wrong(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The other direction: judged on the x the reference had already changed, an answer that only
+    copies x (and ignores y) returned what the reference returned, and was `verified`."""
+    code = judge.main([str(INPLACE_TASK), str(FIXTURES / "answer_inplace_wrong.py")])
+    out = capsys.readouterr().out.strip()
+    assert out.startswith("wrong in trial 1 (seed "), out
+    assert code != 0
+
+
+def _same_storage(a: Any, b: Any) -> bool:
+    return bool(a.untyped_storage().data_ptr() == b.untyped_storage().data_ptr())
+
+
+@needs_semantics
+def test_copied_inputs_share_no_storage_with_the_task_inputs() -> None:
+    import collections
+
+    import torch
+
+    from ttsem._judge_runner import copy_inputs
+
+    base = torch.arange(24.0).reshape(4, 6)
+    cases = {
+        "transposed": base.t(),  # dense, not contiguous
+        "sliced": base[:, ::2],  # strided, with gaps
+        "offset": base[1:, 1:],  # a view that starts inside its storage
+        "expanded": torch.arange(3.0).expand(4, 3),  # stride 0
+        "bf16": base.to(torch.bfloat16),
+        "fp8": base.to(torch.float8_e4m3fn),
+        "complex": torch.complex(base, base),
+        "int": base.to(torch.int32),
+        "bool": base > 5,
+        "param": torch.nn.Parameter(torch.ones(3)),
+    }
+    for name, x in cases.items():
+        mine = copy_inputs(x)
+        assert not _same_storage(mine, x), name
+        assert mine.stride() == x.stride() and mine.shape == x.shape, name
+        assert mine.dtype == x.dtype and mine.requires_grad == x.requires_grad, name
+        assert mine.storage_offset() == x.storage_offset(), name
+        left, right = (torch.view_as_real(v) if v.is_complex() else v for v in (mine, x))
+        assert torch.equal(left.to(torch.float32), right.to(torch.float32)), name
+
+    inputs: Any = [base, [cases["param"], (cases["sliced"], 2.5)], {"k": base, "n": "mean"}, 7]
+    pair = collections.namedtuple("pair", "a b")  # noqa: PYI024
+    inputs += [None, pair(base, 3), collections.OrderedDict(v=base), torch.Size([2, 3])]
+    copy = copy_inputs(inputs)
+    assert isinstance(copy[1], list) and isinstance(copy[1][1], tuple)
+    assert isinstance(copy[2], dict) and copy[3:5] == [7, None]
+    assert isinstance(copy[5], pair) and isinstance(copy[6], collections.OrderedDict)
+    assert copy[7] == torch.Size([2, 3]) and copy[1][1][1] == 2.5 and copy[2]["n"] == "mean"
+    for mine in (copy[0], copy[1][0], copy[1][1][0], copy[2]["k"], copy[5].a, copy[6]["v"]):
+        assert not any(_same_storage(mine, t) for t in (base, cases["param"], cases["sliced"]))
+    # views of one buffer stay views of one buffer, and a call that changes its input changes the
+    # copy only
+    one, two = copy_inputs([base, base[1:, 1:]])
+    assert two.storage_offset() == 7 and _same_storage(one, two) and not _same_storage(one, base)
+    one.add_(1)
+    assert torch.equal(two, base[1:, 1:] + 1)
+    assert torch.equal(base, torch.arange(24.0).reshape(4, 6))
+
+
+@needs_semantics
+def test_two_storages_at_one_address_are_two_copies_of_their_own_size() -> None:
+    """A numpy slice and its base are two storages that start at one address. Told apart by the
+    address alone, the copy of the base was the copy of the slice, grown with memory nobody
+    wrote."""
+    import numpy as np
+    import torch
+
+    from ttsem._judge_runner import copy_inputs
+
+    data = np.arange(12, dtype=np.float32)
+    small, big = torch.from_numpy(data[:3]), torch.from_numpy(data)
+    for order in ([small, big], [big, small]):
+        copies = copy_inputs(order)
+        for mine, x in zip(copies, order, strict=True):
+            assert torch.equal(mine, x) and not _same_storage(mine, x)
+    # the same buffer twice is still one buffer
+    one, two = copy_inputs([torch.from_numpy(data), torch.from_numpy(data)])
+    one.add_(1)
+    assert torch.equal(two, torch.from_numpy(data) + 1)
+
+
+@needs_semantics
+def test_containers_are_copied_with_what_they_hold() -> None:
+    import collections
+
+    import torch
+
+    from ttsem._judge_runner import copy_inputs
+
+    class Own(collections.namedtuple("Base", "a b")):  # type: ignore[misc]  # noqa: PYI024
+        __slots__ = ()
+
+        def __new__(cls, a: Any) -> Any:  # a constructor that is not the fields
+            return super().__new__(cls, a, 1)
+
+    class WriteOnce(dict):  # type: ignore[type-arg]
+        def __setitem__(self, key: Any, value: Any) -> None:
+            if key in self:
+                raise KeyError(f"{key} already set")
+            super().__setitem__(key, value)
+
+    class Itself(dict):  # type: ignore[type-arg]
+        def __copy__(self) -> Any:
+            return self
+
+    x = torch.ones(3)
+    box = collections.defaultdict(list, a=x)
+    once = WriteOnce()
+    once["a"] = x
+    itself = Itself(a=x)
+    copy = copy_inputs([Own(x), box, collections.Counter(a=3), once, itself])
+    assert isinstance(copy[0], Own) and not _same_storage(copy[0].a, x)
+    assert isinstance(copy[1], collections.defaultdict) and copy[1].default_factory is list
+    assert not _same_storage(copy[1]["a"], x)
+    assert copy[2] == collections.Counter(a=3)
+    # a subclass whose `__setitem__` refuses a second write is still copied, one whose copy is
+    # itself is passed on (and its values stay what they were)
+    assert isinstance(copy[3], WriteOnce) and not _same_storage(copy[3]["a"], x)
+    assert copy[4] is itself and itself["a"] is x
+
+
+@needs_semantics
+def test_a_copy_that_cannot_be_allocated_is_an_error_not_another_layout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Falling back to a clone of the view (contiguous, from offset 0) would give the answer a
+    layout the task never made, and a kernel that assumes one would pass."""
+    import torch
+
+    from ttsem._judge_runner import copy_inputs
+
+    def no_memory(self: Any) -> Any:
+        raise RuntimeError("[enforce fail at alloc_cpu.cpp] DefaultCPUAllocator: can't allocate")
+
+    view = torch.arange(24.0)[::2]
+    monkeypatch.setattr(torch.UntypedStorage, "clone", no_memory)
+    with pytest.raises(RuntimeError, match="can't allocate"):
+        copy_inputs(view)
+
+
+@needs_semantics
+def test_an_empty_storage_and_a_tensor_without_one_are_copied_too() -> None:
+    """`out=` and `resize_` change an empty tensor's storage: shared, what a reference leaves in
+    it is what the answer finds. A zero tensor has no storage to copy, and is cloned."""
+    import torch
+
+    from ttsem._judge_runner import copy_inputs
+
+    empty, other = torch.empty(0), torch.empty(0)
+    mine, theirs = copy_inputs([empty, other])
+    mine.resize_(5).fill_(7.0)
+    assert empty.untyped_storage().nbytes() == 0 and empty.numel() == 0
+    assert theirs.untyped_storage().nbytes() == 0  # two empty tensors are two storages
+    assert copy_inputs([empty])[0].untyped_storage().nbytes() == 0
+    zero = torch._efficientzerotensor(2, 3)
+    assert torch.equal(copy_inputs(zero), torch.zeros(2, 3))
