@@ -1,7 +1,5 @@
 # ttsem
 
-[![CI](https://github.com/alepot55/ttsem/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/alepot55/ttsem/actions/workflows/ci.yml)
-
 Run the tests of your Triton kernels on a machine with no GPU and get the faults a GPU run hides:
 a write past the end of a tensor, two program instances that touch the same element with at least
 one of them writing it, an operation with an undefined result. Each one fails its test at the line
