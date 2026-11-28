@@ -398,3 +398,57 @@ a program it already holds (same digest, same specification), and keeps one entr
 `python -m discovery.prove --recheck-library` judges the 11 stored proofs again with no model:
 all pass, about 22 s each. The test suite: 199 passed, 2 skipped (two forms that are not exact
 over the reals have no kernel check).
+
+## 28 Nov 2026, 09:35 UTC: floating point, measured (M1 of the long session)
+
+A long session on branch `discovery-fp` (from `discovery`, PR 12) started at 08:59 UTC; its
+brief: certified floating-point bounds through an approximate homomorphism, then a search under
+them. At 09:00 the user lifted the brief's spend cap of $30; spend is still written down at every
+checkpoint. Spend so far: $0, no model call. M0's base: on the new branch the suite passes (199,
+2 skipped) and `prove --recheck-library` judges the 11 stored proofs again, all accepted.
+
+- `fsem.py` runs a program with one rounding per operation in float32, float16 or bfloat16
+  (bfloat16 rounded from float64 once, so no double rounding), a block's `sum` added along an
+  explicit tree (`pairwise`: adjacent pairs, depth ⌈log₂ b⌉, as `tl.sum` is a tree; or
+  `sequential`), the blocks merged along any tree (`left` is the kernel's loop), `+` and `*` of
+  three or more arguments folded left to right as the kernel does. Its reference is exact:
+  mpmath at 160 bits for the exponentials, rationals for the variance (a float64 sum of squares
+  is off by 1e-9 at a mean of 1e4, a test shows); the float64 reference used inside the
+  adversary's loop agrees with the exact one to 1e-13. A hand-written float32 online softmax
+  gives the same bits as `fsem` (test).
+- `adversary.py` climbs from six families of rows (logits around 0, 100 and 10⁴, a wide spread,
+  a staircase of block maxima that forces a rescale at every merge, two levels of values) with
+  moves of a few ulps, block shifts, ties with a block's maximum and new maxima; the worst row is
+  measured again with the exact reference and saved.
+- **The brief's table** (N = 4,096, blocks of 256, pairwise in-block trees, left merges, depth
+  15; median and maximum of 10 random rows per family; unit u = 2⁻²⁴;
+  `results/m1/library.csv`):
+
+  | state | logits | brief | here: median / max | adversary |
+  |---|---|---|---|---|
+  | `(m, d)` online | around 0 | 1.2-2.2 (adversary 3.8-11.7) | 0.62 / 2.48 | 14.4 |
+  | one field, log-sum-exp | around 0 | 9-55 | 5.98 / 19.7 | |
+  | one field | around 100 | 190-340 | 96.5 / 189 | |
+  | one field | around 10⁴ | 25,000-69,000 | 9,600 / 20,500 | 47,500 |
+
+  The order and the growth of the one-field error with the logits' magnitude reproduce; the
+  one-field numbers here are 2 to 3 times below the brief's on random rows. A hand-written
+  float32 run of the one-field program matches `fsem` bit for bit, so the gap is in the rows or
+  the statistics the brief used (its families are not given in detail), not in the arithmetic.
+  Not pursued further.
+- **The 11 programs of the library** (float32; `results/m1/library.csv` has float16 and
+  bfloat16 too, `results/m1/worst/` the worst rows):
+  - `SoftmaxLse`, `SoftmaxLseAbs` and `SoftmaxLseCompact` give the same bits on every row: they
+    differ in the IR, not in floating point, since `exp(0)` is 1 and fl(a − b) = −fl(b − a). The
+    same holds for `AttentionOnline` and `Attention1passShared`. The IR's digest does not know
+    it; three of the six programs the searches added to the library are float duplicates.
+  - The online softmax stays under 2.5 u on random rows (14.4 u adversarial); the one-field
+    state grows with the logits (47,500 u adversarial at 10⁴). The two attention states behave
+    the same way: the online `(m, d, o)` under 4.5 u against Σ p|v| (25.4 adversarial), the
+    log-sum-exp state with a normalised output 541 / 1,020 u at 10⁴ (55,000 adversarial).
+  - Variance at a mean of 10⁴ and a spread of 0.1: Welford 3,810 / 9,810 u (237,000
+    adversarial), the sum of squares 1.7·10⁷ / 4.0·10¹⁰ u (7.6·10¹⁰ adversarial).
+  - float16: Welford overflows on every family, because `L.n * R.n` is 2048² > 65,504; the two
+    `-lean` variants, which compute `d * f * L.n`, stay finite on normal rows. A program can be
+    exact over ℝ, the best of its cell in float32, and unusable in float16.
+  - bfloat16 rounds the rows at a mean of 10⁴ to a single value (spacing 64): variance 0, error 0.

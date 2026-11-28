@@ -1,0 +1,26 @@
+{
+ "n": 4096,
+ "block": 256,
+ "inner": "pairwise (adjacent pairs, depth ceil(log2 block))",
+ "order": "left (the kernel's loop), depth = blocks - 1",
+ "random_seeds": 10,
+ "climb_steps": 1000,
+ "climb_seeds": [
+  0,
+  1,
+  2
+ ],
+ "metric": {
+  "softmax": "normalizer",
+  "attention": "output",
+  "variance": "var"
+ },
+ "unit": {
+  "float32": 5.960464477539063e-08,
+  "float16": 0.00048828125,
+  "bfloat16": 0.00390625
+ },
+ "numpy": "2.5.5",
+ "machine": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+ "reference": "exact: mpmath at 160 bits for exp, rationals for the variance"
+}
