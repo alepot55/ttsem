@@ -40,7 +40,7 @@ import numpy as np
 
 from discovery import ir, semantics
 from discovery import llm as llms
-from discovery.archive import Archive, Record
+from discovery.archive import Archive, Record, close
 from discovery.evaluate import EXACT_TOL, Verdict, evaluate
 from discovery.knowledge import LIBRARY_INDEX, Knowledge
 from discovery.problems import PROBLEMS, Problem
@@ -291,8 +291,26 @@ def run(
             spread = None
             if timing.get("ms_min") is not None and timing.get("ms_max") is not None:
                 spread = (timing["ms_min"] * 1000, timing["ms_max"] * 1000)
+            ratio = None
+            elite = archive.elites.get(verdict.cell())
+            if elite is not None and close(timing["ms"] * 1000, spread, elite):
+                from discovery import gpu as gpus
+
+                try:  # too close to tell from two timings: time the two side by side
+                    pair = gpus.paired(
+                        problem.parse(verdict.text), problem.parse(elite.verdict.text), problem
+                    )
+                    ratio = pair["ratio"]
+                    timing["paired"] = {"elite": elite.verdict.digest, **pair}
+                except Exception as exc:  # noqa: BLE001  the elite's kernel could not be rebuilt
+                    timing["paired"] = {"error": f"{type(exc).__name__}: {exc}"}
             rec = archive.insert(
-                verdict, it, parent, measured_us=timing["ms"] * 1000, measured_range=spread
+                verdict,
+                it,
+                parent,
+                measured_us=timing["ms"] * 1000,
+                measured_range=spread,
+                paired_ratio=ratio,
             )
             return rec, timing
         failure = timing.get("message") or "the kernel failed the GPU check"

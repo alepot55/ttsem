@@ -183,6 +183,44 @@ the proposer sees the last ones. Whether this helps has to be measured at equal
 compute (an EACL 2026 study found that library learning's gains often vanish then); this
 version records, it does not claim a gain.
 
+## Floating point: certified bounds (branch `discovery-fp`)
+
+The thesis: numerical stability is an approximate homomorphism. A theorem proved once turns two
+inequalities per program, one for a block and one for a merge, into an error bound valid for
+every blocking and every merge tree; a search can then optimise the certified accuracy, which
+the GPU's time does not see and the model cannot recall.
+
+- **Measured** (`fsem.py`, `adversary.py`): one rounding per operation in the kernel's order (a
+  block's sum along an explicit tree, merges along any tree), an exact reference (mpmath,
+  rationals), and inputs climbed by ulp moves, block shifts and ties. `libm.py` measures numpy's
+  float32 `exp` and `log` on every input: the model's parameters for numpy.
+- **The model and the depth law** (`lean/Discovery/Approx.lean`, written once): an operation
+  returns `x(1 + δ) + η`, `|δ| ≤ u`, `|η| ≤ η_min` (no η for a sum; `exp`, `log` with their own
+  errors; `max` exact; products keep their sign, `exp` is never negative); evaluation is a
+  relation; `Tree.depth_law`: if a block is `ε₀`-close and a merge takes `εa`, `εb`-close inputs
+  to a `max εa εb + c`-close output, any tree of depth `d` gives `ε₀ + c·d`. Up to a relation
+  (`eval_rel_block`) for states whose reference is stale.
+- **The statement is generated, the bound proposed** (`fp_export.py`, `bound.py`): from the IR,
+  the relations `fblock`, `fmerge` (and `fout`) op by op, and the statement `∀ x ∈ dom, ∀ T, ∀ v,
+  FEval P x T v → |v − spec x| ≤ B`; the model gives only `B`, an expression in u, ue, ul, η, ηe,
+  depths, n and named functionals of the data (R, M; S2, Q for the variance; S, V for the
+  attention; τ, ρ for a policy). The statement's hypotheses grew over four versions, each forced
+  by a refutation from the prover (DIARY.md, 10:05 to 10:45 UTC): depth times rounding small,
+  absolute errors small, a bounded logit range for the attention, the stale sum times the
+  absolute errors for a policy.
+- **Two judges for a bound** (`fpbound.py`, `agentprove.py`, `fpcheck.py`): the adversary on
+  float32 runs, climbing on error/B over trees and blockings (a B it breaks goes back with the
+  run, Lean is not called), then the prover. The one-shot prover of PR 12 did not write a single
+  long proof; the agentic one (the model with four tools in a sandbox outside the repository, Lean
+  in the loop, `sorry` allowed while it works) does, and its proof is judged by the judge of
+  PR 12, rebuilt around the generated statement. F1 repeats the attack at length on a proved
+  bound; tightness is B over the worst error found.
+- **Rescaling policies** (`policies.py`, `policyrun.py`): FlashAttention-4's conditional
+  rescaling in the IR (`param`, `ifgt`); exact over ℝ for every tree, and its sum is at most
+  n·e^(τρ), ρ the tree's right depth.
+- **Search under a certificate** (`certsearch.py`): the certificate's value is the archive's
+  fitness, uncertified programs are never elites, and the final elites go to the prover.
+
 ## Hardware and cost
 
 | | this laptop | target |

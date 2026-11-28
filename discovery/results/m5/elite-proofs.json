@@ -1,0 +1,7 @@
+{
+ "fbc0a9179c9f2d15": {
+  "name": "softmax-online",
+  "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)",
+  "proved": true
+ }
+}

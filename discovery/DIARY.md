@@ -692,3 +692,39 @@ rows (sum of squares, an absolute error of 64 on a variance of 0.014).
   (the model with Lean in a sandbox), which keeps the model writing the whole proof. It closed 3
   of the 3 valid statements it was given so far, at 18 to 49 minutes each.
 - Open: Welford (with the agent), the attention at version 4 (the path runs again).
+
+## 28 Nov 2026, 11:15 UTC: two of M6's extras, while the agents work
+
+- **A digest up to renaming.** `Program.canonical_digest()` renames, in order of appearance,
+  everything a program chooses (its name, passes, state fields, temporaries, parameters); the
+  archive now counts a renamed program as a duplicate. On the library it merges
+  `SoftmaxLseAbs` and `SoftmaxLseCompact` (they differ in a temporary's name): 10 programs, not
+  11. The old digest stays the library's key. Tests in `test_policies.py`.
+- **Close kernels timed side by side.** `gpu.paired` times two checked kernels one after the
+  other on the same inputs, 5 rounds, the order swapped each round, and takes the median of the
+  per-round ratios; `loop.run` calls it when a new kernel's time is within 2% of its cell's
+  elite or their ranges overlap, and the archive decides on the ratio (beyond 2% the faster
+  wins, within it the smaller program). On the A1000 a kernel timed against itself gives a ratio
+  within 10% of 1 (test). This answers the closing remark of PR 12: two timings taken minutes
+  apart compared the GPU's drift as much as the kernels.
+- `SoftmaxLse` has a second accepted proof: opus, on its own, 72 turns, 26 min
+  (`results/m3/agent/SoftmaxLse-agent.json`); sonnet's is `SoftmaxLse-proof-sonnet.lean`.
+- **A limit, found by checking a claim of mine (negative).** The statements assume `small F`,
+  whose comment said float32, float16 and bfloat16 all satisfy it. Float16 does not: its η is
+  2⁻²⁵ and `small F` asks for η ≤ 2⁻¹⁰⁰. So the proved bounds say nothing about float16, and
+  bfloat16 (u = 2⁻⁸) meets the depth hypothesis (d + D + 1)(u + ue + ul) ≤ 1/16 only for trees a
+  few levels deep: in practice the theorems are about float32. (numpy's float16 `exp` and `log`
+  are correctly rounded, 0.999 u at most, measured on all 63,488 finite values:
+  `results/m2/libm.json`.) The comments are corrected; the statements are not changed.
+
+## 28 Nov 2026, 11:30 UTC: M5's online elite certified with a tighter bound (M5)
+
+The agent proved the online elite's certificate (`results/m5/proofs/Candfbc0a9179c-agent.json`,
+sonnet, 117 turns, 41 min, $4.06): |log Ẑ − log Z| ≤ 2uR + (5/4)(Du + 2du + u + (d+1)ue) +
+4n(d+2)(η + ηe). It is tighter than M3's bound for the same program: R·u appears once, not per
+merge. The rounding of the subtraction in exp(L.m − m) moves an element's exponent by u times the
+shift of its maximum, and along a merge tree the shifts of one element's maximum add up to at
+most R, the final maximum minus the element's first: the errors telescope. The certifier
+proposed it and the agent proved it; at the reference point it is 149 u against about 400 u for
+M3's. F1 holds, tightness 12.2 (`results/m5/f1/SoftmaxOnline.json`). The one-field elites are
+with the agent.

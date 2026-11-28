@@ -36,7 +36,8 @@ from discovery.problems import Problem
 
 IMPORTS = ("Discovery.Approx",)
 
-# a small rounding: float32, float16 and bfloat16 all satisfy it, and second-order terms fit
+# a small rounding: float32 and bfloat16 satisfy it, float16 does not (its η is 2^-25: the
+# theorems over this hypothesis say nothing about float16); second-order terms fit
 SMALL = "F.u ≤ 1 / 256 ∧ F.ue ≤ 1 / 64 ∧ F.ul ≤ 1 / 64 ∧ F.η ≤ 1 / 2 ^ 100 ∧ F.ηe ≤ 1 / 2 ^ 100"
 
 # The depth times the rounding is small, the classical hypothesis k·u < 1 of the γ_k bounds.
@@ -354,7 +355,7 @@ open Discovery Discovery.Library.{library}
 """
 
 _SMALL_DEF = f"""
-/-- The rounding is small: float32, float16 and bfloat16 all satisfy this. -/
+/-- The rounding is small: float32 and bfloat16 satisfy this; float16 does not (η = 2⁻²⁵). -/
 def small (F : Discovery.Rounding) : Prop := {SMALL}
 """
 

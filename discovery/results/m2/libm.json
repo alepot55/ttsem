@@ -29,5 +29,13 @@
   "log_differ": 0,
   "exp_len1_sample": 100000,
   "exp_len1_differ": 0
+ },
+ "float16": {
+  "format": "float16",
+  "inputs": 63488,
+  "exp_max_rel_in_u": 0.9992678561587619,
+  "exp_overflowed": 6144,
+  "exp_max_abs_subnormal_in_2^-24": 0.49984903055767926,
+  "log_max_rel_in_u": 0.9988604385379999
  }
 }
