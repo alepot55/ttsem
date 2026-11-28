@@ -728,3 +728,14 @@ most R, the final maximum minus the element's first: the errors telescope. The c
 proposed it and the agent proved it; at the reference point it is 149 u against about 400 u for
 M3's. F1 holds, tightness 12.2 (`results/m5/f1/SoftmaxOnline.json`). The one-field elites are
 with the agent.
+
+## 28 Nov 2026, 11:40 UTC: the attention's bound proved at version 4 (M3)
+
+With version 4 (the logit range bounded, (hi − lo)·u ≤ 1/16) sonnet's first proposal survived the
+adversary and the agent proved it (`results/m3/agent/AttentionOnline-v4.json`, 166 turns, 60 min,
+$6.77): |ô − o| ≤ 3S(R·u + (d+1)·ue + (2d + D + 2)·u) + 5n·η + 3(d+1)·n·ηe·V + 3S·n(η + (d+1)·ηe),
+with S = Σ p|v| / Σ p. F1 holds, tightness 14.9 (`results/m3/f1/AttentionOnline.json`). This is
+the bound TorchLean proved by hand, for its left fold; here the model proposed it with no hint
+and proved it for every merge tree, R·u again once (the shifts of a maximum telescope). Four
+programs now have a proved bound (online softmax, one-field softmax, attention, sum of squares);
+Welford is with opus.

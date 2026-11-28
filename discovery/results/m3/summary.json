@@ -48,9 +48,9 @@
    "worst_ratio": 0.20445990005169273
   },
   "AttentionOnline": {
-   "B": "3*S*((D + 3*d + 3)*u + (d + 1)*(R*u + ue)) + 4*n*(eta + etae)*(V + 1)",
-   "proved": false,
-   "by": null,
+   "B": "3*S*(R*u + (d+1)*ue + (2*d + D + 2)*u) + 5*n*eta + 3*(d+1)*n*etae*V + 3*S*n*(eta + (d+1)*etae)",
+   "proved": true,
+   "by": "sonnet",
    "attempts": [
     {
      "model": "sonnet",
@@ -69,7 +69,11 @@
      "cost_usd": 0.6532306
     }
    ],
-   "cost_usd": 0.7505
+   "cost_usd": 0.7505,
+   "version": "4",
+   "F1_violated": false,
+   "tightness": 14.91538453639637,
+   "worst_ratio": 0.06704486884396511
   },
   "VarianceWelford": {
    "proved": false,
