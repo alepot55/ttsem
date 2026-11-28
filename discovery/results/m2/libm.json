@@ -1,0 +1,33 @@
+{
+ "numpy": "2.5.5",
+ "machine": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+ "exp": {
+  "inputs": 2239853081,
+  "overflowed_not_measured": 36329,
+  "range": [
+   -104.0,
+   89.0
+  ],
+  "max_rel_error": 2.1264091122758544e-07,
+  "max_rel_error_in_u": 3.567522498102026,
+  "at": -62.02950668334961,
+  "max_abs_error_subnormal": 2.1529026219129e-45,
+  "max_abs_error_subnormal_in_2^-149": 1.536362649872899,
+  "at_subnormal": -87.67213439941406
+ },
+ "log": {
+  "inputs": 2139095039,
+  "max_rel_error": 2.728251594856783e-07,
+  "max_rel_error_in_u": 4.577246630925674,
+  "at": 0.7464123964309692
+ },
+ "seconds": 105.5,
+ "scalar_vs_vector": {
+  "exp_sample": 700000,
+  "exp_differ": 0,
+  "log_sample": 700000,
+  "log_differ": 0,
+  "exp_len1_sample": 100000,
+  "exp_len1_differ": 0
+ }
+}

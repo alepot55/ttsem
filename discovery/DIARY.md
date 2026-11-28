@@ -452,3 +452,42 @@ checkpoint. Spend so far: $0, no model call. M0's base: on the new branch the su
     `-lean` variants, which compute `d * f * L.n`, stay finite on normal rows. A program can be
     exact over ℝ, the best of its cell in float32, and unusable in float16.
   - bfloat16 rounds the rows at a mean of 10⁴ to a single value (spacing 64): variance 0, error 0.
+
+## 28 Nov 2026, 09:50 UTC: the rounding model and the depth law in Lean (M2)
+
+`lean/Discovery/Approx.lean`, written once and by hand, as the brief asks; it took about 15
+minutes, so the brief's fallback at 3 hours (a closeness relation specialised to relative and
+exact fields) was not needed.
+
+- **The model.** `Rounding` holds `u`, `η`, `ue`, `ηe`, `ul`. An operation with exact result `x`
+  returns `x(1 + δ) + η` with `|δ| ≤ u`, `|η| ≤ η_min`; an addition has no `η` (a subnormal sum is
+  exact); `exp` and `log` have their own relative errors; `max min neg abs` are exact. Two sign
+  facts are part of the model: a rounded product keeps the sign of the exact one, and `exp` is
+  never negative. Without them the model allows a negative normalizer that no run produces.
+  Overflow is not modelled. Evaluation is a relation (`Tree.FEval`), true for every admissible
+  choice of the errors.
+- **The depth law.** `Tree.depth_law` (real index) and `Tree.depth_law_nat` (a count of
+  roundings): if every block's float summary is `ε₀`-close and a merge takes an `εa`-close and an
+  `εb`-close pair to a `max εa εb + c`-close one, then any blocking and any merge tree of depth
+  `d` gives `ε₀ + c·d`. `Tree.eval_rel_block` and `output_eq_of_rel`: a merge that respects a
+  relation and is right up to it on two blocks is right up to it on any tree (for the states with
+  a stale reference of M4).
+- **The instance.** `sum_tree_bound` and `sum_tree_error`: positive numbers summed along any tree
+  of depth `d` give a result within a factor `(1 ± u)^d`, so `|w − Σ| ≤ ((1 + u)^d − 1) Σ`, the
+  classical bound by the tree's height, out of the depth law with `C k w s := (1 − u)^k s ≤ w ≤
+  (1 + u)^k s` and `c = 1`.
+- **Tools for the candidates.** `fsum`, a block's sum along any tree of depth at most `D`;
+  `fsum_bounds`; one lemma per operation (`add_err`, `mul_err`, `exp_bounds`, `log_err`).
+- **Checks.** It compiles; every theorem's axioms are among propext, Classical.choice and
+  Quot.sound (`eval_rel_block` uses propext only); the judge's checker replays every declaration
+  of the module in the kernel with no error.
+- **The model's parameters for numpy's float32, measured on every input** (`libm.py`,
+  `results/m2/libm.json`): `exp` on the 2,239,853,081 floats of [−104, 89] with a finite result
+  (36,329 that overflow are outside the model): largest relative error 3.57 u (at −62.03); below
+  the normal range, largest absolute error 1.54·2⁻¹⁴⁹ (at −87.67): `exp` is not correctly rounded
+  there, so `ηe` is 2⁻¹⁴⁸, not 2⁻¹⁵⁰. `log` on all 2,139,095,039 positive finite floats: largest
+  relative error 4.58 u (at 0.7464). numpy's scalar and vector paths give the same bits (700,000
+  samples each), so the merges, which call `exp` on scalars, are covered. For F1 the bounds are
+  evaluated at `u = 2⁻²⁴`, `η = 2⁻¹⁵⁰`, `ue = 4u`, `ηe = 2⁻¹⁴⁸`, `ul = 5u`.
+
+Spend: $0.
