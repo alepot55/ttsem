@@ -156,6 +156,12 @@ class Program:
         body = unparse(dataclasses.replace(self, name="_"))
         return hashlib.sha256(body.encode()).hexdigest()[:16]
 
+    def canonical_digest(self) -> str:
+        """Identity of the program up to every name it chooses: its own, its passes', its state
+        fields', its temporaries' and its parameters', renamed in order of appearance. The
+        element fields and the outputs' names are the problem's and stay."""
+        return hashlib.sha256(unparse(canonical(self)).encode()).hexdigest()[:16]
+
 
 # --------------------------------------------------------------------------- parsing
 
@@ -375,6 +381,45 @@ def _type(
             raise IRError(f"{ctx}: ({e.op} a b x y) compares scalars a and b")
         return "vec" if "vec" in ts[2:] else "scalar"
     return "vec" if "vec" in ts else "scalar"
+
+
+# --------------------------------------------------------------------------- renaming
+
+
+def _rename(e: Expr, names: dict[str, str]) -> Expr:
+    if isinstance(e, Var):
+        return Var(names.get(e.name, e.name))
+    if isinstance(e, Call):
+        return Call(e.op, tuple(_rename(a, names) for a in e.args))
+    if isinstance(e, Reduce):
+        return Reduce(e.op, _rename(e.body, names))
+    return e
+
+
+def canonical(prog: Program) -> Program:
+    """``prog`` with its own names replaced by their positions: parameters c0.., passes p0..,
+    a pass's state fields f0.. (in the order of its state), block temporaries b0.., merge
+    temporaries m0.., and the program's name ``_``."""
+    names: dict[str, str] = {n: f"c{i}" for i, n in enumerate(prog.params)}
+    passes = []
+    for i, p in enumerate(prog.passes):
+        fields = {f: f"f{j}" for j, f in enumerate(p.fields)}
+        local = dict(fields)
+        for n, _ in p.block:
+            if n not in local:
+                local[n] = f"b{len(local) - len(fields)}"
+        block = [(local[n], _rename(e, {**names, **local})) for n, e in p.block]
+        local = dict(fields)
+        for n, _ in p.merge:
+            if n not in local:
+                local[n] = f"m{len(local) - len(fields)}"
+        sides = {f"{side}.{f}": f"{side}.{g}" for side in "LR" for f, g in fields.items()}
+        merge = [(local[n], _rename(e, {**names, **local, **sides})) for n, e in p.merge]
+        passes.append(Pass(f"p{i}", list(fields.values()), block, merge))
+        names.update({f"{p.name}.{f}": f"p{i}.{g}" for f, g in fields.items()})
+    output = Output(prog.output.kind, [(n, _rename(e, names)) for n, e in prog.output.exprs])
+    params = {names[n]: v for n, v in prog.params.items()}
+    return Program("_", list(prog.inputs), passes, output, params=params)
 
 
 # --------------------------------------------------------------------------- printing

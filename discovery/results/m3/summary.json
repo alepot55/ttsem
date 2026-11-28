@@ -1,0 +1,208 @@
+{
+ "programs": {
+  "SoftmaxOnline": {
+   "B": "2*(d+1)*R*u + 2*(d+1)*ue + 2*(2*d + D)*u + 4*n*(eta + etae)",
+   "proved": true,
+   "by": "sonnet",
+   "attempts": [
+    {
+     "model": "sonnet",
+     "stage": "ok",
+     "ok": true,
+     "turns": 128,
+     "seconds": 2965.3,
+     "cost_usd": 4.463159099999999
+    }
+   ],
+   "cost_usd": 4.4632,
+   "F1_violated": false,
+   "tightness": 20.327978117204683,
+   "worst_ratio": 0.04919328396726506
+  },
+  "SoftmaxLse": {
+   "B": "2*(u*(D + R + M + n + 2) + ue + ul*(n + 1)) + 2*d*(u*(M + n + 2) + ue + ul)",
+   "proved": true,
+   "by": "sonnet",
+   "attempts": [
+    {
+     "model": "sonnet",
+     "stage": "deny",
+     "ok": false,
+     "turns": 74,
+     "seconds": 1449.2,
+     "cost_usd": 2.5050855999999992
+    },
+    {
+     "model": "opus",
+     "stage": "ok",
+     "ok": true,
+     "turns": 72,
+     "seconds": 1589.0,
+     "cost_usd": 3.5360142000000003
+    }
+   ],
+   "cost_usd": 6.0411,
+   "rejudged": "first judged with the ASCII-only deny list, which refused the identifier h\u03c6def; judged again after the fix",
+   "F1_violated": false,
+   "tightness": 4.8909346025659515,
+   "worst_ratio": 0.20445990005169273
+  },
+  "AttentionOnline": {
+   "B": "3*S*((D + 3*d + 3)*u + (d + 1)*(R*u + ue)) + 4*n*(eta + etae)*(V + 1)",
+   "proved": false,
+   "by": null,
+   "attempts": [
+    {
+     "model": "sonnet",
+     "stage": "deny",
+     "ok": false,
+     "turns": 2,
+     "seconds": 49.3,
+     "cost_usd": 0.09724840000000001
+    },
+    {
+     "model": "opus",
+     "stage": "deny",
+     "ok": false,
+     "turns": 7,
+     "seconds": 212.6,
+     "cost_usd": 0.6532306
+    }
+   ],
+   "cost_usd": 0.7505
+  },
+  "VarianceWelford": {
+   "proved": false,
+   "status": "no record"
+  },
+  "VarianceSumsq": {
+   "B": "4*(D + d + 3)*u*Q + 6*eta",
+   "proved": true,
+   "by": "sonnet",
+   "attempts": [
+    {
+     "model": "sonnet",
+     "stage": "ok",
+     "ok": true,
+     "turns": 59,
+     "seconds": 1102.0,
+     "cost_usd": 1.5886859999999998
+    }
+   ],
+   "cost_usd": 1.5887,
+   "F1_violated": false,
+   "tightness": 9.687933303036411,
+   "worst_ratio": 0.10322118956853038
+  }
+ },
+ "F4": [
+  {
+   "pair": [
+    "SoftmaxOnline",
+    "SoftmaxLse"
+   ],
+   "point": "logits around 100",
+   "family": "normal100",
+   "SoftmaxOnline": {
+    "proved": true,
+    "certified_u": 460.0,
+    "measured_max_u": 1.864341275766492,
+    "adversary_max_u": 14.427981242537498
+   },
+   "SoftmaxLse": {
+    "proved": true,
+    "certified_u": 175744.0,
+    "measured_max_u": 189.45834886655211,
+    "adversary_max_u": 47509.1115905419
+   },
+   "measured_ratio": 101.62213932031278,
+   "certified_ratio": 382.0521739130435,
+   "F4": "agrees"
+  },
+  {
+   "pair": [
+    "SoftmaxOnline",
+    "SoftmaxLse"
+   ],
+   "point": "logits around 1e4",
+   "family": "normal1e4",
+   "SoftmaxOnline": {
+    "proved": true,
+    "certified_u": 460.0,
+    "measured_max_u": 1.658931028097868,
+    "adversary_max_u": 14.427981242537498
+   },
+   "SoftmaxLse": {
+    "proved": true,
+    "certified_u": 492544.0,
+    "measured_max_u": 20521.677503604442,
+    "adversary_max_u": 47509.1115905419
+   },
+   "measured_ratio": 12370.422372010618,
+   "certified_ratio": 1070.7478260869566,
+   "F4": "agrees"
+  },
+  {
+   "pair": [
+    "VarianceWelford",
+    "VarianceSumsq"
+   ],
+   "point": "variance: mean 1e4, spread 0.1",
+   "family": "offset",
+   "VarianceWelford": {
+    "proved": false,
+    "certified_u": null,
+    "measured_max_u": 9809.506740194387,
+    "adversary_max_u": 236996.20604185833
+   },
+   "VarianceSumsq": {
+    "proved": true,
+    "certified_u": 1040000000104.0001,
+    "measured_max_u": 40445648001.77202,
+    "adversary_max_u": 76368334049.41109
+   },
+   "measured_ratio": 4123107.213540743,
+   "certified_ratio": null
+  }
+ ],
+ "points": {
+  "logits around 100": {
+   "u": 5.960464477539063e-08,
+   "ue": 2.384185791015625e-07,
+   "ul": 2.980232238769531e-07,
+   "eta": 7.006492321624085e-46,
+   "etae": 2.802596928649634e-45,
+   "D": 8.0,
+   "d": 15.0,
+   "n": 4096.0,
+   "R": 8.0,
+   "M": 104.0
+  },
+  "logits around 1e4": {
+   "u": 5.960464477539063e-08,
+   "ue": 2.384185791015625e-07,
+   "ul": 2.980232238769531e-07,
+   "eta": 7.006492321624085e-46,
+   "etae": 2.802596928649634e-45,
+   "D": 8.0,
+   "d": 15.0,
+   "n": 4096.0,
+   "R": 8.0,
+   "M": 10004.0
+  },
+  "variance: mean 1e4, spread 0.1": {
+   "u": 5.960464477539063e-08,
+   "ue": 2.384185791015625e-07,
+   "ul": 2.980232238769531e-07,
+   "eta": 7.006492321624085e-46,
+   "etae": 2.802596928649634e-45,
+   "D": 8.0,
+   "d": 15.0,
+   "n": 4096.0,
+   "R": 0.8,
+   "M": 10000.4,
+   "S2": 0.01,
+   "Q": 100000000.01
+  }
+ }
+}

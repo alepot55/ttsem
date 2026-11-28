@@ -112,6 +112,7 @@ class Archive:
         self.records: list[Record] = []
         self.elites: dict[Cell, Record] = {}
         self.by_digest: dict[str, Record] = {}  # the first record of each program
+        self.canonicals: set[str] = set()  # the programs seen, up to renaming
 
     def eligible(self, rec: Record) -> bool:
         """Whether a record may be its cell's elite: correct, not a duplicate, its kernel not
@@ -145,7 +146,8 @@ class Archive:
             measured_range=measured_range,
         )
         cell = verdict.cell()
-        if verdict.digest and verdict.digest in self.by_digest:
+        renamed = bool(verdict.canonical) and verdict.canonical in self.canonicals
+        if verdict.digest and (verdict.digest in self.by_digest or renamed):
             rec.status = "duplicate"
         elif not verdict.correct:
             rec.status = "rejected"
@@ -163,6 +165,8 @@ class Archive:
             self.elites[cell] = rec
         if verdict.digest and rec.status != "duplicate":
             self.by_digest[verdict.digest] = rec
+            if verdict.canonical:
+                self.canonicals.add(verdict.canonical)
         self.records.append(rec)
         return rec
 

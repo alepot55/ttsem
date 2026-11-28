@@ -629,3 +629,66 @@ M3: the agentic prover closed the sum of squares, |v̂ − var| ≤ 4(D + d + 3)
   path (proposal, adversary, agent) runs again on it.
 - So far: 2 bounds proved (SoftmaxLse, VarianceSumsq); the online softmax and Welford are with
   the agents; the attention restarts at version 4.
+
+## 28 Nov 2026, 10:50 UTC: the search under a certificate (M5): recall again, and a noisy fitness
+
+`certsearch.py`, softmax, sonnet as proposer, no lemma in the prompts, 6 proposals per run, 3
+seeds per arm (`results/m5/report.json`):
+
+- **cert**: the archive search, where a correct candidate enters the archive only with a
+  certificate (the model proposes B for its policy-form statement, the adversary of `policyrun`
+  attacks it for τ in {0, 2, 8} and left, right, balanced and random trees), and the
+  certificate's value at a reference point (n = 4,096, blocks of 256, left fold, R = 10, M = 100,
+  float32) is the fitness; **iid**: independent samples certified the same way; **plain**: PR 12's
+  search with no certificate, its elites certified afterwards.
+- **No new program.** In all 9 runs the elite of the two-field cell is `softmax-online`, byte for
+  byte the library's (digest fbc0a917); in the one-field cell a one-field log-sum-exp variant. To
+  the brief's question (a program whose certified bound beats every published form of its cell
+  at equal time) the answer here is no.
+- **F5.** Proposal 1 is the final elite in 2 of 3 `cert` runs, 0 of 3 `iid` and 1 of 3 `plain`;
+  the published form is in the first batch of three proposals (submitted together) in every run.
+  It is recall, as in PR 12.
+- **A negative result for the method: the certificate measures the certifier.** Four
+  programs of the two-field cell that differ only in the text the model wrote got certificates of
+  148.8, 400, 524 and 526 u, because the certifier proposed a tighter or a looser B for each. In a
+  cell the search rewards the luckier bound, not the better program. A certified fitness needs a
+  canonical bound per program (for instance, the tightest B a fixed procedure proves), not the
+  first one a model proposes.
+- The first try of the `cert` arm stopped on a bug of mine (the adversary read a field `a.d` that
+  only the online state has); fixed, the three runs were made again. Cost of the runs: $1.14 at
+  list price, not counting the certificates computed before the bug, which are cached and reused.
+- The two distinct final elites (the online form, a one-field form) go to the agentic prover with
+  their certificates' B: an elite counts as certified only when that proof is accepted.
+
+## 28 Nov 2026, 11:00 UTC: three bounds proved; the certified order flips PR 12's choice (M3 closed)
+
+`results/m3/summary.json` (from `fpreport.py`), `results/m3/agent/` (records, proofs, statements),
+`results/m3/f1/` (the long attacks):
+
+| program | proved bound B (version 3) | prover | tightness | F1 |
+|---|---|---|---|---|
+| SoftmaxOnline | 2(d+1)R·u + 2(d+1)·ue + 2(2d+D)·u + 4n(η+ηe) | sonnet, agent, 128 turns, 49 min, $4.46 | 20.3 | holds |
+| SoftmaxLse | 2(u(D+R+M+n+2) + ue + ul(n+1)) + 2d(u(M+n+2) + ue + ul) | sonnet, agent (judged again) | 4.9 | holds |
+| VarianceSumsq | 4(D+d+3)·u·Q + 6η | sonnet, agent, 59 turns, 18 min, $1.59 | 9.7 | holds |
+
+Tightness is B over the largest error the long attack found (400 steps, 4 seeds, every family,
+plus the worst rows of M1 climbed again), at the run where error/B is largest; F1 holds when no
+run exceeds B. The worst runs: logits around 10⁴ on a balanced tree (one field), the mean-10⁴
+rows (sum of squares, an absolute error of 64 on a variance of 0.014).
+
+- **F4, the brief's first test bench, passes.** At the logits of M1's families (n = 4,096,
+  blocks of 256, left fold): around 100 the certified bounds put the online state 382 times
+  below the one-field state, the measured errors 102 times; around 10⁴, 1,071 times certified,
+  12,370 times measured. The order agrees on both pairs. PR 12 elected the one-field state the
+  elite of its cell because it was smaller at the same time; the certified bound reverses that
+  choice, as the brief asked.
+- **The first bound proposed was the one proved, three times out of three** (on statement
+  version 3; the earlier versions' first bounds were right for float32 but their statements were
+  false). The bounds are 5 to 20 times above the worst error found.
+- **F3 is falsified.** With the one-shot prover (3 rounds of sonnet, then 3 of opus) no surviving
+  bound was proved: 0 of 11 so far (results/m3/*.json, v2/, v3/). Some of those statements were
+  false; on the valid ones the replies were outlines or `sorry`. The brief's fallback is a
+  mechanical procedure for the positive-sum fragment; I took a different one, the agentic prover
+  (the model with Lean in a sandbox), which keeps the model writing the whole proof. It closed 3
+  of the 3 valid statements it was given so far, at 18 to 49 minutes each.
+- Open: Welford (with the agent), the attention at version 4 (the path runs again).

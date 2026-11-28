@@ -63,20 +63,31 @@ def main() -> int:
     programs = {}
     for module in PROBLEM:
         rec_path = agent / f"{module}-agent.json"
-        if not rec_path.exists():
+        rejudged = agent / f"{module}-rejudged.json"
+        if not rec_path.exists() and not rejudged.exists():
             programs[module] = {"proved": False, "status": "no record"}
             continue
-        rec = json.loads(rec_path.read_text(encoding="utf-8"))
+        rec = json.loads(rec_path.read_text(encoding="utf-8")) if rec_path.exists() else {}
         item = {
-            "B": rec["B"],
+            "B": rec.get("B"),
             "proved": bool(rec.get("proved")),
             "by": (rec.get("proved") or {}).get("model"),
             "attempts": [
                 {k: a.get(k) for k in ("model", "stage", "ok", "turns", "seconds", "cost_usd")}
-                for a in rec["attempts"]
+                for a in rec.get("attempts", [])
             ],
             "cost_usd": rec.get("cost_usd"),
         }
+        if rejudged.exists():  # a proof refused by the old deny list, judged again after its fix
+            again = json.loads(rejudged.read_text(encoding="utf-8"))
+            if again.get("ok"):
+                item.update(B=again["B"], proved=True, by=again["model"], rejudged=again["note"])
+        # a later statement version (the attention's v4) has its own record
+        for later in sorted(agent.glob(f"{module}-v*.json")):
+            again = json.loads(later.read_text(encoding="utf-8"))
+            if again.get("proved"):
+                item.update(B=again["proved"]["B"], proved=True, by=again["proved"].get("model"))
+                item["version"] = later.stem.split("-v")[-1]
         check = f1 / f"{module}.json"
         if check.exists():
             c = json.loads(check.read_text(encoding="utf-8"))

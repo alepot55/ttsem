@@ -133,14 +133,39 @@ def run_arm(arm: str, seed: int, iterations: int, out: Path = OUT) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--arm", choices=["cert", "iid", "plain"], required=True)
+    ap.add_argument("--arm", choices=["cert", "iid", "plain", "prove"], required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--iterations", type=int, default=6)
     ap.add_argument("--out", default=str(OUT))
     args = ap.parse_args(argv)
+    if args.arm == "prove":
+        print(json.dumps(prove_elites(Path(args.out)), indent=1))
+        return 0
     s = run_arm(args.arm, args.seed, args.iterations, Path(args.out))
     print(json.dumps({k: s[k] for k in ("cells", "statuses", "usage") if k in s}, indent=1)[:3000])
     return 0
+
+
+def prove_elites(out: Path = OUT, models: tuple[str, ...] = ("sonnet", "opus")) -> dict:
+    """The agentic prover on every distinct final elite of the runs, with its certificate's B."""
+    from discovery import agentprove
+
+    cache = _load(out)
+    digests: dict[str, str] = {}
+    for summary in sorted(out.glob("*-s*/summary.json")):
+        for cell in json.loads(summary.read_text(encoding="utf-8"))["cells"]:
+            if (cache.get(cell["digest"]) or {}).get("B"):
+                digests[cell["digest"]] = cell["text"]
+    results = {}
+    for digest, text in digests.items():
+        cert = cache[digest]
+        prog = problems.SOFTMAX.parse(text)
+        fp = fp_export.export_policy(prog, problems.SOFTMAX, f"Cand{digest[:10]}", "fp")
+        b = bound.parse(cert["B"], cert.get("kind", "softmax"))
+        rec = agentprove.prove_file(fp, b, f"Cand{digest[:10]}", out / "proofs", models)
+        results[digest] = {"name": cert["name"], "B": cert["B"], "proved": bool(rec.get("proved"))}
+        (out / "elite-proofs.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
+    return results
 
 
 if __name__ == "__main__":

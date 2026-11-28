@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from discovery import fp_export, fsem, ir, policies, policyrun, problems, semantics
+from discovery import fp_export, fptable, fsem, ir, policies, policyrun, problems, semantics
 
 
 def test_a_program_with_a_parameter_and_a_selection_round_trips():
@@ -82,3 +82,27 @@ def test_policy_statements_are_generated_for_the_three_kinds():
     assert (
         "(if r1 > tau then R.m else L.m)" in fp.definitions
     )  # the float merge compares fl(R.m - L.m)
+
+
+def test_the_canonical_digest_ignores_the_names_a_program_chooses():
+    lib = {m: p for m, _, p in fptable.library()}
+    assert lib["SoftmaxLseAbs"].canonical_digest() == lib["SoftmaxLseCompact"].canonical_digest()
+    assert lib["SoftmaxLseAbs"].digest() != lib["SoftmaxLseCompact"].digest()
+    assert lib["SoftmaxOnline"].canonical_digest() != lib["SoftmaxLse"].canonical_digest()
+    online = problems.SOFTMAX.known["online"]
+    renamed = online.replace("(state m d)", "(state mx sm)").replace(" m)", " mx)")
+    renamed = renamed.replace("L.m", "L.mx").replace("R.m", "R.mx").replace("L.d", "L.sm")
+    renamed = renamed.replace("R.d", "R.sm").replace("(m (", "(mx (").replace("(d (", "(sm (")
+    renamed = renamed.replace("a.m", "a.mx").replace("a.d", "a.sm").replace("(- x m)", "(- x mx)")
+    a, b = problems.SOFTMAX.parse(online), problems.SOFTMAX.parse(renamed)
+    assert a.digest() != b.digest() and a.canonical_digest() == b.canonical_digest()
+
+
+def test_the_archive_counts_a_renamed_program_as_a_duplicate():
+    from discovery import archive, evaluate
+
+    lib = {m: p for m, _, p in fptable.library()}
+    arch = archive.Archive()
+    first = arch.insert(evaluate.evaluate(lib["SoftmaxLseAbs"].text(), problems.SOFTMAX, 0))
+    again = arch.insert(evaluate.evaluate(lib["SoftmaxLseCompact"].text(), problems.SOFTMAX, 0))
+    assert first.status == "new-cell" and again.status == "duplicate"
