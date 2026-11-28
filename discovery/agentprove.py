@@ -5,8 +5,13 @@ back for the next round. A long proof never gets written that way: in the first 
 replied with an outline marked INCOMPLETE, and the deny list refuses ``sorry``, so a partial proof
 never reaches Lean. Here ``claude -p`` runs as an agent:
 
-* four tools: ``Read``, ``Write`` and ``Edit`` inside a sandbox directory, and ``Bash`` allowed
-  only for commands that start with ``lean``; no web, no MCP, no user settings;
+* four tools: ``Read``, ``Write`` and ``Edit``, and ``Bash`` allowed only for commands that
+  start with ``lean``; no web, no MCP, no user settings. Until the review (diary, 12:35 UTC) the
+  first three reached the whole disk and Lean's ``#eval`` could read any file: the prompts held
+  no bound, but nothing stopped an agent from reading one (the sandboxes show no trace of it,
+  and the transcripts were not kept). Since then :data:`DENIED` keeps the tools out of the
+  repository, the home directory and the earlier sandboxes, and the ``lean`` of the sandbox
+  refuses a file that names file or process IO (:data:`GUARD`);
 * the sandbox holds the compiled statements module (first on ``LEAN_PATH``), its source for
   reading, and one file to edit, ``FPProofs.lean``, with the statement fixed and ``sorry`` in
   place of the proof. ``sorry`` is allowed while the agent works;
@@ -28,12 +33,52 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 from discovery import bound, fp_export, fpbound, fptable, llm, problems, prove
 
-SANDBOXES = Path(r"C:\dev\fpbox")  # outside the repository; a path without spaces
+SANDBOXES = Path(r"C:\dev\fpbox2")  # outside the repository; a path without spaces
+# The sandboxes of the runs before the review: their files hold the earlier proofs.
+EARLIER = Path(r"C:\dev\fpbox")
+
+# What the agent's Read, Write and Edit may not touch, as Claude Code's permission rules write
+# Windows paths (a deny beats an allow): the projects (the diary, the research notes, the
+# results), the home directory (the session's transcripts and notes, the judge's temporary
+# files), the earlier sandboxes and the personal folders.
+DENIED = (
+    "//c/dev/progetti/**",
+    "//c/Users/**",
+    "//c/dev/fpbox/**",
+    "//c/dev/assistente/**",
+    "//c/dev/.claude/**",
+    "//c/dev/CLAUDE.md",
+)
+
+# The sandbox's `lean`: Lean's IO reaches the whole disk, so a file that names file or process IO
+# is refused before Lean runs. Printing numbers with `#eval` stays allowed.
+GUARD = r"""import re, subprocess, sys
+BAN = re.compile(r"IO\.FS|readFile|readBinFile|IO\.Process|FilePath|getEnv"
+                 r"|appPath|currentDir|Handle|System\.")
+real, mem, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+for a in args:
+    if a.endswith(".lean"):
+        try:
+            text = open(a, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        if BAN.search(text):
+            print(f"{a}:1:0: error: file and process IO are not allowed in the sandbox")
+            sys.exit(1)
+sys.exit(subprocess.call([real, "--memory=" + mem, *args]))
+"""
+
+
+def denied_tools() -> str:
+    return ",".join(f"{tool}({path})" for tool in ("Read", "Write", "Edit") for path in DENIED)
+
+
 SYSTEM = (
     "You are an expert in Lean 4 and Mathlib and a careful numerical analyst. You work alone in "
     "a sandbox directory and check your work with Lean."
@@ -79,13 +124,17 @@ def sandbox(fp: fp_export.FPFile, b: bound.Bound, name: str) -> Path:
 
 
 def _wrapper() -> Path:
-    """A `lean` that runs the toolchain's Lean with the judge's memory limit, first on PATH."""
+    """A `lean` that runs the toolchain's Lean with the judge's memory limit, first on PATH,
+    through :data:`GUARD`."""
     bindir = SANDBOXES / "bin"
     bindir.mkdir(parents=True, exist_ok=True)
     real = Path(prove.lean_env()["LEAN"])
     mem = fpbound.LEAN_MEMORY_MB
-    sh = f'#!/bin/sh\nexec "{real.as_posix()}" --memory={mem} "$@"\n'
-    cmd = f'@"{real}" --memory={mem} %*\r\n'
+    guard = bindir / "guard.py"
+    guard.write_text(GUARD, encoding="utf-8")
+    py = Path(sys.executable)
+    sh = f'#!/bin/sh\nexec "{py.as_posix()}" "{guard.as_posix()}" "{real.as_posix()}" {mem} "$@"\n'
+    cmd = f'@"{py}" "{guard}" "{real}" {mem} %*\r\n'
     (bindir / "lean").write_text(sh, encoding="utf-8", newline="\n")
     (bindir / "lean.cmd").write_text(cmd, encoding="utf-8", newline="")
     return bindir
@@ -122,6 +171,8 @@ def run_agent(prompt: str, root: Path, model: str, max_turns: int, timeout: floa
         "Read,Write,Edit,Bash",
         "--allowedTools",
         "Read,Write,Edit,Bash(lean:*)",
+        "--disallowedTools",
+        denied_tools(),
         "--permission-mode",
         "acceptEdits",
         "--strict-mcp-config",

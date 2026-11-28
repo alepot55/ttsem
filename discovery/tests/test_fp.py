@@ -164,3 +164,38 @@ def test_the_deny_list_reads_unicode_identifiers_as_lean_does():
     assert prove.banned("have h₀def := 1") == []
     assert prove.banned("def C := 1", helpers=True) == ["def"]
     assert prove.banned("exact x def y") == ["def"]
+
+
+def test_a_word_glued_to_a_greek_letter_is_one_identifier_only_where_lean_says_so():
+    """The review (diary, 12:35 UTC): treating every non-ASCII letter as part of an identifier let
+    `λdef` hide a `def`. Lean's identifiers take most Greek letters but not λ, Π or Σ."""
+    assert prove.banned("hφdef") == [] and prove.banned("αsorry") == []
+    assert prove.banned("λdef", helpers=True) == ["def"]
+    assert prove.banned("Πdef", helpers=True) == ["def"]
+    assert prove.banned("x·def", helpers=True) == ["def"]
+    assert "sorry" in prove.banned("éaxiom sorry")
+
+
+def test_a_run_that_overflows_is_skipped_when_a_bound_is_attacked(monkeypatch):
+    env = {**fpbound.ENV32, "D": 8.0, "d": 4.0, "n": 4096.0, "R": 1.0, "M": 1.0}
+    runs = iter([(math.inf, env)] + [(1e-7, env)] * 100)
+    monkeypatch.setattr(fpbound, "measure", lambda *a, **k: next(runs))
+    q, info = fpbound.ratio("softmax", None, bound.parse("u"), {})
+    assert math.isfinite(q) and info["error"] == 1e-7
+
+
+def test_an_attention_run_that_overflows_still_reports_its_atoms():
+    prog = _lib("AttentionOnline")
+    el = adversary.generate("attention", "normal0", np.random.default_rng(0), 256, 64)
+    el["v"] = np.full_like(el["v"], 3e38)  # the weighted sum overflows float32
+    got = fpbound.measure("attention", prog, el, 64, "left")
+    err, env = got if isinstance(got, tuple) else got[0]
+    assert not math.isfinite(err) and env["S"] > 0 and env["V"] > 0
+
+
+def test_the_random_merge_tree_is_drawn_from_the_climb():
+    prog = _lib("SoftmaxOnline")
+    el = adversary.generate("softmax", "normal0", np.random.default_rng(0), 4096, 64)
+    rng = np.random.default_rng(5)
+    depths = {fpbound.measure("softmax", prog, el, 64, "random", rng)[1]["d"] for _ in range(6)}
+    assert len(depths) > 1

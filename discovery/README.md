@@ -77,6 +77,7 @@ $ python -m discovery.fpcheck --program SoftmaxLse --bound "..."          # F1: 
 $ python -m discovery.fpreport                                            # proved bounds, tightness, the certified order (F4)
 $ python -m discovery.policyrun --policy conditional --kind exact         # rescaling policies: exact, overflow, fp, worst
 $ python -m discovery.certsearch --arm cert --seed 0                      # the search under a certificate, and its baselines
+$ python -m discovery.rejudge                                            # every accepted proof judged again (M6)
 ```
 
 Run output goes under `discovery/runs/` (not versioned); proved forms go to
@@ -109,7 +110,8 @@ lemma about a known form would put that form in every prompt.
 | `lean/Discovery/Approx.lean` | the rounding model, floating-point evaluation of a merge tree, the depth law, the framework up to a relation |
 | `fp_export.py`, `bound.py` | the floating-point statement of a program with its bound left open; the grammar of the bound |
 | `fpbound.py` | the proposal of a bound, the adversary on error/bound, the judge, one-shot proof rounds |
-| `agentprove.py` | the agentic prover: the model with Lean in a sandbox outside the repository; its proof judged as above |
+| `agentprove.py` | the agentic prover: the model with Lean in a sandbox outside the repository, its tools denied the repository and the home directory, a `lean` that refuses file IO; its proof judged as above |
+| `rejudge.py` | every accepted proof judged again, against statements generated again |
 | `fpcheck.py`, `fpreport.py` | F1 (a long attack on a proved bound) and F2 (tightness); the summary and the certified order (F4) |
 | `policies.py`, `policyrun.py` | rescaling policies (FlashAttention-4's conditional rescaling): exactness, overflow, bound, worst cases |
 | `certsearch.py` | the search with a certified bound as the fitness, and its two baselines |

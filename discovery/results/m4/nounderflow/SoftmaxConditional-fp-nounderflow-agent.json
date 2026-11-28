@@ -1,0 +1,30 @@
+{
+ "program": "SoftmaxConditional-fp-nounderflow",
+ "B": "(11/10)*(u*D + 2*u*d + ue + ue*d + 2*u*R + 2*u*tau*rd + 3*u)",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox\\SoftmaxConditional-fp-nounderflow-93b23b83eb74a38a-1795867941",
+   "seconds": 796.4,
+   "cost_usd": 1.3345043,
+   "turns": 50,
+   "result": "DONE",
+   "subtype": "success",
+   "error": "",
+   "stage": "ok",
+   "ok": true,
+   "errors": []
+  }
+ ],
+ "proved": {
+  "model": "sonnet",
+  "axioms": [
+   "propext",
+   "Classical.choice",
+   "Quot.sound"
+  ],
+  "B": "(11/10)*(u*D + 2*u*d + ue + ue*d + 2*u*R + 2*u*tau*rd + 3*u)",
+  "lean": "(((11 : \u211d) * ((1 : \u211d) / 10)) * ((F.u * (D : \u211d)) + ((2 : \u211d) * F.u * (t.depth : \u211d)) + F.ue + (F.ue * (t.depth : \u211d)) + ((2 : \u211d) * F.u * (hi - lo)) + ((2 : \u211d) * F.u * tau * (rdepth t : \u211d)) + ((3 : \u211d) * F.u)))"
+ },
+ "cost_usd": 1.3345
+}

@@ -114,7 +114,11 @@ def main() -> int:
         ca, cb = row[a]["certified_u"], row[b]["certified_u"]
         row["measured_ratio"] = (mb / ma) if ma and mb else None
         row["certified_ratio"] = (cb / ca) if ca and cb else None
-        if row["measured_ratio"] and row["certified_ratio"]:
+        unproved = [m for m in (a, b) if not row[m]["proved"]]
+        if unproved:
+            # a proposed bound that is not proved certifies nothing: the pair is not counted
+            row["F4"] = f"unresolved: no proved bound for {', '.join(unproved)}"
+        elif row["measured_ratio"] and row["certified_ratio"]:
             far = row["measured_ratio"] > 10 or row["measured_ratio"] < 0.1
             same = (row["measured_ratio"] > 1) == (row["certified_ratio"] > 1)
             row["F4"] = "agrees" if same else ("DISAGREES" if far else "differs, within 10x")

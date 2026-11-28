@@ -89,7 +89,7 @@ def certifier(out: Path = OUT, proposals: int = 2, steps: int = 60):
                     f"{found['error']:.4g} where B = {found['B']:.4g}."
                 )
                 continue
-            ref = {**REF, "tau": float(prog.params.get("tau", 0.0))}
+            ref = {**REF, "tau": float(next(iter(prog.params.values()), 0.0))}
             cert.update(
                 value=b.value(ref) / fpbound.U32,
                 B=b.text,
@@ -114,6 +114,8 @@ def run_arm(arm: str, seed: int, iterations: int, out: Path = OUT) -> dict:
     if arm in ("cert", "iid"):
         certify = certifier(out)
         propose.MEASURED = "certified error bound {:.4g} u"
+        # the review, diary 12:35 UTC: the parent's bound was shown as a GPU time in microseconds
+        propose.PARENT_MEASURED = " Its certified error bound: {:.4g} u."
     mode = "iid" if arm == "iid" else "archive"
     summary = loop.run(
         problems.SOFTMAX,

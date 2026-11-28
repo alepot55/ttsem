@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
-from discovery import fp_export, fptable, fsem, ir, policies, policyrun, problems, semantics
+from discovery import bound, fp_export, fptable, fsem, ir, policies, policyrun, problems, semantics
 
 
 def test_a_program_with_a_parameter_and_a_selection_round_trips():
@@ -106,3 +108,43 @@ def test_the_archive_counts_a_renamed_program_as_a_duplicate():
     first = arch.insert(evaluate.evaluate(lib["SoftmaxLseAbs"].text(), problems.SOFTMAX, 0))
     again = arch.insert(evaluate.evaluate(lib["SoftmaxLseCompact"].text(), problems.SOFTMAX, 0))
     assert first.status == "new-cell" and again.status == "duplicate"
+
+
+def test_names_that_could_break_the_statements_are_refused():
+    """The review (diary, 12:35 UTC): a name holding `-/` closed the doc comment of the trusted
+    statements, and a parameter named like a binder of the statement shadowed it."""
+    prog = policies.program("conditional")
+    lo = problems.SOFTMAX.parse(policies.POLICIES["conditional"].replace("tau", "lo"))
+    with pytest.raises(fp_export.FPExportError, match="binders"):
+        fp_export.export_policy(lo, problems.SOFTMAX, "P", "fp")
+    bad = dataclasses.replace(prog, name="p -/ #eval IO.println 1 /-")
+    text = fp_export.export_policy(bad, problems.SOFTMAX, "P", "exact").statements(bound.parse("u"))
+    assert "-/ #eval" not in text and text.count("/-") == text.count("-/")
+
+
+@pytest.mark.parametrize(
+    "out", ["(* (exp (- x a.m)) x)", "(exp (- x (* 2 x)))", "(/ a.d (exp (- x a.m)))"]
+)
+def test_a_softmax_output_not_of_the_form_exp_x_minus_c_has_no_statement(out):
+    """The statements read the normalizer at the element 0, the adversary at the row's maximum:
+    the two agree only for outputs exp(x − c)·g with c and g free of x."""
+    text = policies.POLICIES["conditional"].replace("(/ (exp (- x a.m)) a.d)", out)
+    with pytest.raises(fp_export.FPExportError, match="softmax output"):
+        fp_export.export_policy(problems.SOFTMAX.parse(text), problems.SOFTMAX, "P", "exact")
+
+
+def test_the_policy_is_run_with_its_own_parameter_name():
+    text = policies.POLICIES["conditional"].replace("tau", "thr")
+    prog = problems.SOFTMAX.parse(text)
+    x = policyrun._lag_family(np.random.default_rng(0), 1024, 256, 0.98 * 2)
+    err, env = policyrun.measure(prog, x, 256, "left", 2.0)
+    assert np.isfinite(err) and env["lag"] <= 2.0
+
+
+def test_no_statement_docstring_carries_an_invariant_or_a_metric():
+    prog = policies.program("conditional")
+    for kind in fp_export.POLICY_KINDS:
+        text = fp_export.export_policy(prog, problems.SOFTMAX, "P", kind).statements(
+            bound.parse("u")
+        )
+        assert "lag" not in text and "stale" not in text

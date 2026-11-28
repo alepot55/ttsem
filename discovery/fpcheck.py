@@ -40,7 +40,7 @@ def check(module: str, btext: str, steps: int = 400, seeds: tuple[int, ...] = (0
         cur = q
         for _ in range(steps):
             cand = adversary.mutate(problem, el, F, rng, 256)
-            q2, info2 = fpbound.ratio(problem, prog, b, cand)
+            q2, info2 = fpbound.ratio(problem, prog, b, cand, rng)
             if math.isfinite(q2) and q2 > cur:
                 el, cur, info = cand, q2, info2
         extra.append({"start": "M1 worst row, climbed", "ratio": cur, **info})

@@ -27,6 +27,7 @@ import json
 import math
 import re
 import time
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -44,14 +45,14 @@ PROOFS = "FPProofs"
 # --------------------------------------------------------------------------- measuring
 
 
-def measure(problem: str, prog: ir.Program, el64: dict, block: int, order: str) -> tuple:
+def measure(problem: str, prog: ir.Program, el64: dict, block: int, order: str, rng=None) -> tuple:
     """The certified quantity's error on one float32 run, and the atoms of the run.
 
     softmax: |log Ẑ − log Σ exp x|; attention: max over components of |ô − o| / Σ p|v|;
     variance: |v̂ − var|."""
     F = fsem.FORMATS["float32"]
     el = {k: np.asarray(F.value(v), dtype=np.float64) for k, v in el64.items()}
-    r = fsem.run(prog, el, "float32", block=block, order=order)
+    r = fsem.run(prog, el, "float32", block=block, order=order, rng=rng)
     xs = el["s" if problem == "attention" else "x"][:, 0]
     lo, hi = float(xs.min()), float(xs.max())
     env = dict(ENV32)
@@ -73,9 +74,9 @@ def measure(problem: str, prog: ir.Program, el64: dict, block: int, order: str) 
     elif problem == "attention":
         ref = fsem.reference("attention", el, exact=False)
         o = np.asarray(r.outputs["o"], dtype=np.float64).reshape(-1)
-        if not np.all(np.isfinite(o)):
-            return math.inf, env
         env["V"] = float(np.max(np.abs(el["v"])))
+        if not np.all(np.isfinite(o)):
+            return math.inf, {**env, "S": float(np.max(ref["scale"]))}
         # the statement is about one component: one run per component, with its own scale
         return [
             (abs(float(o[k]) - float(ref["o"][k])), {**env, "S": float(ref["scale"][k])})
@@ -94,13 +95,17 @@ def log_normalizer_error(prog: ir.Program, x: np.ndarray, block: int, order: str
     return measure("softmax", prog, {"x": np.asarray(x)[:, None]}, block, order)
 
 
-def ratio(problem: str, prog: ir.Program, b: bound.Bound, el: dict) -> tuple[float, dict]:
-    """The largest error / B over the blockings and merge orders, and that run."""
+def ratio(problem: str, prog: ir.Program, b: bound.Bound, el: dict, rng=None) -> tuple[float, dict]:
+    """The largest error / B over the blockings and merge orders, and that run. A run that
+    overflows is outside the model (Approx.lean) and is skipped, as in `policyrun`; the random
+    tree is drawn from ``rng``, so that a climb tries many trees (the review, diary 12:35 UTC)."""
     worst, info = -1.0, {}
     for block in BLOCKS:
         for order in ORDERS:
-            got = measure(problem, prog, el, block, order)
+            got = measure(problem, prog, el, block, order, rng)
             for err, env in got if isinstance(got, list) else [got]:
+                if not math.isfinite(err):
+                    continue
                 B = b.value(env)
                 q = err / B if B > 0 else math.inf
                 if q > worst:
@@ -123,10 +128,10 @@ def attack(
             rng = np.random.default_rng(7000 + seed)
             el = adversary.generate(problem, fam, rng, 4096, 256)
             el = {k: np.asarray(F.value(v), dtype=np.float64) for k, v in el.items()}
-            cur, info = ratio(problem, prog, b, el)
+            cur, info = ratio(problem, prog, b, el, rng)
             for _ in range(steps):
                 cand = adversary.mutate(problem, el, F, rng, 256)
-                q, inf2 = ratio(problem, prog, b, cand)
+                q, inf2 = ratio(problem, prog, b, cand, rng)
                 if math.isfinite(q) and q > cur:
                     el, cur, info = cand, q, inf2
             if cur > best["ratio"]:
@@ -385,25 +390,29 @@ class Verdict:
 
 
 def judge(fp: fp_export.FPFile, b: bound.Bound, helpers: str, proof: str, work: Path) -> Verdict:
-    """The judge of `prove.py`, on the floating-point statement."""
+    """The judge of `prove.py`, on the floating-point statement.
+
+    The statements are compiled again for every judgement, in a fresh directory whose name no one
+    can predict: an agent's Lean can write files (`#eval` runs IO), so a statements module left at
+    a known path could have been replaced by a weaker one (the review, diary, 12:35 UTC)."""
     t0 = time.time()
     bad = prove.banned(helpers, helpers=True) + prove.banned(proof)
     if bad:
         return Verdict(False, "deny", [f"not allowed in your text: {', '.join(bad)}"], 0.0)
     work = Path(work).resolve()
-    stmts = work / "statements" / f"{fp.library}-{fp.key(b)}"
+    fresh = work / f"judge-{uuid.uuid4().hex}"
+    stmts = fresh / "statements"
+    stmts.mkdir(parents=True)
     olean = stmts / f"{STATEMENTS}.olean"
-    if not olean.exists():
-        stmts.mkdir(parents=True, exist_ok=True)
-        src = stmts / f"{STATEMENTS}.lean"
-        src.write_text(fp.statements(b), encoding="utf-8")
-        out, _ = prove.run_lean(src, olean=olean)
-        errs = [m for m in prove.parse_messages(out) if m.severity == "error"]
-        if errs or not olean.exists():
-            msgs = [f"{m.line}: {m.text}" for m in errs] or [out[-1500:]]
-            return Verdict(False, "statements", msgs, time.time() - t0)
-    root = work / f"proof-{int(time.time() * 1000)}"
-    root.mkdir(parents=True, exist_ok=True)
+    src = stmts / f"{STATEMENTS}.lean"
+    src.write_text(fp.statements(b), encoding="utf-8")
+    out, _ = prove.run_lean(src, olean=olean)
+    errs = [m for m in prove.parse_messages(out) if m.severity == "error"]
+    if errs or not olean.exists():
+        msgs = [f"{m.line}: {m.text}" for m in errs] or [out[-1500:]]
+        return Verdict(False, "statements", msgs, time.time() - t0)
+    root = fresh / "proofs"
+    root.mkdir(parents=True)
     src = root / f"{PROOFS}.lean"
     text = fp.proofs(b, helpers, proof, STATEMENTS)
     src.write_text(text, encoding="utf-8")

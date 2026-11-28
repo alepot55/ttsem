@@ -213,7 +213,10 @@ the GPU's time does not see and the model cannot recall.
   run, Lean is not called), then the prover. The one-shot prover of PR 12 did not write a single
   long proof; the agentic one (the model with four tools in a sandbox outside the repository, Lean
   in the loop, `sorry` allowed while it works) does, and its proof is judged by the judge of
-  PR 12, rebuilt around the generated statement. F1 repeats the attack at length on a proved
+  PR 12, rebuilt around the generated statement. Since the review of M6 the tools are denied the
+  repository, the home directory and the earlier sandboxes, the sandbox's `lean` refuses file
+  and process IO, and the judge compiles the statements afresh in a directory with a random name
+  (before, an agent could read the diary or write where the judge looked; DIARY.md, 12:35 UTC). F1 repeats the attack at length on a proved
   bound; tightness is B over the worst error found.
 - **Rescaling policies** (`policies.py`, `policyrun.py`): FlashAttention-4's conditional
   rescaling in the IR (`param`, `ifgt`); exact over ℝ for every tree, and its sum is at most

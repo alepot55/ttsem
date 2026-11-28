@@ -76,8 +76,28 @@
    "worst_ratio": 0.06704486884396511
   },
   "VarianceWelford": {
+   "B": "2*(D + 7*d + 6)*u*S2 + 3*(d+1)*(D + 3*d + 2)^2*u^2*M^2 + 2*R*M*u*d*(D + 2*d + 1) + 6*eta*(d+1)^2*(1+R)^2",
    "proved": false,
-   "status": "no record"
+   "by": null,
+   "attempts": [
+    {
+     "model": "sonnet",
+     "stage": "deny",
+     "ok": false,
+     "turns": null,
+     "seconds": 3601.2,
+     "cost_usd": 0.0
+    },
+    {
+     "model": "opus",
+     "stage": "deny",
+     "ok": false,
+     "turns": null,
+     "seconds": 3601.0,
+     "cost_usd": 0.0
+    }
+   ],
+   "cost_usd": 0.0
   },
   "VarianceSumsq": {
    "B": "4*(D + d + 3)*u*Q + 6*eta",
@@ -155,7 +175,7 @@
    "family": "offset",
    "VarianceWelford": {
     "proved": false,
-    "certified_u": null,
+    "certified_u": 1022590546.0278777,
     "measured_max_u": 9809.506740194387,
     "adversary_max_u": 236996.20604185833
    },
@@ -166,7 +186,8 @@
     "adversary_max_u": 76368334049.41109
    },
    "measured_ratio": 4123107.213540743,
-   "certified_ratio": null
+   "certified_ratio": 1017.0248533430582,
+   "F4": "unresolved: no proved bound for VarianceWelford"
   }
  ],
  "points": {

@@ -50,7 +50,8 @@ def measure(prog: ir.Program, x: np.ndarray, block: int, order: str, tau: float)
     """|log Ẑ − log Z| of one float32 run (inf when it overflows), and the atoms of the run."""
     F = fsem.FORMATS["float32"]
     xs = np.asarray(F.value(x), dtype=np.float64)
-    r = fsem.run(prog, {"x": xs[:, None]}, "float32", block=block, order=order, params={"tau": tau})
+    params = {next(iter(prog.params)): tau} if prog.params else {}
+    r = fsem.run(prog, {"x": xs[:, None]}, "float32", block=block, order=order, params=params)
     m = float(xs.max())
     zhat = fsem._normalizer(prog, r, m)
     D_ref = math.fsum(np.exp(xs - m).tolist())
@@ -154,7 +155,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="discovery/results/m4")
     ap.add_argument("--proposals", type=int, default=3)
     ap.add_argument("--models", nargs="+", default=["sonnet", "opus"])
-    ap.add_argument("--bound", help="fp-nounderflow: the bound B that survived the adversary")
+    ap.add_argument(
+        "--bound", help="fp-nounderflow: prove this B (without it, the model proposes B as for fp)"
+    )
     args = ap.parse_args(argv)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -172,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
         rec = agentprove.prove_file(fp, bound.parse("u"), name, out, tuple(args.models))
         print(json.dumps(rec, indent=1)[:3000])
         return 0
-    if args.kind == "fp-nounderflow":
+    if args.kind == "fp-nounderflow" and args.bound:
         # the weakened statement, with the bound that survived the adversary on all runs
         rec = agentprove.prove_file(
             fp, bound.parse(args.bound, "policy"), name, out, tuple(args.models)

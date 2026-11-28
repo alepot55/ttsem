@@ -52,9 +52,10 @@ def shown(problem: Problem, blind: bool) -> Callable[[str], str]:
     return show
 
 
-# How a measured fitness reads in the prompt; a search under a certified bound sets it to the
-# bound (discovery.certsearch).
+# How a measured fitness reads in the prompt, in a record's score and after the parent; a search
+# under a certified bound sets both to the bound (discovery.certsearch).
 MEASURED = "measured {:.0f} us"
+PARENT_MEASURED = " Measured on the GPU: {:.0f} us."
 
 
 def score(rec: Record) -> str:
@@ -140,11 +141,7 @@ def build_prompt(
 ) -> str:
     show = shown(problem, blind)
     description = problem.blind_description if blind else problem.description
-    measured = (
-        f" Measured on the GPU: {parent.measured_us:.0f} us."
-        if parent.measured_us is not None
-        else ""
-    )
+    measured = PARENT_MEASURED.format(parent.measured_us) if parent.measured_us is not None else ""
     parts = [
         "You are improving a program for one operator, written in a small language for "
         "reductions on a GPU. Every program you propose is checked automatically and scored.",

@@ -1,0 +1,16 @@
+{
+ "total_usd": 52.93,
+ "by_milestone_usd": {
+  "M3": 35.11,
+  "M4": 6.63,
+  "M5": 10.89,
+  "M6 (M4 again, closed sandbox)": 0.3
+ },
+ "agentic_attempts": 25,
+ "agentic_usd": 36.15,
+ "timed_out_attempts_without_cost": 3,
+ "oneshot_usd": 15.42,
+ "proposers_usd": 0.23,
+ "certified_search_usd": 1.14,
+ "lower_bound": true
+}

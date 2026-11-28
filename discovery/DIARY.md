@@ -564,7 +564,8 @@ their own, their outputs in `results/m3/` and `results/m3/v2/`; version 3 runs i
   | VarianceWelford | 2(D+7d+6)u·S2 + 3(d+1)(D+3d+2)²u²M² + 2RMu·d(D+2d+1) + 6η(d+1)²(1+R)² |
   | VarianceSumsq | 4(D+d+3)u·Q + 6η |
 
-  The forms are the expected ones and nothing in the prompts suggested them: the online state
+  The forms are the expected ones and nothing in the prompts suggested them [12:35 UTC: not so
+  for the attention and the variance, see the review]: the online state
   pays R·u per merge (the rounding of the subtraction in `exp(L.m − m)`, which no closed form of
   TorchLean's carries per merge but its per-key allowance u(M − s) does), the one-field state pays
   M·u (the magnitude of the logits), the sum of squares pays u·Q (the mean of the squares: the
@@ -577,7 +578,8 @@ their own, their outputs in `results/m3/` and `results/m3/v2/`; version 3 runs i
   refuses `sorry`, so a partial proof never reaches Lean. Decision: keep these runs as the F3
   measure, and add `agentprove.py`: `claude -p` as an agent in a sandbox outside the repository
   (Read, Write, Edit there, and shell commands that start with `lean`; no web, no MCP, no
-  settings; the diary and the research notes are not reachable), `sorry` allowed while it works;
+  settings; the diary and the research notes are not reachable [12:35 UTC: false, see the
+  review: the three tools had no path rule, and Lean could read files]), `sorry` allowed while it works;
   at the end the helpers and the proof are cut out of its file and judged by the same judge,
   which rebuilds the module around the generated statement.
 - **A runaway proof.** At 10:07 UTC one model proof judged by `fpbound` took 17.5 GB of memory in
@@ -736,6 +738,7 @@ adversary and the agent proved it (`results/m3/agent/AttentionOnline-v4.json`, 1
 $6.77): |ô − o| ≤ 3S(R·u + (d+1)·ue + (2d + D + 2)·u) + 5n·η + 3(d+1)·n·ηe·V + 3S·n(η + (d+1)·ηe),
 with S = Σ p|v| / Σ p. F1 holds, tightness 14.9 (`results/m3/f1/AttentionOnline.json`). This is
 the bound TorchLean proved by hand, for its left fold; here the model proposed it with no hint
+[12:35 UTC: withdrawn, the docstring of S called it the scale of the output's error]
 and proved it for every merge tree, R·u again once (the shifts of a maximum telescope). Four
 programs now have a proved bound (online softmax, one-field softmax, attention, sum of squares);
 Welford is with opus.
@@ -764,3 +767,94 @@ Welford is with opus.
   24 min, $2.63. Every final elite of M5 has a proved bound (`results/m5/elite-proofs.json`):
   the elites the search under a certificate kept are certified, as the brief asks, and they are
   the published forms.
+
+## 28 Nov 2026, 12:35 UTC: the adversarial review (M6): holes in the judge, hints in the prompts
+
+A workflow of reviewing agents, one per area (the rounding model, the judge, the contamination of
+the prompts), each finding attacked by a second agent: 17 findings held, 5 refuted. What they
+found, and what changed:
+
+- **The judge had four holes; all are closed.**
+  - The deny list read every non-ASCII letter as part of an identifier (my fix of 10:40 UTC went
+    too far): `λdef` passed, though Lean reads `λ`, then `def`. It now uses Lean's own classes of
+    identifier characters (`prove._WORD`; tests).
+  - A name in a program holding `-/` closed the doc comment of the generated statements and could
+    put commands into the module the judge trusts. Names that go into Lean must now be plain
+    identifiers, and the program's text in the comment is escaped (`fp_export._check_names`,
+    `_comment_safe`; tests).
+  - The judge compiled the statements at a path an agent could predict, and an agent's Lean can
+    write files (`#eval` runs IO). Every judgement now compiles them in a fresh directory with a
+    random name.
+  - The agent's tools reached the whole disk: Read, Write and Edit had no path rule, and `lean`
+    ran any `#eval`. Now Claude Code's deny rules keep the three tools out of the projects, the
+    home directory and the earlier sandboxes (checked: an agent asked to read the diary, read the
+    session's notes and write into the repository was refused three times), and the sandbox's
+    `lean` refuses a file that names file or process IO (checked: refused).
+- **Did a hole let a proof through? No.** The 11 accepted proofs (M3: 5, M4: 3, M5: 3) were
+  judged again by the fixed judge, each in a fresh directory, against statements generated again
+  by the current exporter: 11 of 11 accepted, the statements unchanged once comments are removed,
+  the three standard axioms, 7 minutes in all (`results/m6/rejudge.json`, from `rejudge.py`). No
+  file of the Lean toolchain or of Mathlib changed during the session, and the files of the
+  `Discovery` build last changed at 09:35 UTC, before any agent ran. In the 25 sandboxes `#eval`
+  appears only in scratch files that print numbers; no file reads a file or names the repository.
+  The agents' transcripts were not kept, so it cannot be shown that no agent read the diary with
+  its Read tool: the prompts held no bound, but the disk did.
+- **Three hints of mine were in the prompts (negative; claims withdrawn).**
+  - The attention's statements called `attnScale` "the scale of the output's error", that is, how
+    to use it. S itself is a named functional of the data, which the brief allows; the sentence
+    is not. The diary's "with no hint" (11:40 UTC) is withdrawn.
+  - The variance's atoms are my choice of functionals: S2 (the variance) and Q (the mean of the
+    squares), the textbook scale of the sum of squares' cancellation. The proved B = 4(D + d +
+    3)·u·Q + 6η uses Q: the model picked the scale among the atoms offered, it did not find it.
+    The "nothing in the prompts suggested them" of 10:15 UTC is withdrawn for the attention and
+    the variance; for the softmax the atoms are the generic ones (n, depths, R, M).
+  - The docstring of `rdepth` said "a stale reference can lag the maximum by τ at each right
+    step", an invariant of mine. It was in every prompt of M4 (exact, overflow, the τ-parametric
+    B and its proofs) and of M5's certificates. M5's elites have no parameter and no stale
+    reference, so the sentence did not describe them, but the brief's rule is broken; the τρ term
+    of the B of 12:15 UTC may come from it.
+  - The docstrings are neutral now (tests), and M4 runs again in the closed sandbox.
+- **The measurements.** A run that overflows counted as a broken bound in `fpbound` and `fpcheck`
+  (overflow is outside the model; `policyrun` already skipped such runs), and crashed the
+  attention's path; such runs are now skipped. The 'random' merge order of the attacks was the
+  same tree every time; it is now drawn from the climb's generator. The statements read the
+  normalizer at the element 0, the adversary at the row's maximum: the two agree for outputs
+  exp(x − c)·g with c and g free of x, which all 11 library programs and both policies are; other
+  outputs now get no statement. The policy runner assumed the parameter is named `tau`, and a
+  parameter named like a binder of the statement (`lo`, `hi`, …) would have been shadowed; the
+  first is fixed, the second refused. The cert arm of M5 showed the parent's certified bound to
+  the proposer as a GPU time in microseconds (fixed; M5's runs had it). The scalar-path and
+  float16 checks of `libm.json` were inline scripts; they are now in `libm.py`, which reproduces
+  the file byte for byte.
+- **A comment of mine was wrong (negative).** The depth hypothesis (d + D + 1)(u + ue + ul) ≤
+  1/16 holds in float32 only while d + D + 1 ≤ 104,857, not for "every float32 run": a left fold
+  over more than about 10⁵ blocks is outside the proved bounds. Every run of the session is far
+  inside (depths up to 63).
+- **Refuted by the second agents**, among others: that the policy adversary compares B with runs
+  that break the statement's hypotheses (with float32's η they do, but with no subnormal result
+  each such run is a run of the model with η = ηe = 0, which the theorem covers), and that the
+  lemmas cut from the prompt (`sum_tree_error`) leak through the prover's Lean environment (they
+  are there, but a search finds them only from a goal already written in their form).
+- **A side effect of the review.** One reviewing agent ran Lean's package manager without the
+  session's settings and installed a 3.2 GB copy of the toolchain in the home directory; removed.
+
+## 28 Nov 2026, 13:05 UTC: checkpoint: F3 and F4 counted again; the spend
+
+- **F4 was miscounted by my summary (negative).** `fpreport` also compared the certified order of
+  a pair with an unproved bound: Welford's record arrived (both agents timed out after an hour,
+  `results/m3/agent/VarianceWelford-agent.json`), its proposed B entered the comparison, and the
+  variance pair read "agrees". A B that is not proved certifies nothing: the pair is now
+  "unresolved" (`results/m3/summary.json`). F4 agrees on 2 pairs of 3; the third is open.
+- **F3, read again.** The one-shot prover received 11 bounds that survived the adversary and
+  proved none ($15.42; `results/m3/SoftmaxOnline.json`, `SoftmaxLse.json`, `v2/`, `v3/`). All 11
+  were on statements later shown false (versions 1 and 2, and the attention's version 3). Its
+  runs on the valid version-3 statements of the two softmax forms and the two variances left
+  their prompts (`results/m3/v3/prompts/`) but no record: the processes ended without writing
+  one, and the "INCOMPLETE" outline quoted at 10:15 UTC is in no versioned file. So F3 is
+  falsified as worded, 0 of 11, but the one-shot prover's rate on valid statements was never
+  measured.
+- **Spend so far: $52.93 at list price, a lower bound** (`results/m6/spend.json`, from
+  `spend.py`): M3 $35.11, M4 $6.63, M5 $10.89, M4's runs again $0.30. The agentic prover's 25
+  attempts cost $36.15, and 3 more timed out with no cost reported; the one-shot rounds $15.42.
+  Not counted: the session's reviewing agents, and M5's certificates computed before its bug.
+- Tests: 263 passed, 2 skipped; ruff clean.

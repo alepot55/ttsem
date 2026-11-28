@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import re
 import textwrap
 
 from discovery import bound, ir
@@ -43,8 +44,8 @@ SMALL = "F.u ≤ 1 / 256 ∧ F.ue ≤ 1 / 64 ∧ F.ul ≤ 1 / 64 ∧ F.η ≤ 1 
 # The depth times the rounding is small, the classical hypothesis k·u < 1 of the γ_k bounds.
 # Version 1 of the statement had no such hypothesis, and the prover refuted it (diary, 10:00 UTC):
 # with u = 1/256 and a merge tree of depth 2000 a rounding relative to the state compounds as
-# (1 + u)^d, which no bound linear in d covers. Every float32 run has (d + D + 1)(u + ue + ul)
-# below 1e-4.
+# (1 + u)^d, which no bound linear in d covers. In float32 (u = 2^-24, ue = 4u, ul = 5u) it holds
+# while d + D + 1 ≤ 104,857: a left fold over more than about 10^5 blocks is outside the bounds.
 DEEP = "((t.depth : ℝ) + D + 1) * (F.u + F.ue + F.ul) ≤ 1 / 16"
 
 # The absolute errors are small next to the relative ones. Version 2 had no such hypothesis,
@@ -63,6 +64,54 @@ NARROW = "(hi - lo) * F.u ≤ 1 / 16"
 
 class FPExportError(Exception):
     pass
+
+
+_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+# binders of the statements and names of the generated definitions a parameter must not shadow
+_RESERVED = {"F", "D", "lo", "hi", "X", "t", "st", "w", "Vmax", "x", "y", "A", "L", "R", "e"}
+
+
+def _check_names(prog: ir.Program) -> None:
+    """Every name that goes into Lean code is a plain identifier (the review: a name holding
+    `-/` closed a comment and injected commands into the trusted statements, diary 12:35 UTC),
+    and no parameter shadows a binder of the statement."""
+    names = [p.name for p in prog.passes] + list(prog.params)
+    for p in prog.passes:
+        names += [*p.fields, *(n for n, _ in p.block), *(n for n, _ in p.merge)]
+    bad = sorted({n for n in names if not _NAME.match(n)})
+    if bad:
+        raise FPExportError(f"names that are not plain identifiers: {' '.join(bad)}")
+    clash = sorted(set(prog.params) & _RESERVED)
+    if clash:
+        raise FPExportError(f"parameters named like the statement's binders: {' '.join(clash)}")
+
+
+def _comment_safe(text: str) -> str:
+    """Text for a Lean block comment, which nests: no `/-` and no `-/`."""
+    return text.replace("/-", "/ -").replace("-/", "- /")
+
+
+def _check_softmax_output(e: ir.Expr, elem: str) -> None:
+    """The softmax statements read the normalizer from the output expression at the element 0,
+    the adversary at the row's maximum; the two agree when the output is exp(x − c)·g with c and
+    g free of the element (the review, diary 12:35 UTC). Other outputs get no statement."""
+
+    def free(t: ir.Expr) -> bool:
+        return not any(isinstance(v, ir.Var) and v.name == elem for v in ir.walk(t))
+
+    core = e.args[0] if isinstance(e, ir.Call) and e.op == "/" else e
+    rest = e.args[1:] if core is not e else ()
+    ok = (
+        isinstance(core, ir.Call)
+        and core.op == "exp"
+        and isinstance(core.args[0], ir.Call)
+        and core.args[0].op == "-"
+        and core.args[0].args[0] == ir.Var(elem)
+        and free(core.args[0].args[1])
+        and all(free(r) for r in rest)
+    )
+    if not ok:
+        raise FPExportError("a softmax output must be (exp (- x c)) or (/ (exp (- x c)) g)")
 
 
 @dataclasses.dataclass
@@ -363,7 +412,7 @@ _ATTN = """/-- The exact output (one component): `Σ exp s · v / Σ exp s`. -/
 noncomputable def attn (X : List (ℝ × ℝ)) : ℝ :=
   (X.map fun e => Real.exp e.1 * e.2).sum / (X.map fun e => Real.exp e.1).sum
 
-/-- The scale of the output's error: `Σ exp s · |v| / Σ exp s`. -/
+/-- `Σ exp s · |v| / Σ exp s`. -/
 noncomputable def attnScale (X : List (ℝ × ℝ)) : ℝ :=
   (X.map fun e => Real.exp e.1 * |e.2|).sum / (X.map fun e => Real.exp e.1).sum
 """
@@ -381,6 +430,9 @@ def export(prog: ir.Program, problem: Problem, library: str) -> FPFile:
     """The floating-point statement file of a one-pass ``prog``."""
     if len(prog.passes) != 1:
         raise FPExportError("only one-pass programs have a floating-point statement")
+    _check_names(prog)
+    if problem.name == "softmax":
+        _check_softmax_output(prog.output.exprs[0][1], prog.inputs[0])
     p = prog.passes[0]
     counts = _counts(p)
     if problem.name == "attention":
@@ -393,10 +445,10 @@ def export(prog: ir.Program, problem: Problem, library: str) -> FPFile:
     parts = [
         "".join(f"import {m}\n" for m in (*IMPORTS, f"Discovery.Library.{library}")),
         _HEAD.format(
-            name=prog.name,
+            name=_comment_safe(prog.name),
             version=VERSION,
             digest=prog.digest(),
-            text=prog.text(),
+            text=_comment_safe(prog.text()),
             namespace=namespace,
             library=library,
         ),
@@ -452,9 +504,7 @@ def export(prog: ir.Program, problem: Problem, library: str) -> FPFile:
 
 # --------------------------------------------------------------------------- policies (M4)
 
-_RDEPTH = """/-- The right depth of a merge tree: a leaf `0`, a node `max (left) (right + 1)`.
-A stale
-reference can lag the maximum by `τ` at each right step. -/
+_RDEPTH = """/-- The right depth of a merge tree: a leaf `0`, a node `max (left) (right + 1)`. -/
 def rdepth {E : Type*} : Discovery.Tree E → ℕ
   | .leaf _ => 0
   | .node l r => max (rdepth l) (rdepth r + 1)
@@ -520,6 +570,8 @@ def export_policy(prog: ir.Program, problem: Problem, module: str, kind: str) ->
     the program's parameters."""
     if problem.name != "softmax" or len(prog.passes) != 1 or kind not in POLICY_KINDS:
         raise FPExportError("rescaling policies: one-pass softmax programs, kind in POLICY_KINDS")
+    _check_names(prog)
+    _check_softmax_output(prog.output.exprs[0][1], prog.inputs[0])
     p = prog.passes[0]
     params = tuple(prog.params)
     elem = prog.inputs[0]
@@ -531,10 +583,10 @@ def export_policy(prog: ir.Program, problem: Problem, module: str, kind: str) ->
     parts = [
         "import Discovery.Approx\n",
         _HEAD.format(
-            name=prog.name,
+            name=_comment_safe(prog.name),
             version=VERSION,
             digest=prog.digest(),
-            text=prog.text(),
+            text=_comment_safe(prog.text()),
             namespace=namespace,
             library="",
         ).replace("open Discovery Discovery.Library.\n", "open Discovery\n"),
