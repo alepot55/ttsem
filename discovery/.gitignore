@@ -1,0 +1,4 @@
+# Lean build output and the Mathlib checkout (several GB)
+lean/.lake/
+# run output of the search loop
+runs/
