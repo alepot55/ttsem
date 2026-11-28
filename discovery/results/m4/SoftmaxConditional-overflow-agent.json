@@ -1,0 +1,30 @@
+{
+ "program": "SoftmaxConditional-overflow",
+ "B": "u",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox\\SoftmaxConditional-overflow-425a735d236f4d46-1795861399",
+   "seconds": 101.5,
+   "cost_usd": 0.1816305,
+   "turns": 12,
+   "result": "  apply Real.exp_le_exp.mpr\n      have : (rdepth r : \u211d) + 1 \u2264 ((max (rdepth l) (rdepth r + 1) : \u2115) : \u211d) := by\n        exact_mod_cast le_max_right _ _\n      nlinarith [mul_le_mul_of_nonneg_left this htau]\n    have e3 : Real.exp (tau * (rdepth r : \u211d)) \u2264 Real.exp (tau * ((max (rdepth l) (rdepth r + 1) : \u2115) : \u211d)) := by\n      have h1 : 1 \u2264 Real.exp tau := Real.one_le_exp htau\n      have h2 := Real.exp_pos (tau * (rdepth r : \u211d))\n      nlinarith\n    generalize Real.exp (tau * ((max (rdepth l) (rdepth r + 1) : \u2115) : \u211d)) = E at *\n    generalize Real.exp (tau * (rdepth l : \u211d)) = El at *\n    generalize Real.exp (tau * (rdepth r : \u211d)) = Er at *\n    have P := Real.exp_pos tau\n    unfold merge_a\n    simp only\n    split_ifs with h\n    \u00b7 simp only [sub_self, Real.exp_zero, mul_one]\n      have h3 : Real.exp (L.m - R.m) \u2264 1 := Real.exp_le_one_iff.mpr (by linarith)\n      have h2 := Real.exp_pos (L.m - R.m)\n      constructor\n      \u00b7 positivity\n      \u00b7 nlinarith [mul_le_mul_of_nonneg_left h3 l0, mul_le_mul_of_nonneg_left e1 nl0, mul_le_mul_of_nonneg_left e3 nr0]\n    \u00b7 simp only [sub_self, Real.exp_zero, mul_one]\n      have h3 : Real.exp (R.m - L.m) \u2264 Real.exp tau := Real.exp_le_exp.mpr (by linarith)\n      have h2 := Real.exp_pos (R.m - L.m)\n      constructor\n      \u00b7 positivity\n      \u00b7 nlinarith [mul_le_mul_of_nonneg_left h3 r0, mul_le_mul_of_nonneg_left e1 nl0, mul_le_mul_of_nonneg_left e2 nr0]\n```\n\n```lean fp_bound\n  intro tau htau X _ t hX hb\n  subst hX\n  exact (sm_aux tau htau t hb).2\n```\n\nDONE",
+   "subtype": "success",
+   "error": "",
+   "stage": "ok",
+   "ok": true,
+   "errors": []
+  }
+ ],
+ "proved": {
+  "model": "sonnet",
+  "axioms": [
+   "propext",
+   "Classical.choice",
+   "Quot.sound"
+  ],
+  "B": "u",
+  "lean": "F.u"
+ },
+ "cost_usd": 0.1816
+}

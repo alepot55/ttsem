@@ -228,6 +228,7 @@ def run(
     gpu: bool = False,
     library: str | Path | None = LIBRARY_INDEX,
     prove: bool = False,
+    certify=None,
 ) -> dict:
     """Run the search and return its summary (also saved as ``summary.json`` under ``out``).
     ``memory`` is the knowledge file (default: the problem's, under ``runs/knowledge``);
@@ -251,7 +252,11 @@ def run(
     out = Path(out) if out is not None else RUNS / _default_name(problem.name, mode, blind, seed)
     out.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
-    archive = Archive(pass_bias, measured_only=gpu)
+    # With ``certify`` (a function of a correct verdict returning {"value": a certified error
+    # bound, ...} or None), only certified programs can be elites and the bound is the fitness,
+    # lower better (discovery.certsearch).
+    archive = Archive(pass_bias, measured_only=gpu or certify is not None)
+    certificates: dict[str, dict] = {}
     knowledge = Knowledge(problem.name, blind, memory, library)
     timings: dict[str, dict] = {}
 
@@ -269,6 +274,13 @@ def run(
         return result
 
     def insert(verdict: Verdict, it: int = 0, parent: str = "") -> tuple[Record, dict | None]:
+        if certify is not None:
+            cert = None
+            if verdict.correct and verdict.digest not in archive.by_digest:
+                cert = certify(verdict)
+                certificates[verdict.digest] = cert or {}
+            value = (cert or {}).get("value")
+            return archive.insert(verdict, it, parent, measured_us=value), cert
         # a new correct program is measured first, so its status says what the measurement did
         timing = None
         if gpu and verdict.correct and verdict.digest not in archive.by_digest:
@@ -370,6 +382,7 @@ def run(
         ],
         "known": reached(problem, archive, seed, shown),
         "gpu": timings,
+        "certificates": certificates,
         "gpu_failed": [
             {
                 "iteration": r.iteration,

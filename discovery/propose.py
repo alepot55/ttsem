@@ -52,10 +52,15 @@ def shown(problem: Problem, blind: bool) -> Callable[[str], str]:
     return show
 
 
+# How a measured fitness reads in the prompt; a search under a certified bound sets it to the
+# bound (discovery.certsearch).
+MEASURED = "measured {:.0f} us"
+
+
 def score(rec: Record) -> str:
     v = rec.verdict
     took = (
-        f"measured {rec.measured_us:.0f} us"
+        MEASURED.format(rec.measured_us)
         if rec.measured_us is not None
         else f"estimated {v.cost['time_us']:.0f} us"
     )
@@ -70,6 +75,7 @@ def _grammar() -> str:
     ops = (
         f"Operators: {' '.join(sorted(ir.VARIADIC))} (two or more arguments); "
         f"{' '.join(sorted(ir.BINARY))} (two); {' '.join(sorted(ir.UNARY))} (one); "
+        f"{' '.join(sorted(ir.SELECT))} (four); "
         f"{' '.join(sorted(ir.REDUCTIONS))} (reductions over the elements of a block, one)."
     )
     runs = (

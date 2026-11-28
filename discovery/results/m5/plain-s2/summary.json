@@ -1,0 +1,113 @@
+{
+ "problem": "softmax",
+ "mode": "archive",
+ "blind": false,
+ "model": "claude-cli:sonnet",
+ "iterations": 6,
+ "workers": 3,
+ "seed": 2,
+ "wall_seconds": 34.5,
+ "usage": {
+  "calls": 6,
+  "seconds": 100.1,
+  "input_tokens": 20662,
+  "output_tokens": 5736,
+  "cost_usd": 0.1286,
+  "errors": 0
+ },
+ "no_program": 0,
+ "library": null,
+ "lemmas": [],
+ "statuses": {
+  "new-cell": 2,
+  "kept": 2,
+  "duplicate": 2
+ },
+ "cells": [
+  {
+   "cell": [
+    2,
+    2,
+    "stable"
+   ],
+   "fitness_us": 3247.2,
+   "measured": false,
+   "iteration": 2,
+   "name": "softmax-2pass",
+   "digest": "fbc0a9179c9f2d15",
+   "text": "(program softmax-2pass\n  (input x)\n  (pass a\n    (state m d)\n    (block (m (rmax x))\n           (d (sum (exp (- x m)))))\n    (merge (m (max L.m R.m))\n           (d (+ (* L.d (exp (- L.m m))) (* R.d (exp (- R.m m)))))))\n  (output elementwise (/ (exp (- x a.m)) a.d)))"
+  },
+  {
+   "cell": [
+    2,
+    1,
+    "stable"
+   ],
+   "fitness_us": 3247.2,
+   "measured": false,
+   "iteration": 6,
+   "name": "softmax-lse1",
+   "digest": "4f04f566283b07e6",
+   "text": "(program softmax-lse1\n  (input x)\n  (pass a\n    (state s)\n    (block (mx (rmax x))\n           (s (+ mx (log (sum (exp (- x mx)))))))\n    (merge (mm (max L.s R.s))\n           (s (+ mm (log (+ (exp (- L.s mm)) (exp (- R.s mm))))))))\n  (output elementwise (exp (- x a.s))))"
+  },
+  {
+   "cell": [
+    3,
+    2,
+    "stable"
+   ],
+   "fitness_us": 4329.6,
+   "measured": false,
+   "iteration": 0,
+   "name": "softmax-3pass",
+   "digest": "5f3aa4189b4e6375",
+   "text": "(program softmax-3pass\n  (input x)\n  (pass a\n    (state m)\n    (block (m (rmax x)))\n    (merge (m (max L.m R.m))))\n  (pass b\n    (state d)\n    (block (d (sum (exp (- x a.m)))))\n    (merge (d (+ L.d R.d))))\n  (output elementwise (/ (exp (- x a.m)) b.d)))"
+  }
+ ],
+ "known": {
+  "online": {
+   "correct": true,
+   "cell": [
+    2,
+    2,
+    "stable"
+   ],
+   "cell_reached_at": 1,
+   "same_at": 1,
+   "lemma": null
+  },
+  "unshifted": {
+   "correct": true,
+   "cell": [
+    2,
+    1,
+    "nonfinite"
+   ],
+   "cell_reached_at": null,
+   "same_at": null,
+   "lemma": null
+  },
+  "log-sum-exp": {
+   "correct": true,
+   "cell": [
+    2,
+    1,
+    "stable"
+   ],
+   "cell_reached_at": 4,
+   "same_at": 4,
+   "lemma": null
+  },
+  "no-rescale": {
+   "correct": false,
+   "cell": null,
+   "cell_reached_at": null,
+   "same_at": null,
+   "lemma": null
+  }
+ },
+ "gpu": {},
+ "certificates": {},
+ "gpu_failed": [],
+ "out": "discovery\\results\\m5\\plain-s2"
+}

@@ -1,0 +1,159 @@
+{
+ "problem": "softmax",
+ "mode": "archive",
+ "blind": false,
+ "model": "claude-cli:sonnet",
+ "iterations": 6,
+ "workers": 3,
+ "seed": 1,
+ "wall_seconds": 157.3,
+ "usage": {
+  "calls": 6,
+  "seconds": 90.2,
+  "input_tokens": 20121,
+  "output_tokens": 4719,
+  "cost_usd": 0.0638,
+  "errors": 0
+ },
+ "no_program": 0,
+ "library": null,
+ "lemmas": [],
+ "statuses": {
+  "new-cell": 2,
+  "kept": 3,
+  "duplicate": 1
+ },
+ "cells": [
+  {
+   "cell": [
+    2,
+    2,
+    "stable"
+   ],
+   "fitness_us": 148.8,
+   "measured": true,
+   "iteration": 1,
+   "name": "softmax-online",
+   "digest": "fbc0a9179c9f2d15",
+   "text": "(program softmax-online\n  (input x)\n  (pass a\n    (state m d)\n    (block (m (rmax x))\n           (d (sum (exp (- x m)))))\n    (merge (m (max L.m R.m))\n           (d (+ (* L.d (exp (- L.m m))) (* R.d (exp (- R.m m)))))))\n  (output elementwise (/ (exp (- x a.m)) a.d)))"
+  },
+  {
+   "cell": [
+    2,
+    1,
+    "stable"
+   ],
+   "fitness_us": 131727.0,
+   "measured": true,
+   "iteration": 5,
+   "name": "softmax-lse1",
+   "digest": "4f04f566283b07e6",
+   "text": "(program softmax-lse1\n  (input x)\n  (pass a\n    (state s)\n    (block (mx (rmax x))\n           (s (+ mx (log (sum (exp (- x mx)))))))\n    (merge (mm (max L.s R.s))\n           (s (+ mm (log (+ (exp (- L.s mm)) (exp (- R.s mm))))))))\n  (output elementwise (exp (- x a.s))))"
+  }
+ ],
+ "known": {
+  "online": {
+   "correct": true,
+   "cell": [
+    2,
+    2,
+    "stable"
+   ],
+   "cell_reached_at": 1,
+   "same_at": 1,
+   "lemma": null
+  },
+  "unshifted": {
+   "correct": true,
+   "cell": [
+    2,
+    1,
+    "nonfinite"
+   ],
+   "cell_reached_at": null,
+   "same_at": null,
+   "lemma": null
+  },
+  "log-sum-exp": {
+   "correct": true,
+   "cell": [
+    2,
+    1,
+    "stable"
+   ],
+   "cell_reached_at": 4,
+   "same_at": 4,
+   "lemma": null
+  },
+  "no-rescale": {
+   "correct": false,
+   "cell": null,
+   "cell_reached_at": null,
+   "same_at": null,
+   "lemma": null
+  }
+ },
+ "gpu": {},
+ "certificates": {
+  "5f3aa4189b4e6375": {
+   "name": "softmax-3pass",
+   "text": "(program softmax-3pass\n  (input x)\n  (pass a\n    (state m)\n    (block (m (rmax x)))\n    (merge (m (max L.m R.m))))\n  (pass b\n    (state d)\n    (block (d (sum (exp (- x a.m)))))\n    (merge (d (+ L.d R.d))))\n  (output elementwise (/ (exp (- x a.m)) b.d)))",
+   "why": "no statement: rescaling policies: one-pass softmax programs, kind in POLICY_KINDS"
+  },
+  "fbc0a9179c9f2d15": {
+   "name": "softmax-online",
+   "text": "(program softmax-online\n  (input x)\n  (pass a\n    (state m d)\n    (block (m (rmax x))\n           (d (sum (exp (- x m)))))\n    (merge (m (max L.m R.m))\n           (d (+ (* L.d (exp (- L.m m))) (* R.d (exp (- R.m m)))))))\n  (output elementwise (/ (exp (- x a.m)) a.d)))",
+   "value": 148.75,
+   "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)",
+   "kind": "softmax",
+   "proposals": 1,
+   "tightness": 22.000275357081634
+  },
+  "46f25623a0de7696": {
+   "name": "softmax-online",
+   "text": "(program softmax-online\n  (input x)\n  (pass a\n    (state m d)\n    (block (m (rmax x))\n           (d (sum (exp (- x m)))))\n    (merge (M (max L.m R.m))\n           (d (+ (* L.d (exp (- L.m M))) (* R.d (exp (- R.m M)))))\n           (m M)))\n  (output elementwise (/ (exp (- x a.m)) a.d)))",
+   "value": 524.0,
+   "B": "2*((d+1)*(u*R+ue) + (D+2*d)*u + 2*n*(d+1)*(eta+etae))",
+   "kind": "softmax",
+   "proposals": 1,
+   "tightness": 45.77826604577881
+  },
+  "ab4fca0eb80750d5": {
+   "name": "softmax-online",
+   "text": "(program softmax-online\n  (input x)\n  (pass a\n    (state m d)\n    (block (m (rmax x))\n           (d (sum (exp (- x m)))))\n    (merge (M (max L.m R.m))\n           (m M)\n           (d (+ (* L.d (exp (- L.m M))) (* R.d (exp (- R.m M)))))))\n  (output elementwise (/ (exp (- x a.m)) a.d)))",
+   "value": 400.0,
+   "B": "2*(D+2*d+1)*(u+ue) + R*u + 8*n*(eta+etae)",
+   "kind": "softmax",
+   "proposals": 1,
+   "tightness": 54.787789294742204
+  },
+  "4f04f566283b07e6": {
+   "name": "softmax-lse1",
+   "text": "(program softmax-lse1\n  (input x)\n  (pass a\n    (state s)\n    (block (mx (rmax x))\n           (s (+ mx (log (sum (exp (- x mx)))))))\n    (merge (mm (max L.s R.s))\n           (s (+ mm (log (+ (exp (- L.s mm)) (exp (- R.s mm))))))))\n  (output elementwise (exp (- x a.s))))",
+   "value": 131727.0,
+   "B": "3*(u*R + ue + D*u + ul*n + u*M + u*n + n*etae + d*(3*u + ue + ul + etae + u*M + u*n))/2",
+   "kind": "softmax",
+   "proposals": 1,
+   "tightness": 9.514151069670438
+  },
+  "6bc7543d3fc1231c": {
+   "name": "softmax-lse",
+   "text": "(program softmax-lse\n  (input x)\n  (pass a\n    (state s)\n    (block (mx (rmax x))\n           (s (+ mx (log (sum (exp (- x mx)))))))\n    (merge (s (+ (max L.s R.s) (log (+ (exp (- L.s (max L.s R.s))) (exp (- R.s (max L.s R.s)))))))))\n  (output elementwise (exp (- x a.s))))",
+   "value": 298758.0,
+   "B": "2*((R + D + M + n + 1)*u + ue + ul*n + d*((R + M + 2*n + 1)*u + ue + ul))",
+   "kind": "softmax",
+   "proposals": 1,
+   "tightness": 15.305640167798632
+  }
+ },
+ "gpu_failed": [],
+ "out": "discovery\\results\\m5\\cert-s1",
+ "certifier_usage": {
+  "calls": 2,
+  "seconds": 81.8,
+  "input_tokens": 7085,
+  "output_tokens": 7969,
+  "cost_usd": 0.108,
+  "errors": 0
+ }
+}

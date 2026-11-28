@@ -93,6 +93,8 @@ def evaluate(
         return out.reshape(()) if out.shape == (1,) else out
     assert isinstance(e, ir.Call)
     args = [evaluate(a, env, elems, A) for a in e.args]
+    if e.op == "ifgt":
+        return A.value(np.where(args[0] > args[1], args[2], args[3]))
     fn = _FN[e.op]
     acc = fn(*args) if len(args) <= 2 else _fold(fn, args)
     return A.value(acc)
@@ -187,7 +189,7 @@ def run(
     rng = rng or np.random.default_rng(0)
     elems = {k: A.value(v) for k, v in elems.items()}
     n = next(iter(elems.values())).shape[0]
-    finished: dict[str, np.ndarray] = {}
+    finished: dict[str, np.ndarray] = {k: A.value(v) for k, v in prog.params.items()}
     with np.errstate(all="ignore"):
         for p in prog.passes:
             blocks = blocking(n, schedule.kind, rng, schedule.size)

@@ -1,0 +1,30 @@
+{
+ "program": "SoftmaxConditional-exact",
+ "B": "u",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox\\SoftmaxConditional-exact-2f7ef42688d44036-1795861399",
+   "seconds": 71.0,
+   "cost_usd": 0.10139250000000001,
+   "turns": 8,
+   "result": "```lean helpers\ntheorem znorm_eq (st : State_a) : znorm st = st.d * Real.exp st.m := by\n  unfold znorm\n  rw [zero_sub, Real.exp_neg]\n  have := Real.exp_pos st.m\n  field_simp\n\ntheorem sum_exp_shift (A : List \u211d) (m : \u211d) :\n    (A.map fun x => Real.exp (x - m)).sum * Real.exp m = (A.map Real.exp).sum := by\n  induction A with\n  | nil => simp\n  | cons a l ih =>\n    simp only [List.map_cons, List.sum_cons, add_mul]\n    rw [ih, Real.exp_sub]\n    have := Real.exp_pos m\n    field_simp\n\ntheorem eval_inv (tau : \u211d) : \u2200 t : Discovery.Tree \u211d,\n    znorm (t.eval (block_a tau) (merge_a tau)) = (t.flat.map Real.exp).sum\n  | .leaf b => by\n    simp only [Tree.eval, Tree.flat, znorm_eq, block_a]\n    exact sum_exp_shift b _\n  | .node l r => by\n    have hl := eval_inv tau l\n    have hr := eval_inv tau r\n    rw [znorm_eq] at hl hr\n    simp only [Tree.eval, Tree.flat, List.map_append, List.sum_append, \u2190 hl, \u2190 hr, znorm_eq, merge_a]\n    generalize (l.eval (block_a tau) (merge_a tau)) = L\n    generalize (r.eval (block_a tau) (merge_a tau)) = R\n    have key : \u2200 m : \u211d, (L.d * Real.exp (L.m - m) + R.d * Real.exp (R.m - m)) * Real.exp m\n        = L.d * Real.exp L.m + R.d * Real.exp R.m := by\n      intro m\n      simp only [Real.exp_sub]\n      have := Real.exp_pos m\n      field_simp\n    split_ifs <;> exact key _\n```\n\n```lean fp_bound\n  intro tau X _ t ht _\n  subst ht\n  exact eval_inv tau t\n```\n\nDONE",
+   "subtype": "success",
+   "error": "",
+   "stage": "ok",
+   "ok": true,
+   "errors": []
+  }
+ ],
+ "proved": {
+  "model": "sonnet",
+  "axioms": [
+   "propext",
+   "Classical.choice",
+   "Quot.sound"
+  ],
+  "B": "u",
+  "lean": "F.u"
+ },
+ "cost_usd": 0.1014
+}

@@ -154,6 +154,8 @@ def evaluate(
         return out.reshape(()) if out.shape == (1,) else out
     assert isinstance(e, ir.Call)
     args = [evaluate(a, env, elems, F, inner) for a in e.args]
+    if e.op == "ifgt":  # a comparison and a selection: exact
+        return F.fix(np.where(args[0] > args[1], args[2], args[3]))
     fn = _FN[e.op]
     acc = F.fix(fn(*args[:2])) if len(args) >= 2 else F.fix(fn(args[0]))
     for a in args[2:]:  # (+ a b c) is (a + b) + c, as the kernel folds it
@@ -179,11 +181,12 @@ def _merge(p: ir.Pass, L: dict, R: dict, finished: dict, F: Format) -> dict:
 
 
 def combine(states: list, merge: Callable, order: str, rng: np.random.Generator):
-    """Merge the block summaries in sequence order along a tree; return (state, depth)."""
+    """Merge the block summaries in sequence order along a tree; return (state, depth), and set
+    ``combine.rdepth`` to the tree's right depth (a leaf 0, a node max(left, right + 1))."""
 
     def go(lo: int, hi: int):
         if hi - lo == 1:
-            return states[lo], 0
+            return states[lo], 0, 0
         if order == "left":
             k = hi - 1
         elif order == "right":
@@ -192,16 +195,19 @@ def combine(states: list, merge: Callable, order: str, rng: np.random.Generator)
             k = (lo + hi + 1) // 2
         else:
             k = int(rng.integers(lo + 1, hi))
-        a, da = go(lo, k)
-        b, db = go(k, hi)
-        return merge(a, b), max(da, db) + 1
+        a, da, ra = go(lo, k)
+        b, db, rb = go(k, hi)
+        return merge(a, b), max(da, db) + 1, max(ra, rb + 1)
 
     if order == "left":  # iterative, so that thousands of blocks do not recurse
         acc = states[0]
         for s in states[1:]:
             acc = merge(acc, s)
+        combine.rdepth = 1 if len(states) > 1 else 0
         return acc, len(states) - 1
-    return go(0, len(states))
+    state, depth, rdepth = go(0, len(states))
+    combine.rdepth = rdepth
+    return state, depth
 
 
 @dataclasses.dataclass
@@ -210,6 +216,7 @@ class Run:
     finished: dict[str, np.ndarray]  # "p.f" -> final state field, in the format
     depth: int  # depth of the merge tree of the last pass
     blocks: int
+    rdepth: int = 0  # right depth of that tree: a leaf 0, a node max(left, right + 1)
 
 
 def run(
@@ -221,14 +228,16 @@ def run(
     order: str = "left",
     rng: np.random.Generator | None = None,
     blocking: list[tuple[int, int]] | None = None,
+    params: dict[str, float] | None = None,
 ) -> Run:
-    """Run ``prog`` on ``elems`` (field -> (N, 1) or (N, D) values already in the format)."""
+    """Run ``prog`` on ``elems`` (field -> (N, 1) or (N, D) values already in the format);
+    ``params`` overrides the program's named constants."""
     F = FORMATS[fmt]
     rng = rng or np.random.default_rng(0)
     elems = {k: F.fix(v) for k, v in elems.items()}
     n = next(iter(elems.values())).shape[0]
     cuts = blocking or [(i, min(i + block, n)) for i in range(0, n, block)]
-    finished: dict = {}
+    finished: dict = {k: F.value(v) for k, v in {**prog.params, **(params or {})}.items()}
     depth = 0
     with np.errstate(all="ignore"):
         for p in prog.passes:
@@ -250,7 +259,7 @@ def run(
                 name: np.asarray(evaluate(e, finished, None, F, inner), dtype=np.float64)
                 for name, e in prog.output.exprs
             }
-    return Run(outs, finished, depth, len(cuts))
+    return Run(outs, finished, depth, len(cuts), getattr(combine, "rdepth", 0))
 
 
 # --------------------------------------------------------------------------- the reference
@@ -321,7 +330,8 @@ def _normalizer(prog: ir.Program, r: Run, m: float) -> float:
     elems = {prog.inputs[0]: np.array([[m]])}
     with np.errstate(all="ignore"):
         y = evaluate(prog.output.exprs[0][1], env, elems, F64)
-    return 1.0 / float(np.asarray(y).reshape(-1)[0])
+    y0 = float(np.asarray(y).reshape(-1)[0])
+    return 1.0 / y0 if y0 != 0.0 and math.isfinite(y0) else math.inf  # inf: the state overflowed
 
 
 def errors(problem: str, prog: ir.Program, r: Run, ref: dict, fmt: str) -> dict[str, float]:

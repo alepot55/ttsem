@@ -1,0 +1,123 @@
+Row softmax. The elements of one row are x_1..x_N (float32 in memory). Output, for every element: y_i = exp(x_i - c) / sum_j exp(x_j - c), with c = max_j x_j.
+
+The program below computes it by blocked folds: each block of a row is summarised (block), and
+adjacent summaries are combined (merge) along a merge tree; the output reads the final summary.
+
+```
+(program softmax-conditional
+  (input x)
+  (param tau 8)
+  (pass a
+    (state m d)
+    (block (m (rmax x))
+           (d (sum (exp (- x m)))))
+    (merge (m (ifgt (- R.m L.m) tau R.m L.m))
+           (d (+ (* L.d (exp (- L.m m))) (* R.d (exp (- R.m m)))))))
+  (output elementwise (/ (exp (- x a.m)) a.d)))
+```
+
+The rounding model (Lean, `Discovery.Rounding`, every field a parameter):
+
+  u  : relative error of + - * / sqrt          η  : absolute error of * / with a subnormal result
+  ue : relative error of exp                   ηe : absolute error of exp with a subnormal result
+  ul : relative error of log
+
+  F.add x v : ∃ δ, |δ| ≤ F.u ∧ v = x * (1 + δ)                       -- + and -, x the exact result
+  F.mul x v : ∃ δ e, |δ| ≤ F.u ∧ |e| ≤ F.η ∧ v = x * (1 + δ) + e ∧ 0 ≤ x * v   -- * and /
+  F.exp x v : ∃ δ e, |δ| ≤ F.ue ∧ |e| ≤ F.ηe ∧ v = Real.exp x * (1 + δ) + e ∧ 0 ≤ v
+  F.log x v : ∃ δ, |δ| ≤ F.ul ∧ v = Real.log x * (1 + δ)
+  F.sqrt x v : ∃ δ, |δ| ≤ F.u ∧ v = Real.sqrt x * (1 + δ)
+  max, min, neg, abs: exact.
+
+Every operation of the program is one such rounding with its own error variables; a block's sum
+adds its terms along any binary tree of depth at most D (`Discovery.fsum`); the block summaries
+merge along any merge tree `t` (`Discovery.Tree.FEval`). Overflow is outside the model.
+
+The Lean definitions generated from the program:
+
+```lean
+/-- Pass `a` on one block, exactly. -/
+noncomputable def block_a (tau : ℝ) (A : List ℝ) : State_a :=
+  let b_m := (lmax A)
+  let b_d := ((A.map fun x => (Real.exp (x - b_m))).sum)
+  ⟨b_m, b_d⟩
+
+/-- Pass `a`, two adjacent summaries merged, exactly. -/
+noncomputable def merge_a (tau : ℝ) (L R : State_a) : State_a :=
+  let b_m := (if (R.m - L.m) > tau then R.m else L.m)
+  let b_d := ((L.d * (Real.exp (L.m - b_m))) + (R.d * (Real.exp (R.m - b_m))))
+  ⟨b_m, b_d⟩
+
+/-- The right depth of a merge tree: a leaf `0`, a node `max (left) (right + 1)`.
+A stale
+reference can lag the maximum by `τ` at each right step. -/
+def rdepth {E : Type*} : Discovery.Tree E → ℕ
+  | .leaf _ => 0
+  | .node l r => max (rdepth l) (rdepth r + 1)
+
+/-- Pass `a` on one block `A`, in floating point: `st` is one possible summary,
+every in-block sum along a tree of depth at most `D`. -/
+def fblock_a (F : Discovery.Rounding) (D : ℕ) (tau : ℝ) (A : List (ℝ)) (st : State_a) : Prop :=
+  ∃ v_m v_d r1 r2,
+    r1 = lmax A ∧
+    v_m = r1 ∧
+    Discovery.fsum F D (fun x y => ∃ q1 q2, F.add (x - v_m) q1 ∧ F.exp q1 q2 ∧ y = q2) A r2 ∧
+    v_d = r2 ∧
+    st = ⟨v_m, v_d⟩
+
+/-- Pass `a`, two adjacent float summaries `L` then `R` merged in floating
+point: `st` is one possible result. -/
+def fmerge_a (F : Discovery.Rounding) (tau : ℝ) (L R st : State_a) : Prop :=
+  ∃ v_m v_d r1 r2 r3 r4 r5 r6 r7 r8,
+    F.add (R.m - L.m) r1 ∧
+    v_m = (if r1 > tau then R.m else L.m) ∧
+    F.add (L.m - v_m) r2 ∧
+    F.exp r2 r3 ∧
+    F.mul (L.d * r3) r4 ∧
+    F.add (R.m - v_m) r5 ∧
+    F.exp r5 r6 ∧
+    F.mul (R.d * r6) r7 ∧
+    F.add (r4 + r7) r8 ∧
+    v_d = r8 ∧
+    st = ⟨v_m, v_d⟩
+
+/-- The normalizer a state encodes: one over the output expression read at the element `0`. -/
+noncomputable def znorm (st : State_a) : ℝ := 1 / ((Real.exp ((0 : ℝ) - st.m)) / st.d)
+```
+
+The statement to be proved, with B to be chosen:
+
+```lean
+  ∀ (F : Discovery.Rounding) (D : ℕ) (tau : ℝ), 0 ≤ tau → ∀ (lo hi : ℝ) (X : List ℝ),
+    X ≠ [] → (∀ x ∈ X, lo ≤ x ∧ x ≤ hi) → small F → (X.length : ℝ) * (F.η + F.ηe) ≤ F.u →
+    ∀ (t : Discovery.Tree ℝ), t.flat = X → (∀ b ∈ t.leaves, b ≠ []) →
+    ((t.depth : ℝ) + D + 1) * (F.u + F.ue + F.ul) ≤ 1 / 16 →
+    ∀ (st : State_a), Discovery.Tree.FEval (fblock_a F D tau) (fmerge_a F tau) t st →
+      |Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| ≤ B
+```
+
+where `small F` is: F.u ≤ 1 / 256 ∧ F.ue ≤ 1 / 64 ∧ F.ul ≤ 1 / 64 ∧ F.η ≤ 1 / 2 ^ 100 ∧ F.ηe ≤ 1 / 2 ^ 100.
+
+Give B, an upper bound that makes the statement true for every such X, lo, hi, D, merge tree t,
+and every admissible choice of the rounding errors. B is a sum of products of nonnegative numbers
+and these atoms, with parentheses and integer powers 1 to 4 (no subtraction; divide only by a
+number):
+
+  u     relative error of + - * / sqrt (F.u)
+  ue    relative error of exp (F.ue)
+  ul    relative error of log (F.ul)
+  eta   absolute error of * / below the normal range (F.η)
+  etae  absolute error of exp below the normal range (F.ηe)
+  D     the bound on the depth of the in-block summation trees
+  d     the depth of the merge tree t (t.depth)
+  n     the number of elements of the row (X.length)
+  R     hi - lo
+  M     max |lo| |hi|
+  tau   the program's parameter tau
+  rd    the right depth of the merge tree t (rdepth t)
+
+The bound will be tested against floating-point runs and then proved in Lean. A false bound is
+rejected; among true bounds a smaller one is better.
+
+Reply with the bound alone on the last line, in the form
+B = <expression>

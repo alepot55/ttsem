@@ -106,7 +106,10 @@ _UNPROVED = frozenset({
 })  # fmt: skip
 _PREFIXES = ("register_", "declare_", "builtin_", "run_", "unsafe", "simproc", "dsimproc", "cbv_")
 _DECLARATIONS = frozenset({"theorem", "lemma", "private"})  # the helper block's own words
-_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_'!?]*")
+# A word as Lean reads an identifier: letters of any script, digits, subscripts, primes, `!` and
+# `?`. An ASCII-only pattern split `hφdef` into `h` and `def` and refused a correct proof
+# (diary, 10:35 UTC).
+_WORD = re.compile(r"[^\W\d][\w'!?₀-ₜᵢ-ᵪₐ-ₜ]*")
 _OPTION = re.compile(r"set_option\s+maxHeartbeats\s+\d+\s+in\b")
 # the words the prompt names, among those a proof might plausibly write
 _PROMPT_WORDS = (
