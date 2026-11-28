@@ -1,0 +1,30 @@
+{
+ "program": "VarianceSumsq",
+ "B": "4*(D + d + 3)*u*Q + 6*eta",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox\\VarianceSumsq-381ac1657df602b7-1795860284",
+   "seconds": 1102.0,
+   "cost_usd": 1.5886859999999998,
+   "turns": 59,
+   "result": "    rw [pow_succ, hpk]; linarith\n  have heK := pow_bound F.u (k+1) hu0 hKu\n  have hK1 : (1:\u211d) \u2264 ((k+1 : \u2115) : \u211d) := Nat.one_le_cast.2 (Nat.succ_pos k)\n  rw [hn] at m1 m2 m3\n  have hr1 := F.mul_err m1\n  have hr2 := F.mul_err m2\n  have hr3 := F.mul_err m3\n  have hr4 := F.mul_err m4\n  have hr5 := F.add_err m5\n  have hq : |st.u/n - s^2| \u2264 (F.u+e0*(1+F.u))*s^2 + (1+e0)*F.\u03b7 := by\n    have e1 : st.u/n - s^2 = (st.u - S)/n := by rw [hS]; field_simp\n    rw [e1, abs_div, abs_of_pos hn0, div_le_iff\u2080 hn0]\n    rw [hS] at hu1 \u22a2\n    linarith\n  have hq' : |st.u/n| \u2264 (1+e0)*(1+F.u)*s^2 + (1+e0)*F.\u03b7 := by\n    rw [abs_div, abs_of_pos hn0, div_le_iff\u2080 hn0]\n    rw [hS] at hu2\n    linarith\n  have hp : |st.t/n - T/n| \u2264 e0*s := by\n    have e1 : st.t/n - T/n = (st.t - T)/n := by field_simp\n    rw [e1, abs_div, abs_of_pos hn0, div_le_iff\u2080 hn0]\n    have := mul_le_mul_of_nonneg_left hA he0\n    have ht1' : |st.t - T| \u2264 e0 * A1 := by linarith\n    linarith\n  have hp' : |st.t/n| \u2264 (1+e0)*s := by\n    rw [abs_div, abs_of_pos hn0, div_le_iff\u2080 hn0]\n    have := mul_le_mul_of_nonneg_left hA (by linarith : (0:\u211d) \u2264 1 + e0)\n    have ht2' : |st.t| \u2264 (1+e0) * A1 := by linarith\n    linarith\n  have key := core_real F.u F.\u03b7 ((1+F.u)^(k+1) - 1) e0 s (T/n) (st.u/n) (st.t/n) r1 r2 r3 r4 w\n    ((k+1 : \u2115) : \u211d) hu0 hsu h\u03b70 h\u03b7u hs0 h\u03bc he0 he heK hK1 hKu hq hq' hp hp' hr1 hr2 hr3 hr4 hr5\n  rw [hvr, hmsq, \u2190 hs2]\n  have hD : (D:\u211d) + (t.depth:\u211d) + 3 = ((k+1 : \u2115) : \u211d) + 2 := by rw [hk]; push_cast; ring\n  rw [hD]\n  exact key\n```\n\nDONE",
+   "subtype": "success",
+   "error": "",
+   "stage": "ok",
+   "ok": true,
+   "errors": []
+  }
+ ],
+ "proved": {
+  "model": "sonnet",
+  "axioms": [
+   "propext",
+   "Classical.choice",
+   "Quot.sound"
+  ],
+  "B": "4*(D + d + 3)*u*Q + 6*eta",
+  "lean": "(((4 : \u211d) * ((D : \u211d) + (t.depth : \u211d) + (3 : \u211d)) * F.u * (msq X)) + ((6 : \u211d) * F.\u03b7))"
+ },
+ "cost_usd": 1.5887
+}

@@ -1,0 +1,364 @@
+{
+ "pass_bias": 1.0,
+ "tolerance": 0.02,
+ "measured_only": true,
+ "records": [
+  {
+   "iteration": 0,
+   "parent": "",
+   "status": "unmeasured",
+   "measured_us": null,
+   "gpu_failure": "",
+   "measured_range": null,
+   "verdict": {
+    "stage": "passed",
+    "message": "correct on every float64 test (error 5.7e-16 on the normal rows, over sampled blockings and merge trees); merge(block A, block B) = block(A ++ B): yes; 3 pass(es) over memory, 2 state field(s); float32 stable (median error per input family: normal 2.8e-08, large 5.9e-08, negative 4.7e-08, spread 6.0e-08); estimated 4330 us on RTX A1000 6GB Laptop, set by the 16 bytes moved per element",
+    "exact_err": 5.716550948183892e-16,
+    "fp": {
+     "normal": {
+      "float32": 2.803023289266844e-08,
+      "float16": 0.0012923952363523086,
+      "bfloat16": 0.008970383076632093
+     },
+     "large": {
+      "float32": 5.8804669588437964e-08,
+      "float16": 0.0016771379304898527,
+      "bfloat16": 0.01689499002978713
+     },
+     "negative": {
+      "float32": 4.7387167590318314e-08,
+      "float16": 0.01042995110540907,
+      "bfloat16": 0.039980524282739315
+     },
+     "spread": {
+      "float32": 5.963118146837278e-08,
+      "float16": 0.00028092856243012976,
+      "bfloat16": 0.00028092856243012976
+     }
+    },
+    "fp_class": "stable",
+    "cost": {
+     "bytes_per_elem": 16.0,
+     "exps_per_elem": 2.0,
+     "flops_per_elem": 5.0,
+     "passes": 3,
+     "time_us": 4329.604129032258,
+     "device": "RTX A1000 6GB Laptop"
+    },
+    "passes": 3,
+    "state_fields": 2,
+    "nodes": 19,
+    "digest": "5f3aa4189b4e6375",
+    "name": "softmax-3pass",
+    "text": "(program softmax-3pass\n  (input x)\n  (pass a\n    (state m)\n    (block (m (rmax x)))\n    (merge (m (max L.m R.m))))\n  (pass b\n    (state d)\n    (block (d (sum (exp (- x a.m)))))\n    (merge (d (+ L.d R.d))))\n  (output elementwise (/ (exp (- x a.m)) b.d)))",
+    "homomorphic": true
+   }
+  },
+  {
+   "iteration": 1,
+   "parent": "5f3aa4189b4e6375",
+   "status": "new-cell",
+   "measured_us": 148.75,
+   "gpu_failure": "",
+   "measured_range": null,
+   "verdict": {
+    "stage": "passed",
+    "message": "correct on every float64 test (error 4.1e-16 on the normal rows, over sampled blockings and merge trees); merge(block A, block B) = block(A ++ B): yes; 2 pass(es) over memory, 2 state field(s); float32 stable (median error per input family: normal 6.0e-08, large 5.9e-08, negative 4.7e-08, spread 6.0e-08); estimated 3247 us on RTX A1000 6GB Laptop, set by the 12 bytes moved per element",
+    "exact_err": 4.0621821013167735e-16,
+    "fp": {
+     "normal": {
+      "float32": 5.977823778011121e-08,
+      "float16": 0.0012923952363523086,
+      "bfloat16": 0.008970383076632093
+     },
+     "large": {
+      "float32": 5.8804669588437964e-08,
+      "float16": 0.0016771379304898527,
+      "bfloat16": 0.01689499002978713
+     },
+     "negative": {
+      "float32": 4.7387167590318314e-08,
+      "float16": 0.010056150120114953,
+      "bfloat16": 0.039980524282739315
+     },
+     "spread": {
+      "float32": 5.963118146837278e-08,
+      "float16": 0.00028092856243012976,
+      "bfloat16": 0.00028092856243012976
+     }
+    },
+    "fp_class": "stable",
+    "cost": {
+     "bytes_per_elem": 12.0,
+     "exps_per_elem": 2.0,
+     "flops_per_elem": 5.0,
+     "passes": 2,
+     "time_us": 3247.2030967741935,
+     "device": "RTX A1000 6GB Laptop"
+    },
+    "passes": 2,
+    "state_fields": 2,
+    "nodes": 29,
+    "digest": "fbc0a9179c9f2d15",
+    "name": "softmax-online",
+    "text": "(program softmax-online\n  (input x)\n  (pass a\n    (state m d)\n    (block (m (rmax x))\n           (d (sum (exp (- x m)))))\n    (merge (m (max L.m R.m))\n           (d (+ (* L.d (exp (- L.m m))) (* R.d (exp (- R.m m)))))))\n  (output elementwise (/ (exp (- x a.m)) a.d)))",
+    "homomorphic": true
+   }
+  },
+  {
+   "iteration": 2,
+   "parent": "5f3aa4189b4e6375",
+   "status": "kept",
+   "measured_us": 524.0,
+   "gpu_failure": "",
+   "measured_range": null,
+   "verdict": {
+    "stage": "passed",
+    "message": "correct on every float64 test (error 4.1e-16 on the normal rows, over sampled blockings and merge trees); merge(block A, block B) = block(A ++ B): yes; 2 pass(es) over memory, 2 state field(s); float32 stable (median error per input family: normal 6.0e-08, large 5.9e-08, negative 4.7e-08, spread 6.0e-08); estimated 3247 us on RTX A1000 6GB Laptop, set by the 12 bytes moved per element",
+    "exact_err": 4.0621821013167735e-16,
+    "fp": {
+     "normal": {
+      "float32": 5.977823778011121e-08,
+      "float16": 0.0012923952363523086,
+      "bfloat16": 0.008970383076632093
+     },
+     "large": {
+      "float32": 5.8804669588437964e-08,
+      "float16": 0.0016771379304898527,
+      "bfloat16": 0.01689499002978713
+     },
+     "negative": {
+      "float32": 4.7387167590318314e-08,
+      "float16": 0.010056150120114953,
+      "bfloat16": 0.039980524282739315
+     },
+     "spread": {
+      "float32": 5.963118146837278e-08,
+      "float16": 0.00028092856243012976,
+      "bfloat16": 0.00028092856243012976
+     }
+    },
+    "fp_class": "stable",
+    "cost": {
+     "bytes_per_elem": 12.0,
+     "exps_per_elem": 2.0,
+     "flops_per_elem": 5.0,
+     "passes": 2,
+     "time_us": 3247.2030967741935,
+     "device": "RTX A1000 6GB Laptop"
+    },
+    "passes": 2,
+    "state_fields": 2,
+    "nodes": 30,
+    "digest": "46f25623a0de7696",
+    "name": "softmax-online",
+    "text": "(program softmax-online\n  (input x)\n  (pass a\n    (state m d)\n    (block (m (rmax x))\n           (d (sum (exp (- x m)))))\n    (merge (M (max L.m R.m))\n           (d (+ (* L.d (exp (- L.m M))) (* R.d (exp (- R.m M)))))\n           (m M)))\n  (output elementwise (/ (exp (- x a.m)) a.d)))",
+    "homomorphic": true
+   }
+  },
+  {
+   "iteration": 3,
+   "parent": "5f3aa4189b4e6375",
+   "status": "kept",
+   "measured_us": 400.0,
+   "gpu_failure": "",
+   "measured_range": null,
+   "verdict": {
+    "stage": "passed",
+    "message": "correct on every float64 test (error 4.1e-16 on the normal rows, over sampled blockings and merge trees); merge(block A, block B) = block(A ++ B): yes; 2 pass(es) over memory, 2 state field(s); float32 stable (median error per input family: normal 6.0e-08, large 5.9e-08, negative 4.7e-08, spread 6.0e-08); estimated 3247 us on RTX A1000 6GB Laptop, set by the 12 bytes moved per element",
+    "exact_err": 4.0621821013167735e-16,
+    "fp": {
+     "normal": {
+      "float32": 5.977823778011121e-08,
+      "float16": 0.0012923952363523086,
+      "bfloat16": 0.008970383076632093
+     },
+     "large": {
+      "float32": 5.8804669588437964e-08,
+      "float16": 0.0016771379304898527,
+      "bfloat16": 0.01689499002978713
+     },
+     "negative": {
+      "float32": 4.7387167590318314e-08,
+      "float16": 0.010056150120114953,
+      "bfloat16": 0.039980524282739315
+     },
+     "spread": {
+      "float32": 5.963118146837278e-08,
+      "float16": 0.00028092856243012976,
+      "bfloat16": 0.00028092856243012976
+     }
+    },
+    "fp_class": "stable",
+    "cost": {
+     "bytes_per_elem": 12.0,
+     "exps_per_elem": 2.0,
+     "flops_per_elem": 5.0,
+     "passes": 2,
+     "time_us": 3247.2030967741935,
+     "device": "RTX A1000 6GB Laptop"
+    },
+    "passes": 2,
+    "state_fields": 2,
+    "nodes": 30,
+    "digest": "ab4fca0eb80750d5",
+    "name": "softmax-online",
+    "text": "(program softmax-online\n  (input x)\n  (pass a\n    (state m d)\n    (block (m (rmax x))\n           (d (sum (exp (- x m)))))\n    (merge (M (max L.m R.m))\n           (m M)\n           (d (+ (* L.d (exp (- L.m M))) (* R.d (exp (- R.m M)))))))\n  (output elementwise (/ (exp (- x a.m)) a.d)))",
+    "homomorphic": true
+   }
+  },
+  {
+   "iteration": 5,
+   "parent": "fbc0a9179c9f2d15",
+   "status": "new-cell",
+   "measured_us": 131727.0,
+   "gpu_failure": "",
+   "measured_range": null,
+   "verdict": {
+    "stage": "passed",
+    "message": "correct on every float64 test (error 7.2e-15 on the normal rows, over sampled blockings and merge trees); merge(block A, block B) = block(A ++ B): yes; 2 pass(es) over memory, 1 state field(s); float32 stable (median error per input family: normal 8.2e-07, large 4.7e-06, negative 7.3e-06, spread 4.3e-06); estimated 3247 us on RTX A1000 6GB Laptop, set by the 12 bytes moved per element",
+    "exact_err": 7.234459094387116e-15,
+    "fp": {
+     "normal": {
+      "float32": 8.245960404422742e-07,
+      "float16": 0.002599308715933557,
+      "bfloat16": 0.0741942647287051
+     },
+     "large": {
+      "float32": 4.70559115597479e-06,
+      "float16": 0.03249868951250853,
+      "bfloat16": 0.0830639344528804
+     },
+     "negative": {
+      "float32": 7.285318935900743e-06,
+      "float16": 0.057932444207474454,
+      "bfloat16": 0.4825801402522788
+     },
+     "spread": {
+      "float32": 4.2757956270221306e-06,
+      "float16": 0.00028092856243012976,
+      "bfloat16": 0.00028092856243012976
+     }
+    },
+    "fp_class": "stable",
+    "cost": {
+     "bytes_per_elem": 12.0,
+     "exps_per_elem": 2.0,
+     "flops_per_elem": 4.0,
+     "passes": 2,
+     "time_us": 3247.2030967741935,
+     "device": "RTX A1000 6GB Laptop"
+    },
+    "passes": 2,
+    "state_fields": 1,
+    "nodes": 29,
+    "digest": "4f04f566283b07e6",
+    "name": "softmax-lse1",
+    "text": "(program softmax-lse1\n  (input x)\n  (pass a\n    (state s)\n    (block (mx (rmax x))\n           (s (+ mx (log (sum (exp (- x mx)))))))\n    (merge (mm (max L.s R.s))\n           (s (+ mm (log (+ (exp (- L.s mm)) (exp (- R.s mm))))))))\n  (output elementwise (exp (- x a.s))))",
+    "homomorphic": true
+   }
+  },
+  {
+   "iteration": 4,
+   "parent": "fbc0a9179c9f2d15",
+   "status": "duplicate",
+   "measured_us": null,
+   "gpu_failure": "",
+   "measured_range": null,
+   "verdict": {
+    "stage": "passed",
+    "message": "correct on every float64 test (error 7.2e-15 on the normal rows, over sampled blockings and merge trees); merge(block A, block B) = block(A ++ B): yes; 2 pass(es) over memory, 1 state field(s); float32 stable (median error per input family: normal 8.2e-07, large 4.7e-06, negative 7.3e-06, spread 4.3e-06); estimated 3247 us on RTX A1000 6GB Laptop, set by the 12 bytes moved per element",
+    "exact_err": 7.234459094387116e-15,
+    "fp": {
+     "normal": {
+      "float32": 8.245960404422742e-07,
+      "float16": 0.002599308715933557,
+      "bfloat16": 0.0741942647287051
+     },
+     "large": {
+      "float32": 4.70559115597479e-06,
+      "float16": 0.03249868951250853,
+      "bfloat16": 0.0830639344528804
+     },
+     "negative": {
+      "float32": 7.285318935900743e-06,
+      "float16": 0.057932444207474454,
+      "bfloat16": 0.4825801402522788
+     },
+     "spread": {
+      "float32": 4.2757956270221306e-06,
+      "float16": 0.00028092856243012976,
+      "bfloat16": 0.00028092856243012976
+     }
+    },
+    "fp_class": "stable",
+    "cost": {
+     "bytes_per_elem": 12.0,
+     "exps_per_elem": 2.0,
+     "flops_per_elem": 4.0,
+     "passes": 2,
+     "time_us": 3247.2030967741935,
+     "device": "RTX A1000 6GB Laptop"
+    },
+    "passes": 2,
+    "state_fields": 1,
+    "nodes": 29,
+    "digest": "4f04f566283b07e6",
+    "name": "softmax-lse",
+    "text": "(program softmax-lse\n  (input x)\n  (pass a\n    (state s)\n    (block (mx (rmax x))\n           (s (+ mx (log (sum (exp (- x mx)))))))\n    (merge (mm (max L.s R.s))\n           (s (+ mm (log (+ (exp (- L.s mm)) (exp (- R.s mm))))))))\n  (output elementwise (exp (- x a.s))))",
+    "homomorphic": true
+   }
+  },
+  {
+   "iteration": 6,
+   "parent": "fbc0a9179c9f2d15",
+   "status": "kept",
+   "measured_us": 298758.0,
+   "gpu_failure": "",
+   "measured_range": null,
+   "verdict": {
+    "stage": "passed",
+    "message": "correct on every float64 test (error 7.2e-15 on the normal rows, over sampled blockings and merge trees); merge(block A, block B) = block(A ++ B): yes; 2 pass(es) over memory, 1 state field(s); float32 stable (median error per input family: normal 8.2e-07, large 4.7e-06, negative 7.3e-06, spread 4.3e-06); estimated 3247 us on RTX A1000 6GB Laptop, set by the 12 bytes moved per element",
+    "exact_err": 7.234459094387116e-15,
+    "fp": {
+     "normal": {
+      "float32": 8.245960404422742e-07,
+      "float16": 0.002599308715933557,
+      "bfloat16": 0.0741942647287051
+     },
+     "large": {
+      "float32": 4.70559115597479e-06,
+      "float16": 0.03249868951250853,
+      "bfloat16": 0.0830639344528804
+     },
+     "negative": {
+      "float32": 7.285318935900743e-06,
+      "float16": 0.057932444207474454,
+      "bfloat16": 0.4825801402522788
+     },
+     "spread": {
+      "float32": 4.2757956270221306e-06,
+      "float16": 0.00028092856243012976,
+      "bfloat16": 0.00028092856243012976
+     }
+    },
+    "fp_class": "stable",
+    "cost": {
+     "bytes_per_elem": 12.0,
+     "exps_per_elem": 2.0,
+     "flops_per_elem": 4.0,
+     "passes": 2,
+     "time_us": 3247.2030967741935,
+     "device": "RTX A1000 6GB Laptop"
+    },
+    "passes": 2,
+    "state_fields": 1,
+    "nodes": 32,
+    "digest": "6bc7543d3fc1231c",
+    "name": "softmax-lse",
+    "text": "(program softmax-lse\n  (input x)\n  (pass a\n    (state s)\n    (block (mx (rmax x))\n           (s (+ mx (log (sum (exp (- x mx)))))))\n    (merge (s (+ (max L.s R.s) (log (+ (exp (- L.s (max L.s R.s))) (exp (- R.s (max L.s R.s)))))))))\n  (output elementwise (exp (- x a.s))))",
+    "homomorphic": true
+   }
+  }
+ ]
+}

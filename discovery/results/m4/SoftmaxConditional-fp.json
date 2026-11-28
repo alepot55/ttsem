@@ -1,0 +1,201 @@
+{
+ "policy": "conditional",
+ "proposals": [
+  {
+   "k": 1,
+   "B": "2*((d+1)*R*u + (d+1)*ue + (D+2*d+2)*u)",
+   "attack": {
+    "ratio": 0.03428962820360368,
+    "family": "twolevel",
+    "seed": 0,
+    "block": 256,
+    "order": "balanced",
+    "error": 2.372187211108212e-07,
+    "B": 6.918089624718959e-06,
+    "u": 5.960464477539063e-08,
+    "ue": 2.384185791015625e-07,
+    "ul": 2.980232238769531e-07,
+    "eta": 7.006492321624085e-46,
+    "etae": 2.802596928649634e-45,
+    "D": 8.0,
+    "d": 4.0,
+    "rd": 4.0,
+    "n": 4096.0,
+    "R": 4.006628394126892,
+    "M": 3.0028116703033447,
+    "tau": 2.0,
+    "lag": 0.00041174888610839844
+   },
+   "tightness": 29.163337498506465,
+   "proof": {
+    "program": "SoftmaxConditional-fp",
+    "B": "2*((d+1)*R*u + (d+1)*ue + (D+2*d+2)*u)",
+    "attempts": [
+     {
+      "model": "sonnet",
+      "sandbox": "C:\\dev\\fpbox\\SoftmaxConditional-fp-de561c40181a664d-1795861538",
+      "seconds": 121.0,
+      "cost_usd": 0.18302390000000002,
+      "turns": 2,
+      "result": "l F`. Let `X = [0, 1, \u2026, 100]`, so `n = 101`. The tree is `node (t\u2080) (leaf [100])`, where `t_k = node (leaf [k]) t_{k+1}` for `k < 99` and `t\u2089\u2089 = leaf [99]`. So `t\u2080` is a right-nested chain over `0..99`, and the whole tree has depth 100.\n\nThe hypotheses hold:\n- `n\u00b7(\u03b7+\u03b7e) = 101\u00b72^-100 \u2264 2^-90 = u`.\n- `(100+0+1)\u00b73\u00b72^-90 \u2264 1/16`.\n\nNow pick the rounding errors adversarially. `\u03b4 = 0` everywhere, and `e = 0` everywhere except in the `exp` at the root, where `e = \u03b7e`.\n\n1. Each leaf `[k]` gives state `(k, 1)`, because `x - m = 0` is exact and `exp 0 = 1`.\n2. In a chain merge, `r1 = (k+1) - k = 1`. This is not `> tau = 1`, so the merge keeps the left reference `m = k`. Hence `d_k = 1 + e\u00b7d_{k+1}`. The state of `t\u2080` is `(0, \u03a3_{k\u226499} e^k)`, so `d \u2265 e^99 \u2248 2^142.8`. The reference lags the true maximum 99 by 99.\n3. At the root, `r1 = 100 > 1`, so `m = 100`. Then `r2 = -100` and `r3 = exp(-100) + 2^-100 \u2248 2^-100`, since `exp(-100) \u2248 2^-144` is much smaller than `\u03b7e`. The result is `d = dL\u00b7r3 + 1 \u2265 e^99\u00b72^-100 \u2248 2^42.8`.\n4. `log (znorm st) = log d + 100 \u2265 100 + 29`. The true value is `log \u03a3 e^k \u2248 100.46`. The error is at least 28.\n5. The claimed bound is about `2\u00b7(101\u00b7100\u00b7u + \u2026)`, which is roughly `10^-20`.\n\nThe cause is that the `\u03b7e` error in `exp(L.m - m)` gets multiplied by the unscaled `L.d`, which can be as large as `e^(lag)`. The lag can reach `tau\u00b7rdepth`, which `hi - lo` allows to be large. No hypothesis rules this out: `n\u00b7(\u03b7+\u03b7e) \u2264 u` only controls `n\u00b7\u03b7e`, not `e^(hi-lo)\u00b7\u03b7e`.\n\nFALSE",
+      "subtype": "success",
+      "error": "",
+      "stage": "deny",
+      "ok": false,
+      "errors": [
+       "not allowed in your text: sorry"
+      ]
+     },
+     {
+      "model": "opus",
+      "sandbox": "C:\\dev\\fpbox\\SoftmaxConditional-fp-de561c40181a664d-1795861691",
+      "seconds": 281.6,
+      "cost_usd": 0.6519257999999999,
+      "turns": 15,
+      "result": "an `tau` above it. So a summary can have a small `m` and a large `d`, about `e^tau`. When a later merge does move `m` far up, it computes `exp(L.m \u2212 v_m)` for a very negative argument. The rounding model lets that `exp` be off by the absolute error `\u03b7e`, and the error gets multiplied by the large `L.d`. In the final normalizer that gives a relative error of about `\u03b7e \u00b7 e^tau`.\n\nThe bound only grows with `u`, `ue` and `(hi \u2212 lo)\u00b7u`, and the hypotheses only tie `\u03b7e` to `u` through `n\u00b7(\u03b7+\u03b7e) \u2264 u`. Nothing limits the factor `e^tau`, so for a large enough `tau` the error exceeds the bound.\n\n**Counterexample.**\n- **Rounding:** `u = 3/2^100`, `\u03b7e = 1/2^100`, and `\u03b7 = ue = ul = 0`. This satisfies `small F` and `3\u00b7(\u03b7+\u03b7e) \u2264 u`.\n- **Other inputs:** `D = 0`, `tau = 10`, `X = [0, 10, 11]`, `lo = 0`, `hi = 11`, and the tree `node (node (leaf [0]) (leaf [10])) (leaf [11])`, which has depth 2.\n- **Evaluation:** every rounding is exact except that `exp(\u221211)` returns `e^\u221211 + \u03b7e`.\n  - The inner merge compares `10 \u2212 0 = 10`, which is not more than 10, so it keeps `m = 0` and gets `d = 1 + e^10`.\n  - The outer merge compares `11 \u2212 0 = 11 > 10`, so it moves to `m = 11`.\n  - The result is `st = \u27e811, (1+e^10)(e^\u221211 + \u03b7e) + 1\u27e9`.\n- **Error:** `znorm st = \u03a3 + (1+e^10)\u00b7e^11\u00b7\u03b7e`, where `\u03a3 = 1 + e^10 + e^11`. So the log error is at least about `e^10\u00b7\u03b7e/6`, roughly `3600\u00b72^-100`.\n- **Bound:** the right-hand side is `2\u00b7(3\u00b711\u00b7u + 6u) = 78u = 234\u00b72^-100`, so the error is more than ten times too large.\n\nFALSE",
+      "subtype": "success",
+      "error": "",
+      "stage": "deny",
+      "ok": false,
+      "errors": [
+       "not allowed in your text: sorry"
+      ]
+     }
+    ],
+    "proved": null,
+    "cost_usd": 0.8349
+   }
+  },
+  {
+   "k": 2,
+   "B": "2*((d+1)*(R+tau)*u + (d+1)*ue + (D+2*d+3)*u)",
+   "attack": {
+    "ratio": 0.029900459082318667,
+    "family": "twolevel",
+    "seed": 1,
+    "block": 256,
+    "order": "balanced",
+    "error": 1.5866933456010202e-07,
+    "B": 5.306585230790972e-06,
+    "u": 5.960464477539063e-08,
+    "ue": 2.384185791015625e-07,
+    "ul": 2.980232238769531e-07,
+    "eta": 7.006492321624085e-46,
+    "etae": 2.802596928649634e-45,
+    "D": 8.0,
+    "d": 4.0,
+    "rd": 4.0,
+    "n": 4096.0,
+    "R": 1.1029726639389992,
+    "M": 1.0033577680587769,
+    "tau": 0.0,
+    "lag": 0.0
+   },
+   "tightness": 33.44430255224208,
+   "proof": {
+    "program": "SoftmaxConditional-fp",
+    "B": "2*((d+1)*(R+tau)*u + (d+1)*ue + (D+2*d+3)*u)",
+    "attempts": [
+     {
+      "model": "sonnet",
+      "sandbox": "C:\\dev\\fpbox\\SoftmaxConditional-fp-6d5585dd0e2587db-1795862083",
+      "seconds": 165.0,
+      "cost_usd": 0.24334770000000003,
+      "turns": 2,
+      "result": " = 2^-100`, `lo = 0`, `hi = 104`.\n- Hypotheses: `small F` holds. `n(\u03b7+\u03b7e) = 15\u00b72^-99 \u2264 u` holds. The depth condition holds because the depth is 14 and `D = 0`.\n- Elements: `X = [0, 8, 16, \u2026, 104, 100]`, so `n = 15`. Every block is a single element.\n- Tree: `node (chain) (leaf [100])`. The chain is the right-nested `node [0] (node [8] (\u2026 node [96] [104]))`.\n- Leaf summaries: each leaf gives `(m, d) = (x, 1)`, taking `\u03b4 = 0` and `e = 0` throughout.\n- Chain merges: at each step `R.m \u2212 L.m = 8`, and the `\u03b4` for `r1` is 0. Then `r1 = 8`, which is not `> tau`, so `v_m = L.m`. All roundings are exact. The chain therefore ends with `m = 0` and `d = \u03a3_{i=0}^{13} e^{8i} \u2248 e^{104}`.\n- Root merge:\n  - `R.m \u2212 L.m = 100 > 8`, so `v_m = 100`.\n  - `r2 = \u2212100`, and `r3 = e^{-100} + \u03b7e`, taking `e3 = \u03b7e`. This is allowed because `e` is only bounded by `\u03b7e`.\n  - `r4 = L.d\u00b7r3`, `r7 = 1`, and `d = L.d\u00b7(e^{-100} + 2^-100) + 1`.\n  - `znorm = d\u00b7e^{100} \u2248 L.d\u00b7(1 + 2^-100\u00b7e^{100}) + e^{100}`.\n  - Since `2^-100\u00b7e^{100} \u2248 2\u00b710^13`, `znorm \u2248 2\u00b710^13\u00b7e^{104}`. The exact sum is `S \u2248 e^{104}`.\n\n**Result.** `|log znorm \u2212 log S| \u2248 30`. The right-hand side is `2\u00b7(15\u00b7112\u00b7u + 15\u00b7ue + 31\u00b7u) \u2248 10^-4`.\n\nThe cause is that the reference `m` can lag the true maximum by about `tau` per right-nesting level, so `L.d` can reach about `e^{hi\u2212lo}`. A spurious absolute error `\u03b7e` on `exp(L.m \u2212 v_m)` is then multiplied by `L.d`. Nothing in the hypotheses bounds that product: `n(\u03b7+\u03b7e) \u2264 u` only controls `n`, not `n\u00b7e^{hi\u2212lo}`.",
+      "subtype": "success",
+      "error": "",
+      "stage": "deny",
+      "ok": false,
+      "errors": [
+       "not allowed in your text: sorry"
+      ]
+     },
+     {
+      "model": "opus",
+      "sandbox": "C:\\dev\\fpbox\\SoftmaxConditional-fp-6d5585dd0e2587db-1795862260",
+      "seconds": 63.8,
+      "cost_usd": 0.24145299999999997,
+      "turns": 2,
+      "result": "I didn't write a proof, because the statement is false. The counterexample below is worked out by hand; I didn't check it in Lean. The problem is that the absolute error `\u03b7e` of a tiny `exp` result gets multiplied by a large `L.d`, and `L.d` can be large when an earlier merge kept an old, lower reference `m` (the `tau` rule allows that).\n\n**Counterexample.** Every unstated rounding choice is exact (`\u03b4 = 0`, `e = 0`).\n- **Rounding:** `u = 2^-24`, `\u03b7 = 0`, `ue = ul = 0`, `\u03b7e = 2^-100`. This satisfies `small F`, and `3\u00b7(\u03b7+\u03b7e) \u2264 u`.\n- **Inputs:** `D = 0`, `tau = T = 1000`, `lo = 0`, `hi = T+1`, `X = [0, T, T+1]`.\n- **Tree:** `node (node (leaf [0]) (leaf [T])) (leaf [T+1])`. It has depth 2, so `(2+0+1)\u00b7u \u2264 1/16`.\n- **Leaves:** the three leaves give the states `(0,1)`, `(T,1)` and `(T+1,1)`.\n- **First merge:** `r1 = T`, and `T > T` is false, so `m` stays at `0`. This gives `d = 1 + e^T`.\n- **Second merge:** `r1 = T+1 > T`, so `m = T+1` and `r2 = -(T+1)`. The `exp` step may return `r3 = e^{-(T+1)} + 2^-100`, since that is one absolute error of size `\u03b7e`. Then `r4 = (1+e^T)\u00b7r3 \u2265 e^T\u00b72^-100`, and the final state is `(T+1, 1 + r4)`.\n\n**Comparing the two sides:**\n- `log(znorm st) = log(d\u00b7e^m) \u2265 (T+1) + T \u2212 100\u00b7log 2 \u2248 1931.7`.\n- The true value is `log \u03a3 e^x \u2264 T+1+log 3 \u2248 1002.1`.\n- So the error is about 929.\n- The claimed bound is `2\u00b7(3\u00b7(2T+1)\u00b7u + 7\u00b7u) \u2248 7.2\u00b710\u207b\u2074`.\n\nFALSE",
+      "subtype": "success",
+      "error": "",
+      "stage": "deny",
+      "ok": false,
+      "errors": [
+       "not allowed in your text: sorry"
+      ]
+     }
+    ],
+    "proved": null,
+    "cost_usd": 0.4848
+   }
+  },
+  {
+   "k": 3,
+   "B": "3*((d+1)*(R+tau)*u + (d+1)*ue + (D+2*d+3)*u)",
+   "attack": {
+    "ratio": 0.019933639388212444,
+    "family": "twolevel",
+    "seed": 1,
+    "block": 256,
+    "order": "balanced",
+    "error": 1.5866933456010202e-07,
+    "B": 7.959877846186458e-06,
+    "u": 5.960464477539063e-08,
+    "ue": 2.384185791015625e-07,
+    "ul": 2.980232238769531e-07,
+    "eta": 7.006492321624085e-46,
+    "etae": 2.802596928649634e-45,
+    "D": 8.0,
+    "d": 4.0,
+    "rd": 4.0,
+    "n": 4096.0,
+    "R": 1.1029726639389992,
+    "M": 1.0033577680587769,
+    "tau": 0.0,
+    "lag": 0.0
+   },
+   "tightness": 50.16645382836312,
+   "proof": {
+    "program": "SoftmaxConditional-fp",
+    "B": "3*((d+1)*(R+tau)*u + (d+1)*ue + (D+2*d+3)*u)",
+    "attempts": [
+     {
+      "model": "sonnet",
+      "sandbox": "C:\\dev\\fpbox\\SoftmaxConditional-fp-009c7f72ea29750f-1795862454",
+      "seconds": 68.1,
+      "cost_usd": 0.11570340000000001,
+      "turns": 3,
+      "result": "FALSE\n\nThe statement fails because of the absolute `exp` error `\u03b7e`, which is allowed to be large next to a very small true `exp` value. I checked this by hand and did not formalise it in Lean.\n\n**Parameters.** Take `u = ue = 2^-24`, `ul = 0`, `\u03b7 = 0`, `\u03b7e = 2^-100`, `tau = 50`, `D = 0`, `lo = 0`, `hi = 150`. Let `X = [0, 49, 98, 150]`. Use the tree `node (node (leaf [0]) (node (leaf [49]) (leaf [98]))) (leaf [150])`, which has depth 3. All hypotheses hold:\n- `small F` holds.\n- `4\u00b7(\u03b7+\u03b7e) \u2264 u` holds.\n- `(3+0+1)\u00b7(u+ue+ul) \u2264 1/16` holds.\n\n**Float evaluation.**\n- Each leaf `[x]` yields `(x, \u22481)`.\n- The inner node has `r1 \u2248 49 \u2264 50`, so the reference `m` stays at 49. This gives `(49, \u22481+e^49)`.\n- Merging with the leaf `[0]` has `r1 \u2248 49 \u2264 50`, so `m` stays at 0. This gives `(0, \u2248e^98)`.\n- The root merges with the leaf `[150]`. Here `r1 \u2248 150 > 50`, so `v_m = 150`.\n- Then `r2 \u2248 -150`, and `exp` may return `r3 = e^-150\u00b7(1+\u03b4) + \u03b7e \u2248 7.9e-31`. This is legal, since `|e| \u2264 \u03b7e` and `0 \u2264 r3`.\n- So `r4 \u2248 e^98 \u00b7 7.9e-31 \u2248 2.8e12`, and the final `d \u2248 2.8e12`.\n\n**Result.** `log (znorm st) = 150 + log d \u2248 178.7`, while `log \u03a3 e^x \u2248 150`. The error is about 28.7. The claimed bound is `3\u00b7(4\u00b7200\u00b72^-24 + 4\u00b72^-24 + 5\u00b72^-24) \u2248 1.4e-4`.\n\nThe cause is that the stale reference `m` can lag the true maximum by `tau` at each right step. The left `d` is then about `e^(lag)`, so the absolute `exp` error `\u03b7e` is amplified by that factor. The hypothesis `n\u00b7(\u03b7+\u03b7e) \u2264 u` does not cover this.",
+      "subtype": "success",
+      "error": "",
+      "stage": "deny",
+      "ok": false,
+      "errors": [
+       "not allowed in your text: sorry"
+      ]
+     },
+     {
+      "model": "opus",
+      "sandbox": "C:\\dev\\fpbox\\SoftmaxConditional-fp-009c7f72ea29750f-1795862532",
+      "seconds": 349.1,
+      "cost_usd": 0.9509915999999999,
+      "turns": 27,
+      "result": "FALSE\n\n`fp_bound` can't be proved because the statement is false. I proved the negation in Lean as `fp_bound_false : \u00ac fp_bound_statement`. It is in the helpers section of `FPProofs.lean` and uses only propext, Classical.choice and Quot.sound. `fp_bound` itself is still `sorry`, so `lean FPProofs.lean` gives a \"declaration uses `sorry`\" warning and `fp_bound_holds` depends on `sorryAx`.\n\n**Why it fails:** `exp` can add an absolute error of up to `\u03b7e = 2^-100`, and the stale reference `m` lets a summary's `d` become huge. The merge then multiplies that huge `d` by the error. The bound grows only like `u\u00b7(hi\u2212lo+tau)`, so it can't absorb this.\n\n**Counterexample:**\n- **Rounding:** `u = 1/1000`, `\u03b7 = ue = ul = 0`, `\u03b7e = 2^-100`. This satisfies `small` and the other side conditions.\n- **Inputs:** `D = 0`, `tau = 100`, `X = [0, 100, 300]`, `lo = 0`, `hi = 300`.\n- **Tree:** `node (node (leaf [0]) (leaf [100])) (leaf [300])`, so `depth = 2`.\n- **Rounding choices:** every operation is exact except one `exp`.\n\n1. **Inner merge:** the rounded difference is `100 - 0 = 100`, which is not `> tau`, so the stale `m = 0` is kept. That gives `d = 1 + e^100`.\n2. **Outer merge:** `300 - 0 > tau`, so `m = 300`. The `exp(-300)` result is rounded to `e^-300 + \u03b7e`, which the model allows. This gives `d = (1 + e^100)(e^-300 + 2^-100) + 1`, which is at least `(e/2)^100`.\n3. **Result:** `log(znorm st) - log \u03a3 exp x \u2265 100 \u2212 100\u00b7log 2 \u2212 2 \u2248 28.7`. The claimed bound is `3\u00b7(3\u00b7400\u00b7u + 0 + 7u) = 3.621`.",
+      "subtype": "success",
+      "error": "",
+      "stage": "deny",
+      "ok": false,
+      "errors": [
+       "not allowed in your text: sorry"
+      ]
+     }
+    ],
+    "proved": null,
+    "cost_usd": 1.0667
+   }
+  }
+ ],
+ "cost_usd_proposer": 0.1517
+}

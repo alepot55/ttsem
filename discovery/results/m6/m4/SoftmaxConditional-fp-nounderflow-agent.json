@@ -1,0 +1,30 @@
+{
+ "program": "SoftmaxConditional-fp-nounderflow",
+ "B": "2*d*R*u + 2*R*u + 2*D*u + 2*ue + 4*d*u + 2*d*ue",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox2\\SoftmaxConditional-fp-nounderflow-bea4150e966768a2-1795870187",
+   "seconds": 677.1,
+   "cost_usd": 1.09075,
+   "turns": 44,
+   "result": "  have hd : ((Tree.node l r).depth : \u211d) = max (l.depth : \u211d) (r.depth : \u211d) + 1 := by\n        simp only [Tree.depth]; push_cast; rfl\n      have hfl : (Tree.node l r).flat = l.flat ++ r.flat := rfl\n      rw [hd, hfl, List.map_append, List.sum_append]\n      refine \u27e8p, hmr, ?_, ?_\u27e9\n      \u00b7 refine le_trans (le_of_eq ?_) A1; congr 2; ring\n      \u00b7 refine le_trans A2 (le_of_eq ?_); congr 2; ring\n```\n\n```lean fp_bound\n  intro F D tau htau lo hi X hX hrange hsmall hlen t hflat hl _ _ h0 he0 st hev\n  subst hflat\n  obtain \u27e8p, _, A1, A2\u27e9 := main_ind F hsmall h0 he0 D tau lo hi t hrange hl st hev\n  have hzn : znorm st = st.d * Real.exp st.m := by\n    unfold znorm\n    rw [zero_sub, Real.exp_neg]\n    have := Real.exp_pos st.m\n    field_simp\n  have hZ := sum_pos_of_ne Real.exp (fun x => Real.exp_pos x) hX\n  have hw : 0 < st.d * Real.exp st.m := mul_pos p (Real.exp_pos _)\n  rw [hzn]\n  set E := (2*(hi-lo)*F.u + 2*(D:\u211d)*F.u + 2*F.ue) + (t.depth:\u211d) * (2*(hi-lo)*F.u + 4*F.u + 2*F.ue)\n    with hE\n  have l1 := Real.log_le_log (mul_pos (Real.exp_pos _) hZ) A1\n  have l2 := Real.log_le_log hw A2\n  rw [Real.log_mul (Real.exp_pos _).ne' hZ.ne', Real.log_exp] at l1\n  rw [Real.log_mul (Real.exp_pos _).ne' hZ.ne', Real.log_exp] at l2\n  have : E = ((2 : \u211d) * (t.depth : \u211d) * (hi - lo) * F.u) + ((2 : \u211d) * (hi - lo) * F.u) + ((2 : \u211d) * (D : \u211d) * F.u) + ((2 : \u211d) * F.ue) + ((4 : \u211d) * (t.depth : \u211d) * F.u) + ((2 : \u211d) * (t.depth : \u211d) * F.ue) := by\n    rw [hE]; ring\n  rw [\u2190 this, abs_le]\n  constructor <;> linarith\n```",
+   "subtype": "success",
+   "error": "",
+   "stage": "ok",
+   "ok": true,
+   "errors": []
+  }
+ ],
+ "proved": {
+  "model": "sonnet",
+  "axioms": [
+   "propext",
+   "Classical.choice",
+   "Quot.sound"
+  ],
+  "B": "2*d*R*u + 2*R*u + 2*D*u + 2*ue + 4*d*u + 2*d*ue",
+  "lean": "(((2 : \u211d) * (t.depth : \u211d) * (hi - lo) * F.u) + ((2 : \u211d) * (hi - lo) * F.u) + ((2 : \u211d) * (D : \u211d) * F.u) + ((2 : \u211d) * F.ue) + ((4 : \u211d) * (t.depth : \u211d) * F.u) + ((2 : \u211d) * (t.depth : \u211d) * F.ue))"
+ },
+ "cost_usd": 1.0908
+}

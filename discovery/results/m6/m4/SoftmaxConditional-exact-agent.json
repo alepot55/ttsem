@@ -1,0 +1,30 @@
+{
+ "program": "SoftmaxConditional-exact",
+ "B": "u",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox2\\SoftmaxConditional-exact-25b4fb93e1d1e205-1795869831",
+   "seconds": 55.4,
+   "cost_usd": 0.09309510000000001,
+   "turns": 7,
+   "result": "```lean helpers\ntheorem znorm_eq' (st : State_a) : znorm st = st.d * Real.exp st.m := by\n  unfold znorm\n  rw [zero_sub, Real.exp_neg]\n  field_simp\n\ntheorem znorm_block' (tau : \u211d) (A : List \u211d) :\n    znorm (block_a tau A) = (A.map Real.exp).sum := by\n  rw [znorm_eq']\n  simp only [block_a]\n  rw [\u2190 List.sum_map_mul_right]\n  congr 1\n  apply List.map_congr_left\n  intro x _\n  simp [\u2190 Real.exp_add]\n\ntheorem znorm_merge' (tau : \u211d) (L R : State_a) :\n    znorm (merge_a tau L R) = znorm L + znorm R := by\n  rw [znorm_eq', znorm_eq', znorm_eq']\n  simp only [merge_a]\n  split_ifs\n  \u00b7 simp only [add_mul, mul_assoc, \u2190 Real.exp_add]; simp\n  \u00b7 simp only [add_mul, mul_assoc, \u2190 Real.exp_add]; simp\n\ntheorem znorm_tree' (tau : \u211d) : \u2200 t : Discovery.Tree \u211d, (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n    znorm (t.eval (block_a tau) (merge_a tau)) = (t.flat.map Real.exp).sum\n  | .leaf b, _ => by simpa [Tree.eval, Tree.flat] using znorm_block' tau b\n  | .node l r, ht => by\n    have hl : \u2200 b \u2208 l.leaves, b \u2260 [] := fun b hb => ht b (by simp [Tree.leaves, hb])\n    have hr : \u2200 b \u2208 r.leaves, b \u2260 [] := fun b hb => ht b (by simp [Tree.leaves, hb])\n    simp only [Tree.eval, Tree.flat]\n    rw [znorm_merge', znorm_tree' tau l hl, znorm_tree' tau r hr]\n    simp\n```\n\n```lean fp_bound\n  intro tau X _ t ht hl\n  subst ht\n  exact znorm_tree' tau t hl\n```\n\nDONE",
+   "subtype": "success",
+   "error": "",
+   "stage": "ok",
+   "ok": true,
+   "errors": []
+  }
+ ],
+ "proved": {
+  "model": "sonnet",
+  "axioms": [
+   "propext",
+   "Classical.choice",
+   "Quot.sound"
+  ],
+  "B": "u",
+  "lean": "F.u"
+ },
+ "cost_usd": 0.0931
+}

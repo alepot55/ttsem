@@ -1,0 +1,30 @@
+{
+ "program": "AttentionOnline-v4-1",
+ "B": "3*S*(R*u + (d+1)*ue + (2*d + D + 2)*u) + 5*n*eta + 3*(d+1)*n*etae*V + 3*S*n*(eta + (d+1)*etae)",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox\\AttentionOnline-v4-1-c57fa11d15e1117e-1795862160",
+   "seconds": 3571.4,
+   "cost_usd": 6.769836899999998,
+   "turns": 166,
+   "result": " Real.exp (e.1 - st.m) * 1).sum := by\n    rw [\u2190 hBo]\n    exact Z_le_aux t.flat (fun e => e.2) (fun e => |e.2|) (fun e _ => le_rfl) st.m\n  rw [hBo] at ho\n  have hnn : (1 : \u211d) \u2264 (t.flat.length : \u211d) := by\n    have : 0 < t.flat.length := List.length_pos_iff.mpr hX\n    exact_mod_cast this\n  have hTn : (t.depth : \u211d) \u2264 (t.flat.length : \u211d) := by\n    exact_mod_cast depth_le_length_aux t hleaves\n  have hD0 : (0 : \u211d) \u2264 D := Nat.cast_nonneg D\n  have hT0 : (0 : \u211d) \u2264 t.depth := Nat.cast_nonneg _\n  have hX0 : 0 \u2264 F.u * (hi - lo) := mul_nonneg F.hu (sub_nonneg.mpr (le_trans hMb.1 hMb.2))\n  have hXb : F.u * (hi - lo) \u2264 1 / 16 := by rw [mul_comm]; exact hhi\n  have hMlo : 0 \u2264 F.u * (st.m - lo) := mul_nonneg F.hu (sub_nonneg.mpr hMb.1)\n  have hMX : F.u * (st.m - lo) \u2264 F.u * (hi - lo) :=\n    mul_le_mul_of_nonneg_left (sub_le_sub_right hMb.2 lo) F.hu\n  have hwe : w = (st.o / st.d) * (1 + \u03b4) + e' := by rw [hwr, hr1]\n  rw [hA1]\n  generalize (t.flat.map fun e => Real.exp (e.1 - st.m) * 1).sum = Zd at hd ho hZd hZo \u22a2\n  generalize (t.flat.map fun e => Real.exp (e.1 - st.m) * e.2).sum = Zo at ho hZo \u22a2\n  generalize attnScale t.flat = S at ho hZo hS0 \u22a2\n  generalize (t.flat.length : \u211d) = n at hd ho hnn hTn hn\u03b7 \u22a2\n  have key := final_core F.u F.ue F.\u03b7 F.\u03b7e F.ul (F.u * (hi - lo)) (t.depth : \u211d) (D : \u211d)\n    n Vmax S Zd Zo st.d st.o w \u03b4 e' st.m lo\n    F.hu hu' F.hue F.hul F.h\u03b7 F.h\u03b7e hn\u03b7 hnn hT0 hTn hD0 hbud hX0 hXb hMlo hMX hVn hS0 hZd hZo hd ho\n    hwe h\u03b4 he'\n  refine le_trans key (le_of_eq ?_)\n  ring\n```\n\nDONE",
+   "subtype": "success",
+   "error": "",
+   "stage": "ok",
+   "ok": true,
+   "errors": []
+  }
+ ],
+ "proved": {
+  "model": "sonnet",
+  "axioms": [
+   "propext",
+   "Classical.choice",
+   "Quot.sound"
+  ],
+  "B": "3*S*(R*u + (d+1)*ue + (2*d + D + 2)*u) + 5*n*eta + 3*(d+1)*n*etae*V + 3*S*n*(eta + (d+1)*etae)",
+  "lean": "(((3 : \u211d) * (attnScale X) * (((hi - lo) * F.u) + (((t.depth : \u211d) + (1 : \u211d)) * F.ue) + ((((2 : \u211d) * (t.depth : \u211d)) + (D : \u211d) + (2 : \u211d)) * F.u))) + ((5 : \u211d) * (X.length : \u211d) * F.\u03b7) + ((3 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * (X.length : \u211d) * F.\u03b7e * Vmax) + ((3 : \u211d) * (attnScale X) * (X.length : \u211d) * (F.\u03b7 + (((t.depth : \u211d) + (1 : \u211d)) * F.\u03b7e))))"
+ },
+ "cost_usd": 6.7698
+}

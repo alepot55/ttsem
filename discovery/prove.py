@@ -106,7 +106,23 @@ _UNPROVED = frozenset({
 })  # fmt: skip
 _PREFIXES = ("register_", "declare_", "builtin_", "run_", "unsafe", "simproc", "dsimproc", "cbv_")
 _DECLARATIONS = frozenset({"theorem", "lemma", "private"})  # the helper block's own words
-_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_'!?]*")
+# A word exactly as Lean 4 reads an identifier (`Lean.isIdFirst`, `isIdRest`, `isLetterLike`,
+# `isSubScriptAlnum`): ASCII letters and `_`, the letter-like ranges (Greek but λ, Π and Σ,
+# Coptic, polytonic Greek, the letterlike block, mathematical alphanumerics), then also ASCII
+# digits, `'`, `!`, `?` and subscripts. Every other character separates words, as it does for
+# Lean. An ASCII-only pattern split `hφdef` into `h` and `def` and refused a correct proof
+# (diary, 10:35 UTC); its first fix, Python's `\w`, was too wide: `λdef` read as one word hid a
+# `def` that Lean reads after the token `λ` (the review, diary, 12:35 UTC).
+_LETTERLIKE = (
+    "α-κμ-ω"  # lower Greek but λ
+    "Α-ΟΡ΢Τ-Ω"  # upper Greek but Π and Σ
+    "ϊ-ϻ"  # Coptic
+    "ἀ-῾"  # polytonic Greek
+    "℀-⅏"  # letterlike symbols
+    "\U0001d49c-\U0001d59f"  # script, double-struck, fraktur
+)
+_SUBSCRIPTS = "₀-₉ₐ-ₜᵢ-ᵪ"
+_WORD = re.compile(rf"[A-Za-z_{_LETTERLIKE}][A-Za-z0-9_'!?{_LETTERLIKE}{_SUBSCRIPTS}]*")
 _OPTION = re.compile(r"set_option\s+maxHeartbeats\s+\d+\s+in\b")
 # the words the prompt names, among those a proof might plausibly write
 _PROMPT_WORDS = (

@@ -1,0 +1,35 @@
+{
+ "program": "AttentionOnline",
+ "proposals": [
+  {
+   "k": 1,
+   "B": "3*S*(R*u + (d+1)*ue + (2*d + D + 2)*u) + 5*n*eta + 3*(d+1)*n*etae*V + 3*S*n*(eta + (d+1)*etae)",
+   "ratio": 0.04856686835740188,
+   "tightness_attack": 20.590168438307266,
+   "proof": {
+    "proved": {
+     "model": "sonnet",
+     "axioms": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+     ],
+     "B": "3*S*(R*u + (d+1)*ue + (2*d + D + 2)*u) + 5*n*eta + 3*(d+1)*n*etae*V + 3*S*n*(eta + (d+1)*etae)",
+     "lean": "(((3 : \u211d) * (attnScale X) * (((hi - lo) * F.u) + (((t.depth : \u211d) + (1 : \u211d)) * F.ue) + ((((2 : \u211d) * (t.depth : \u211d)) + (D : \u211d) + (2 : \u211d)) * F.u))) + ((5 : \u211d) * (X.length : \u211d) * F.\u03b7) + ((3 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * (X.length : \u211d) * F.\u03b7e * Vmax) + ((3 : \u211d) * (attnScale X) * (X.length : \u211d) * (F.\u03b7 + (((t.depth : \u211d) + (1 : \u211d)) * F.\u03b7e))))"
+    },
+    "cost_usd": 6.7698
+   }
+  }
+ ],
+ "proved": {
+  "B": "3*S*(R*u + (d+1)*ue + (2*d + D + 2)*u) + 5*n*eta + 3*(d+1)*n*etae*V + 3*S*n*(eta + (d+1)*etae)",
+  "model": "sonnet",
+  "axioms": [
+   "propext",
+   "Classical.choice",
+   "Quot.sound"
+  ],
+  "lean": "(((3 : \u211d) * (attnScale X) * (((hi - lo) * F.u) + (((t.depth : \u211d) + (1 : \u211d)) * F.ue) + ((((2 : \u211d) * (t.depth : \u211d)) + (D : \u211d) + (2 : \u211d)) * F.u))) + ((5 : \u211d) * (X.length : \u211d) * F.\u03b7) + ((3 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * (X.length : \u211d) * F.\u03b7e * Vmax) + ((3 : \u211d) * (attnScale X) * (X.length : \u211d) * (F.\u03b7 + (((t.depth : \u211d) + (1 : \u211d)) * F.\u03b7e))))"
+ },
+ "proposer_cost_usd": 0.0754
+}

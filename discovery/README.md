@@ -65,6 +65,24 @@ $ python -m discovery.prove --recheck-library                                   
 $ python -m discovery.ttsem_check --problem softmax --program online                  # ttsem's checks (Linux)
 ```
 
+Floating point (the branch `discovery-fp`):
+
+```console
+$ python -m discovery.fptable --out discovery/results/m1                 # every library program's error in u, measured
+$ python -m discovery.adversary --problem softmax --program known:online # the worst rows a climb finds
+$ python -m discovery.libm --out discovery/results/m2/libm.json           # numpy's float32 exp and log, every input
+$ python -m discovery.fpbound --program SoftmaxOnline                     # B proposed, attacked, proved in one-shot rounds
+$ python -m discovery.agentprove --program SoftmaxLse                     # the same with the agentic prover (Lean in a sandbox)
+$ python -m discovery.fpcheck --program SoftmaxLse --bound "..."          # F1: a long attack on a proved bound
+$ python -m discovery.fpreport                                            # proved bounds, tightness, the certified order (F4)
+$ python -m discovery.policyrun --policy conditional --kind exact         # rescaling policies: exact, overflow, fp, worst
+$ python -m discovery.certsearch --arm cert --seed 0                      # the search under a certificate, and its baselines
+$ python -m discovery.rejudge                                            # every accepted proof judged again (M6)
+$ python -m discovery.policyrun --kind f1 --bound "..."                    # F1 on a policy's proved bound
+$ python -m discovery.certsearch --arm f1                                 # F1 on the certified elites
+$ python -m discovery.spend                                              # the session's recorded spend, a lower bound
+```
+
 Run output goes under `discovery/runs/` (not versioned); proved forms go to
 `lean/Discovery/Library/` with an index the search shows the model when given `--library`
 (tier 3). `loop` shows it by default; `experiments` shows no lemma unless given one, since a
@@ -89,3 +107,15 @@ lemma about a known form would put that form in every prompt.
 | `knowledge.py` | tier 3's memory: rejected candidates, accepted ones, proved lemmas |
 | `llm.py` | `claude -p`, OpenAI-compatible endpoints, scripted answers for the tests |
 | `experiments.py` | the rediscovery control experiment |
+| `fsem.py` | floating-point semantics: one rounding per operation, a block's sum along a tree, merges along any tree, an exact reference |
+| `adversary.py`, `fptable.py` | inputs that maximise the error; the library's errors in units of u |
+| `libm.py` | the errors of numpy's float32 `exp` and `log` on every input: the rounding model's parameters |
+| `lean/Discovery/Approx.lean` | the rounding model, floating-point evaluation of a merge tree, the depth law, the framework up to a relation |
+| `fp_export.py`, `bound.py` | the floating-point statement of a program with its bound left open; the grammar of the bound |
+| `fpbound.py` | the proposal of a bound, the adversary on error/bound, the judge, one-shot proof rounds |
+| `agentprove.py` | the agentic prover: the model with Lean in a sandbox outside the repository, its tools denied the repository and the home directory, a `lean` that refuses file IO; its proof judged as above |
+| `rejudge.py` | every accepted proof judged again, against statements generated again |
+| `spend.py` | the spend of every model call recorded under `results/`, each call once |
+| `fpcheck.py`, `fpreport.py` | F1 (a long attack on a proved bound) and F2 (tightness); the summary and the certified order (F4) |
+| `policies.py`, `policyrun.py` | rescaling policies (FlashAttention-4's conditional rescaling): exactness, overflow, bound, worst cases |
+| `certsearch.py` | the search with a certified bound as the fitness, and its two baselines |

@@ -1,0 +1,274 @@
+{
+ "program": "SoftmaxLse",
+ "proposals": [
+  {
+   "k": 1,
+   "reply_tail": "o child errors add up to at most about 1 + O(u) times themselves. A tree of depth d therefore has d merge levels plus the block level, which gives the factor (d + 1). The factor 2 absorbs the O(u) amplification and the second-order terms. \u03b7 does not appear because the program has no * or / operations that contribute subnormal error.\n\nB = 2*(d+1)*(u*R + 2*u*n + u*M + 2*u + ue + ul*n + n*etae + D*u)",
+   "B": "2*(d+1)*(u*R + 2*u*n + u*M + 2*u + ue + ul*n + n*etae + D*u)",
+   "attack": {
+    "ratio": 0.046869408523799096,
+    "family": "normal1e4",
+    "seed": 0,
+    "block": 256,
+    "order": "balanced",
+    "error": 0.0010810596510504311,
+    "B": 0.02306535723619163,
+    "u": 5.960464477539063e-08,
+    "ue": 2.384185791015625e-07,
+    "ul": 2.980232238769531e-07,
+    "eta": 7.006492321624085e-46,
+    "etae": 2.802596928649634e-45,
+    "D": 8.0,
+    "d": 4.0,
+    "n": 4096.0,
+    "R": 7.5595703125,
+    "M": 10003.6884765625
+   },
+   "broken": false,
+   "tightness": 21.33587837986531,
+   "proof": [
+    {
+     "round": 1,
+     "model": "sonnet",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 31.6,
+     "errors": [
+      "line 14 `|Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| \u2264 ((2 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * ((F`: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List \u211d),\n    X \u2260 [] \u2192\n      (\u2200 x \u2208 X, lo \u2264 x \u2227 x \u2264 hi) \u2192\n        small F \u2192\n          \u2200 (t : Tree \u211d),\n            t.flat = X \u2192\n              (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                \u2200 (st : State_a),\n                  Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                    |Real.log (znorm st) - Real.log (List.map Real.exp X).sum| \u2264\n                      2 * (\u2191t.depth + 1) *\n                        (F.u * (hi - lo) + 2 * F.u * \u2191X.length + F.u * max |lo| |hi| + 2 * F.u + F.ue +\n                              F.ul * \u2191X.length +\n                            \u2191X.length * F.\u03b7e +\n                          \u2191D * F.u)"
+     ]
+    },
+    {
+     "round": 2,
+     "model": "sonnet",
+     "stage": "deny",
+     "ok": false,
+     "seconds": 0.0,
+     "errors": [
+      "not allowed in your text: instance, sorry"
+     ]
+    },
+    {
+     "round": 3,
+     "model": "sonnet",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 8.7,
+     "errors": [
+      "line 23 `|Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| \u2264 ((2 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * ((F`: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List \u211d),\n    X \u2260 [] \u2192\n      (\u2200 x \u2208 X, lo \u2264 x \u2227 x \u2264 hi) \u2192\n        small F \u2192\n          \u2200 (t : Tree \u211d),\n            t.flat = X \u2192\n              (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                \u2200 (st : State_a),\n                  Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                    |Real.log (znorm st) - Real.log (List.map Real.exp X).sum| \u2264\n                      2 * (\u2191t.depth + 1) *\n                        (F.u * (hi - lo) + 2 * F.u * \u2191X.length + F.u * max |lo| |hi| + 2 * F.u + F.ue +\n                              F.ul * \u2191X.length +\n                            \u2191X.length * F.\u03b7e +\n                          \u2191D * F.u)"
+     ]
+    },
+    {
+     "round": 4,
+     "model": "opus",
+     "stage": "deny",
+     "ok": false,
+     "seconds": 0.0,
+     "errors": [
+      "not allowed in your text: Lean."
+     ]
+    },
+    {
+     "round": 5,
+     "model": "opus",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 9.5,
+     "errors": [
+      "line 45 `|Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| \u2264 ((2 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * ((F`: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List \u211d),\n    X \u2260 [] \u2192\n      (\u2200 x \u2208 X, lo \u2264 x \u2227 x \u2264 hi) \u2192\n        small F \u2192\n          \u2200 (t : Tree \u211d),\n            t.flat = X \u2192\n              (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                \u2200 (st : State_a),\n                  Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                    |Real.log (znorm st) - Real.log (List.map Real.exp X).sum| \u2264\n                      2 * (\u2191t.depth + 1) *\n                        (F.u * (hi - lo) + 2 * F.u * \u2191X.length + F.u * max |lo| |hi| + 2 * F.u + F.ue +\n                              F.ul * \u2191X.length +\n                            \u2191X.length * F.\u03b7e +\n                          \u2191D * F.u)"
+     ]
+    },
+    {
+     "round": 6,
+     "model": "opus",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 57.1,
+     "errors": [
+      "line 23 `linarith`: linarith failed to find a contradiction\nu : \u211d\nhu : u = 1 / 256\nh0 : 0 \u2264 u\nh1 : 1 + \u21911000 * u \u2264 (1 + u) ^ 1000\ne : 1 + \u21911000 * u = 157 / 32\na\u271d : (1 + u) ^ 1000 < 157 / 32\n\u22a2 False\nfailed",
+      "line 18 `theorem lse_big_pow (u : \u211d) (hu : u = 1 / 256) : (24 : \u211d) \u2264 (1 + u) ^ (2000 + 1) := by`: (deterministic) timeout at `whnf`, maximum number of heartbeats (200000) has been reached\n\nNote: Use `set_option maxHeartbeats <num>` to set the limit.\n\nHint: Additional diagnostic information may be available using the `set_option diagnostics true` command.",
+      "line 115 `have hX : List.replicate (2000 + 1) (10 ^ 6 : \u211d) \u2260 [] := by simp`: Tactic `simp` failed with a nested error:\nmaximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information"
+     ]
+    }
+   ]
+  },
+  {
+   "k": 2,
+   "reply_tail": "costs at most etae relative to the sum. The n\u00b7etae term covers this.\n- **Log:** the log argument is at most about n, so its relative error ul costs about ul\u00b7n.\n- **Final add `m + log`:** this costs u\u00b7|s| \u2264 u\u00b7(M + n).\n- **Second-order terms:** products such as ul\u00b7u\u00b7R are absorbed by the constant factor, since ul \u2264 1/64 and u \u2264 1/256.\n\nB = 3*(d+1)*(u*R + 2*u*n + u*M + 2*u + ue + ul*n + n*etae + D*u)",
+   "B": "3*(d+1)*(u*R + 2*u*n + u*M + 2*u + ue + ul*n + n*etae + D*u)",
+   "attack": {
+    "ratio": 0.031246272349199397,
+    "family": "normal1e4",
+    "seed": 0,
+    "block": 256,
+    "order": "balanced",
+    "error": 0.0010810596510504311,
+    "B": 0.034598035854287446,
+    "u": 5.960464477539063e-08,
+    "ue": 2.384185791015625e-07,
+    "ul": 2.980232238769531e-07,
+    "eta": 7.006492321624085e-46,
+    "etae": 2.802596928649634e-45,
+    "D": 8.0,
+    "d": 4.0,
+    "n": 4096.0,
+    "R": 7.5595703125,
+    "M": 10003.6884765625
+   },
+   "broken": false,
+   "tightness": 32.00381756979797,
+   "proof": [
+    {
+     "round": 1,
+     "model": "sonnet",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 17.3,
+     "errors": [
+      "line 13 `|Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| \u2264 ((3 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * ((F`: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List \u211d),\n    X \u2260 [] \u2192\n      (\u2200 x \u2208 X, lo \u2264 x \u2227 x \u2264 hi) \u2192\n        small F \u2192\n          \u2200 (t : Tree \u211d),\n            t.flat = X \u2192\n              (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                \u2200 (st : State_a),\n                  Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                    |Real.log (znorm st) - Real.log (List.map Real.exp X).sum| \u2264\n                      3 * (\u2191t.depth + 1) *\n                        (F.u * (hi - lo) + 2 * F.u * \u2191X.length + F.u * max |lo| |hi| + 2 * F.u + F.ue +\n                              F.ul * \u2191X.length +\n                            \u2191X.length * F.\u03b7e +\n                          \u2191D * F.u)"
+     ]
+    },
+    {
+     "round": 2,
+     "model": "sonnet",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 11.2,
+     "errors": [
+      "line 29 `|Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| \u2264 ((3 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * ((F`: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List \u211d),\n    X \u2260 [] \u2192\n      (\u2200 x \u2208 X, lo \u2264 x \u2227 x \u2264 hi) \u2192\n        small F \u2192\n          \u2200 (t : Tree \u211d),\n            t.flat = X \u2192\n              (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                \u2200 (st : State_a),\n                  Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                    |Real.log (znorm st) - Real.log (List.map Real.exp X).sum| \u2264\n                      3 * (\u2191t.depth + 1) *\n                        (F.u * (hi - lo) + 2 * F.u * \u2191X.length + F.u * max |lo| |hi| + 2 * F.u + F.ue +\n                              F.ul * \u2191X.length +\n                            \u2191X.length * F.\u03b7e +\n                          \u2191D * F.u)"
+     ]
+    },
+    {
+     "round": 3,
+     "model": "sonnet",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 10.0,
+     "errors": [
+      "line 31 `|Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| \u2264 ((3 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * ((F`: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List \u211d),\n    X \u2260 [] \u2192\n      (\u2200 x \u2208 X, lo \u2264 x \u2227 x \u2264 hi) \u2192\n        small F \u2192\n          \u2200 (t : Tree \u211d),\n            t.flat = X \u2192\n              (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                \u2200 (st : State_a),\n                  Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                    |Real.log (znorm st) - Real.log (List.map Real.exp X).sum| \u2264\n                      3 * (\u2191t.depth + 1) *\n                        (F.u * (hi - lo) + 2 * F.u * \u2191X.length + F.u * max |lo| |hi| + 2 * F.u + F.ue +\n                              F.ul * \u2191X.length +\n                            \u2191X.length * F.\u03b7e +\n                          \u2191D * F.u)"
+     ]
+    },
+    {
+     "round": 4,
+     "model": "opus",
+     "stage": "deny",
+     "ok": false,
+     "seconds": 0.0,
+     "errors": [
+      "not allowed in your text: axiom, sorry, theorem"
+     ]
+    },
+    {
+     "round": 5,
+     "model": "opus",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 8.7,
+     "errors": [
+      "line 33 `|Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| \u2264 ((3 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * ((F`: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List \u211d),\n    X \u2260 [] \u2192\n      (\u2200 x \u2208 X, lo \u2264 x \u2227 x \u2264 hi) \u2192\n        small F \u2192\n          \u2200 (t : Tree \u211d),\n            t.flat = X \u2192\n              (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                \u2200 (st : State_a),\n                  Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                    |Real.log (znorm st) - Real.log (List.map Real.exp X).sum| \u2264\n                      3 * (\u2191t.depth + 1) *\n                        (F.u * (hi - lo) + 2 * F.u * \u2191X.length + F.u * max |lo| |hi| + 2 * F.u + F.ue +\n                              F.ul * \u2191X.length +\n                            \u2191X.length * F.\u03b7e +\n                          \u2191D * F.u)"
+     ]
+    },
+    {
+     "round": 6,
+     "model": "opus",
+     "stage": "deny",
+     "ok": false,
+     "seconds": 0.0,
+     "errors": [
+      "not allowed in your text: open, sorry"
+     ]
+    }
+   ]
+  },
+  {
+   "k": 3,
+   "reply_tail": "the combined bound covers this**\n\n- The block plus at most d merge levels give a factor of (d + 1).\n- A tree of depth d with non-empty leaves needs n \u2265 d + 1, so n\u00b7etae covers the per-level etae terms.\n- log n \u2264 n, so the 2u\u00b7n term covers the u\u00b7log n pieces.\n- The leading constant absorbs the second-order terms and the 1.004 factor.\n\nB = 4*(d+1)*(u*R + 2*u*n + u*M + 2*u + ue + ul*n + n*etae + D*u)",
+   "B": "4*(d+1)*(u*R + 2*u*n + u*M + 2*u + ue + ul*n + n*etae + D*u)",
+   "attack": {
+    "ratio": 0.023434704261899548,
+    "family": "normal1e4",
+    "seed": 0,
+    "block": 256,
+    "order": "balanced",
+    "error": 0.0010810596510504311,
+    "B": 0.04613071447238326,
+    "u": 5.960464477539063e-08,
+    "ue": 2.384185791015625e-07,
+    "ul": 2.980232238769531e-07,
+    "eta": 7.006492321624085e-46,
+    "etae": 2.802596928649634e-45,
+    "D": 8.0,
+    "d": 4.0,
+    "n": 4096.0,
+    "R": 7.5595703125,
+    "M": 10003.6884765625
+   },
+   "broken": false,
+   "tightness": 42.67175675973062,
+   "proof": [
+    {
+     "round": 1,
+     "model": "sonnet",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 18.1,
+     "errors": [
+      "line 13 `|Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| \u2264 ((4 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * ((F`: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List \u211d),\n    X \u2260 [] \u2192\n      (\u2200 x \u2208 X, lo \u2264 x \u2227 x \u2264 hi) \u2192\n        small F \u2192\n          \u2200 (t : Tree \u211d),\n            t.flat = X \u2192\n              (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                \u2200 (st : State_a),\n                  Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                    |Real.log (znorm st) - Real.log (List.map Real.exp X).sum| \u2264\n                      4 * (\u2191t.depth + 1) *\n                        (F.u * (hi - lo) + 2 * F.u * \u2191X.length + F.u * max |lo| |hi| + 2 * F.u + F.ue +\n                              F.ul * \u2191X.length +\n                            \u2191X.length * F.\u03b7e +\n                          \u2191D * F.u)"
+     ]
+    },
+    {
+     "round": 2,
+     "model": "sonnet",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 8.6,
+     "errors": [
+      "line 23 `|Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| \u2264 ((4 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * ((F`: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List \u211d),\n    X \u2260 [] \u2192\n      (\u2200 x \u2208 X, lo \u2264 x \u2227 x \u2264 hi) \u2192\n        small F \u2192\n          \u2200 (t : Tree \u211d),\n            t.flat = X \u2192\n              (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                \u2200 (st : State_a),\n                  Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                    |Real.log (znorm st) - Real.log (List.map Real.exp X).sum| \u2264\n                      4 * (\u2191t.depth + 1) *\n                        (F.u * (hi - lo) + 2 * F.u * \u2191X.length + F.u * max |lo| |hi| + 2 * F.u + F.ue +\n                              F.ul * \u2191X.length +\n                            \u2191X.length * F.\u03b7e +\n                          \u2191D * F.u)"
+     ]
+    },
+    {
+     "round": 3,
+     "model": "sonnet",
+     "stage": "deny",
+     "ok": false,
+     "seconds": 0.0,
+     "errors": [
+      "not allowed in your text: axiom, sorry"
+     ]
+    },
+    {
+     "round": 4,
+     "model": "opus",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 8.3,
+     "errors": [
+      "line 28 `|Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| \u2264 ((4 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * ((F`: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List \u211d),\n    X \u2260 [] \u2192\n      (\u2200 x \u2208 X, lo \u2264 x \u2227 x \u2264 hi) \u2192\n        small F \u2192\n          \u2200 (t : Tree \u211d),\n            t.flat = X \u2192\n              (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                \u2200 (st : State_a),\n                  Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                    |Real.log (znorm st) - Real.log (List.map Real.exp X).sum| \u2264\n                      4 * (\u2191t.depth + 1) *\n                        (F.u * (hi - lo) + 2 * F.u * \u2191X.length + F.u * max |lo| |hi| + 2 * F.u + F.ue +\n                              F.ul * \u2191X.length +\n                            \u2191X.length * F.\u03b7e +\n                          \u2191D * F.u)"
+     ]
+    },
+    {
+     "round": 5,
+     "model": "opus",
+     "stage": "deny",
+     "ok": false,
+     "seconds": 0.0,
+     "errors": [
+      "not allowed in your text: axiom, sorry"
+     ]
+    },
+    {
+     "round": 6,
+     "model": "opus",
+     "stage": "deny",
+     "ok": false,
+     "seconds": 0.0,
+     "errors": [
+      "not allowed in your text: example"
+     ]
+    }
+   ]
+  }
+ ],
+ "proved": null,
+ "cost_usd": 3.0575,
+ "seconds": 1423.4
+}

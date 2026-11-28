@@ -1,0 +1,104 @@
+Row softmax. The elements of one row are x_1..x_N (float32 in memory). Output, for every element: y_i = exp(x_i - c) / sum_j exp(x_j - c), with c = max_j x_j.
+
+The program below computes it by blocked folds: each block of a row is summarised (block), and
+adjacent summaries are combined (merge) along a merge tree; the output reads the final summary.
+
+```
+(program softmax-online
+  (input x)
+  (pass a
+    (state m d)
+    (block (m (rmax x))
+           (d (sum (exp (- x m)))))
+    (merge (m (max L.m R.m))
+           (d (+ (* L.d (exp (- L.m m))) (* R.d (exp (- R.m m)))))))
+  (output elementwise (/ (exp (- x a.m)) a.d)))
+```
+
+The rounding model (Lean, `Discovery.Rounding`, every field a parameter):
+
+  u  : relative error of + - * / sqrt          η  : absolute error of * / with a subnormal result
+  ue : relative error of exp                   ηe : absolute error of exp with a subnormal result
+  ul : relative error of log
+
+  F.add x v : ∃ δ, |δ| ≤ F.u ∧ v = x * (1 + δ)                       -- + and -, x the exact result
+  F.mul x v : ∃ δ e, |δ| ≤ F.u ∧ |e| ≤ F.η ∧ v = x * (1 + δ) + e ∧ 0 ≤ x * v   -- * and /
+  F.exp x v : ∃ δ e, |δ| ≤ F.ue ∧ |e| ≤ F.ηe ∧ v = Real.exp x * (1 + δ) + e ∧ 0 ≤ v
+  F.log x v : ∃ δ, |δ| ≤ F.ul ∧ v = Real.log x * (1 + δ)
+  F.sqrt x v : ∃ δ, |δ| ≤ F.u ∧ v = Real.sqrt x * (1 + δ)
+  max, min, neg, abs: exact.
+
+Every operation of the program is one such rounding with its own error variables; a block's sum
+adds its terms along any binary tree of depth at most D (`Discovery.fsum`); the block summaries
+merge along any merge tree `t` (`Discovery.Tree.FEval`). Overflow is outside the model.
+
+The Lean definitions generated from the program:
+
+```lean
+Discovery.Library.SoftmaxOnline
+
+/-- Pass `a` on one block `A`, in floating point: `st` is one possible summary,
+every in-block sum along a tree of depth at most `D`. -/
+def fblock_a (F : Discovery.Rounding) (D : ℕ) (A : List ℝ) (st : State_a) : Prop :=
+  ∃ v_m v_d r1 r2,
+    r1 = lmax A ∧
+    v_m = r1 ∧
+    Discovery.fsum F D (fun x y => ∃ q1 q2, F.add (x - v_m) q1 ∧ F.exp q1 q2 ∧ y = q2) A r2 ∧
+    v_d = r2 ∧
+    st = ⟨v_m, v_d⟩
+
+/-- Pass `a`, two adjacent float summaries `L` then `R` merged in floating
+point: `st` is one possible result. -/
+def fmerge_a (F : Discovery.Rounding) (L R st : State_a) : Prop :=
+  ∃ v_m v_d r1 r2 r3 r4 r5 r6 r7,
+    v_m = (max L.m R.m) ∧
+    F.add (L.m - v_m) r1 ∧
+    F.exp r1 r2 ∧
+    F.mul (L.d * r2) r3 ∧
+    F.add (R.m - v_m) r4 ∧
+    F.exp r4 r5 ∧
+    F.mul (R.d * r5) r6 ∧
+    F.add (r3 + r6) r7 ∧
+    v_d = r7 ∧
+    st = ⟨v_m, v_d⟩
+
+/-- The normalizer a state encodes: one over the output expression read at the element `0`. -/
+noncomputable def znorm (st : State_a) : ℝ := 1 / ((Real.exp ((0 : ℝ) - st.m)) / st.d)
+```
+
+The statement to be proved, with B to be chosen:
+
+```lean
+  ∀ (F : Discovery.Rounding) (D : ℕ) (lo hi : ℝ) (X : List ℝ), X ≠ [] →
+    (∀ x ∈ X, lo ≤ x ∧ x ≤ hi) → small F →
+    ∀ (t : Discovery.Tree ℝ), t.flat = X → (∀ b ∈ t.leaves, b ≠ []) →
+    ∀ (st : State_a), Discovery.Tree.FEval (fblock_a F D) (fmerge_a F) t st →
+      |Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| ≤ B
+```
+
+where `small F` is: F.u ≤ 1 / 256 ∧ F.ue ≤ 1 / 64 ∧ F.ul ≤ 1 / 64 ∧ F.η ≤ 1 / 2 ^ 100 ∧ F.ηe ≤ 1 / 2 ^ 100.
+
+Give B, an upper bound that makes the statement true for every such X, lo, hi, D, merge tree t,
+and every admissible choice of the rounding errors. B is a sum of products of nonnegative numbers
+and these atoms, with parentheses and integer powers 1 to 4 (no subtraction; divide only by a
+number):
+
+  u     relative error of + - * / sqrt (F.u)
+  ue    relative error of exp (F.ue)
+  ul    relative error of log (F.ul)
+  eta   absolute error of * / below the normal range (F.η)
+  etae  absolute error of exp below the normal range (F.ηe)
+  D     the bound on the depth of the in-block summation trees
+  d     the depth of the merge tree t (t.depth)
+  n     the number of elements of the row (X.length)
+  R     hi - lo
+  M     max |lo| |hi|
+
+The bound will be tested against floating-point runs and then proved in Lean. A false bound is
+rejected; among true bounds a smaller one is better.
+
+Your earlier proposals and what happened to them:
+- proposal 1: B = 2*D*u + 2*R*u + 2*ue + 2*d*(R*u + ue + 2*u) + 4*n*(eta + etae) survived the runs but was not proved.
+
+Reply with the bound alone on the last line, in the form
+B = <expression>

@@ -40,7 +40,7 @@ import numpy as np
 
 from discovery import ir, semantics
 from discovery import llm as llms
-from discovery.archive import Archive, Record
+from discovery.archive import Archive, Record, close
 from discovery.evaluate import EXACT_TOL, Verdict, evaluate
 from discovery.knowledge import LIBRARY_INDEX, Knowledge
 from discovery.problems import PROBLEMS, Problem
@@ -228,6 +228,7 @@ def run(
     gpu: bool = False,
     library: str | Path | None = LIBRARY_INDEX,
     prove: bool = False,
+    certify=None,
 ) -> dict:
     """Run the search and return its summary (also saved as ``summary.json`` under ``out``).
     ``memory`` is the knowledge file (default: the problem's, under ``runs/knowledge``);
@@ -251,7 +252,11 @@ def run(
     out = Path(out) if out is not None else RUNS / _default_name(problem.name, mode, blind, seed)
     out.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
-    archive = Archive(pass_bias, measured_only=gpu)
+    # With ``certify`` (a function of a correct verdict returning {"value": a certified error
+    # bound, ...} or None), only certified programs can be elites and the bound is the fitness,
+    # lower better (discovery.certsearch).
+    archive = Archive(pass_bias, measured_only=gpu or certify is not None)
+    certificates: dict[str, dict] = {}
     knowledge = Knowledge(problem.name, blind, memory, library)
     timings: dict[str, dict] = {}
 
@@ -269,6 +274,13 @@ def run(
         return result
 
     def insert(verdict: Verdict, it: int = 0, parent: str = "") -> tuple[Record, dict | None]:
+        if certify is not None:
+            cert = None
+            if verdict.correct and verdict.digest not in archive.by_digest:
+                cert = certify(verdict)
+                certificates[verdict.digest] = cert or {}
+            value = (cert or {}).get("value")
+            return archive.insert(verdict, it, parent, measured_us=value), cert
         # a new correct program is measured first, so its status says what the measurement did
         timing = None
         if gpu and verdict.correct and verdict.digest not in archive.by_digest:
@@ -279,8 +291,26 @@ def run(
             spread = None
             if timing.get("ms_min") is not None and timing.get("ms_max") is not None:
                 spread = (timing["ms_min"] * 1000, timing["ms_max"] * 1000)
+            ratio = None
+            elite = archive.elites.get(verdict.cell())
+            if elite is not None and close(timing["ms"] * 1000, spread, elite):
+                from discovery import gpu as gpus
+
+                try:  # too close to tell from two timings: time the two side by side
+                    pair = gpus.paired(
+                        problem.parse(verdict.text), problem.parse(elite.verdict.text), problem
+                    )
+                    ratio = pair["ratio"]
+                    timing["paired"] = {"elite": elite.verdict.digest, **pair}
+                except Exception as exc:  # noqa: BLE001  the elite's kernel could not be rebuilt
+                    timing["paired"] = {"error": f"{type(exc).__name__}: {exc}"}
             rec = archive.insert(
-                verdict, it, parent, measured_us=timing["ms"] * 1000, measured_range=spread
+                verdict,
+                it,
+                parent,
+                measured_us=timing["ms"] * 1000,
+                measured_range=spread,
+                paired_ratio=ratio,
             )
             return rec, timing
         failure = timing.get("message") or "the kernel failed the GPU check"
@@ -370,6 +400,7 @@ def run(
         ],
         "known": reached(problem, archive, seed, shown),
         "gpu": timings,
+        "certificates": certificates,
         "gpu_failed": [
             {
                 "iteration": r.iteration,

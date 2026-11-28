@@ -113,11 +113,13 @@ def lemma(problem, form: str) -> dict:
     }
 
 
-def fake_gpu(monkeypatch, times: dict) -> list[str]:
+def fake_gpu(monkeypatch, times: dict, ratios: dict | None = None) -> list[str]:
     """Stand in for :mod:`discovery.gpu`: by program name, ``fitness`` gives a time in ms (a
     number, or a tuple of the median and the range of the repeated timings), fails with a message
-    (a string) or raises (an exception). Returns the names measured, in order."""
-    measured: list[str] = []
+    (a string) or raises (an exception). With ``ratios`` ((new, elite) names -> a / b), ``paired``
+    times two kernels side by side and records ``("paired", new, elite)``. Returns the names
+    measured, in order."""
+    measured: list = []
 
     def fitness(prog, problem, shape=None):
         measured.append(prog.name)
@@ -133,6 +135,14 @@ def fake_gpu(monkeypatch, times: dict) -> list[str]:
 
     module = types.ModuleType("discovery.gpu")
     module.fitness = fitness
+    if ratios is not None:
+
+        def paired(a, b, problem, shape=None, rounds=5):
+            measured.append(("paired", a.name, b.name))
+            r = ratios[(a.name, b.name)]
+            return {"ratio": r, "ratios": [r] * rounds, "a_ms": [], "b_ms": [], "shape": []}
+
+        module.paired = paired
     monkeypatch.setitem(sys.modules, "discovery.gpu", module)
     monkeypatch.setattr(discovery, "gpu", module, raising=False)
     return measured
@@ -904,3 +914,51 @@ def test_enumerator_gives_up_and_says_why():
     assert [f.field for f in res.fields] == ["n", "mu", "q"] and res.fields[-1].expr == ""
     late = synthesise(SOFTMAX, SOFTMAX.known["online"], time_cap=0.0)
     assert "time cap" in late.gave_up
+
+
+def test_with_gpu_close_times_are_timed_side_by_side_and_the_ratio_decides(tmp_path, monkeypatch):
+    """Overlapping timings: the two kernels are timed again in alternation, and their ratio
+    (5% faster, beyond the 2% tolerance) makes the newcomer the elite."""
+    times = {
+        "softmax-3pass": (4.20, 4.19, 4.21),
+        "softmax-online": (3.30, 3.25, 3.40),
+        "softmax-logfold": (3.20, 3.19, 3.26),
+    }
+    measured = fake_gpu(monkeypatch, times, {("softmax-logfold", "softmax-online"): 0.95})
+    s = search(
+        llm.Scripted([fenced(SOFTMAX.known["online"]), fenced(LOGFOLD)]), 2, tmp_path, gpu=True
+    )
+    assert ("paired", "softmax-logfold", "softmax-online") in measured
+    assert [x["status"] for x in lines_of(tmp_path / "run")] == ["new-cell", "new-cell", "improved"]
+    (elite,) = [c for c in s["cells"] if c["cell"] == [2, 2, "stable"]]
+    assert elite["name"] == "softmax-logfold"
+
+
+def test_with_gpu_a_paired_tie_goes_to_the_smaller_program(tmp_path, monkeypatch):
+    times = {
+        "softmax-3pass": (4.20, 4.19, 4.21),
+        "softmax-online": (3.30, 3.25, 3.40),
+        "softmax-logfold": (3.20, 3.19, 3.26),
+    }
+    fake_gpu(monkeypatch, times, {("softmax-logfold", "softmax-online"): 0.99})
+    s = search(
+        llm.Scripted([fenced(SOFTMAX.known["online"]), fenced(LOGFOLD)]), 2, tmp_path, gpu=True
+    )
+    (elite,) = [c for c in s["cells"] if c["cell"] == [2, 2, "stable"]]
+    assert elite["name"] == "softmax-online"  # within 2%: the smaller program
+
+
+def test_with_gpu_times_far_apart_are_not_timed_again(tmp_path, monkeypatch):
+    times = {"softmax-3pass": 4.2, "softmax-online": 3.3, "softmax-logfold": 2.0}
+    measured = fake_gpu(monkeypatch, times, {})
+    search(llm.Scripted([fenced(SOFTMAX.known["online"]), fenced(LOGFOLD)]), 2, tmp_path, gpu=True)
+    assert not [m for m in measured if isinstance(m, tuple)]
+
+
+@pytest.mark.skipif("not _cuda()", reason="needs a CUDA GPU, torch and triton")
+def test_on_the_gpu_a_kernel_timed_side_by_side_with_itself_has_ratio_one():
+    from discovery import gpu
+
+    prog = SOFTMAX.parse(SOFTMAX.known["online"])
+    pair = gpu.paired(prog, prog, SOFTMAX, shape=(256, 4096), rounds=3)
+    assert 0.9 < pair["ratio"] < 1.1 and len(pair["ratios"]) == 3

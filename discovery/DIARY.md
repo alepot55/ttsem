@@ -398,3 +398,511 @@ a program it already holds (same digest, same specification), and keeps one entr
 `python -m discovery.prove --recheck-library` judges the 11 stored proofs again with no model:
 all pass, about 22 s each. The test suite: 199 passed, 2 skipped (two forms that are not exact
 over the reals have no kernel check).
+
+## 28 Nov 2026, 09:35 UTC: floating point, measured (M1 of the long session)
+
+A long session on branch `discovery-fp` (from `discovery`, PR 12) started at 08:59 UTC; its
+brief: certified floating-point bounds through an approximate homomorphism, then a search under
+them. At 09:00 the user lifted the brief's spend cap of $30; spend is still written down at every
+checkpoint. Spend so far: $0, no model call. M0's base: on the new branch the suite passes (199,
+2 skipped) and `prove --recheck-library` judges the 11 stored proofs again, all accepted.
+
+- `fsem.py` runs a program with one rounding per operation in float32, float16 or bfloat16
+  (bfloat16 rounded from float64 once, so no double rounding), a block's `sum` added along an
+  explicit tree (`pairwise`: adjacent pairs, depth ⌈log₂ b⌉, as `tl.sum` is a tree; or
+  `sequential`), the blocks merged along any tree (`left` is the kernel's loop), `+` and `*` of
+  three or more arguments folded left to right as the kernel does. Its reference is exact:
+  mpmath at 160 bits for the exponentials, rationals for the variance (a float64 sum of squares
+  is off by 1e-9 at a mean of 1e4, a test shows); the float64 reference used inside the
+  adversary's loop agrees with the exact one to 1e-13. A hand-written float32 online softmax
+  gives the same bits as `fsem` (test).
+- `adversary.py` climbs from six families of rows (logits around 0, 100 and 10⁴, a wide spread,
+  a staircase of block maxima that forces a rescale at every merge, two levels of values) with
+  moves of a few ulps, block shifts, ties with a block's maximum and new maxima; the worst row is
+  measured again with the exact reference and saved.
+- **The brief's table** (N = 4,096, blocks of 256, pairwise in-block trees, left merges, depth
+  15; median and maximum of 10 random rows per family; unit u = 2⁻²⁴;
+  `results/m1/library.csv`):
+
+  | state | logits | brief | here: median / max | adversary |
+  |---|---|---|---|---|
+  | `(m, d)` online | around 0 | 1.2-2.2 (adversary 3.8-11.7) | 0.62 / 2.48 | 14.4 |
+  | one field, log-sum-exp | around 0 | 9-55 | 5.98 / 19.7 | |
+  | one field | around 100 | 190-340 | 96.5 / 189 | |
+  | one field | around 10⁴ | 25,000-69,000 | 9,600 / 20,500 | 47,500 |
+
+  The order and the growth of the one-field error with the logits' magnitude reproduce; the
+  one-field numbers here are 2 to 3 times below the brief's on random rows. A hand-written
+  float32 run of the one-field program matches `fsem` bit for bit, so the gap is in the rows or
+  the statistics the brief used (its families are not given in detail), not in the arithmetic.
+  Not pursued further.
+- **The 11 programs of the library** (float32; `results/m1/library.csv` has float16 and
+  bfloat16 too, `results/m1/worst/` the worst rows):
+  - `SoftmaxLse`, `SoftmaxLseAbs` and `SoftmaxLseCompact` give the same bits on every row: they
+    differ in the IR, not in floating point, since `exp(0)` is 1 and fl(a − b) = −fl(b − a). The
+    same holds for `AttentionOnline` and `Attention1passShared`. The IR's digest does not know
+    it; three of the six programs the searches added to the library are float duplicates.
+  - The online softmax stays under 2.5 u on random rows (14.4 u adversarial); the one-field
+    state grows with the logits (47,500 u adversarial at 10⁴). The two attention states behave
+    the same way: the online `(m, d, o)` under 4.5 u against Σ p|v| (25.4 adversarial), the
+    log-sum-exp state with a normalised output 541 / 1,020 u at 10⁴ (55,000 adversarial).
+  - Variance at a mean of 10⁴ and a spread of 0.1: Welford 3,810 / 9,810 u (237,000
+    adversarial), the sum of squares 1.7·10⁷ / 4.0·10¹⁰ u (7.6·10¹⁰ adversarial).
+  - float16: Welford overflows on every family, because `L.n * R.n` is 2048² > 65,504; the two
+    `-lean` variants, which compute `d * f * L.n`, stay finite on normal rows. A program can be
+    exact over ℝ, the best of its cell in float32, and unusable in float16.
+  - bfloat16 rounds the rows at a mean of 10⁴ to a single value (spacing 64): variance 0, error 0.
+
+## 28 Nov 2026, 09:50 UTC: the rounding model and the depth law in Lean (M2)
+
+`lean/Discovery/Approx.lean`, written once and by hand, as the brief asks; it took about 15
+minutes, so the brief's fallback at 3 hours (a closeness relation specialised to relative and
+exact fields) was not needed.
+
+- **The model.** `Rounding` holds `u`, `η`, `ue`, `ηe`, `ul`. An operation with exact result `x`
+  returns `x(1 + δ) + η` with `|δ| ≤ u`, `|η| ≤ η_min`; an addition has no `η` (a subnormal sum is
+  exact); `exp` and `log` have their own relative errors; `max min neg abs` are exact. Two sign
+  facts are part of the model: a rounded product keeps the sign of the exact one, and `exp` is
+  never negative. Without them the model allows a negative normalizer that no run produces.
+  Overflow is not modelled. Evaluation is a relation (`Tree.FEval`), true for every admissible
+  choice of the errors.
+- **The depth law.** `Tree.depth_law` (real index) and `Tree.depth_law_nat` (a count of
+  roundings): if every block's float summary is `ε₀`-close and a merge takes an `εa`-close and an
+  `εb`-close pair to a `max εa εb + c`-close one, then any blocking and any merge tree of depth
+  `d` gives `ε₀ + c·d`. `Tree.eval_rel_block` and `output_eq_of_rel`: a merge that respects a
+  relation and is right up to it on two blocks is right up to it on any tree (for the states with
+  a stale reference of M4).
+- **The instance.** `sum_tree_bound` and `sum_tree_error`: positive numbers summed along any tree
+  of depth `d` give a result within a factor `(1 ± u)^d`, so `|w − Σ| ≤ ((1 + u)^d − 1) Σ`, the
+  classical bound by the tree's height, out of the depth law with `C k w s := (1 − u)^k s ≤ w ≤
+  (1 + u)^k s` and `c = 1`.
+- **Tools for the candidates.** `fsum`, a block's sum along any tree of depth at most `D`;
+  `fsum_bounds`; one lemma per operation (`add_err`, `mul_err`, `exp_bounds`, `log_err`).
+- **Checks.** It compiles; every theorem's axioms are among propext, Classical.choice and
+  Quot.sound (`eval_rel_block` uses propext only); the judge's checker replays every declaration
+  of the module in the kernel with no error.
+- **The model's parameters for numpy's float32, measured on every input** (`libm.py`,
+  `results/m2/libm.json`): `exp` on the 2,239,853,081 floats of [−104, 89] with a finite result
+  (36,329 that overflow are outside the model): largest relative error 3.57 u (at −62.03); below
+  the normal range, largest absolute error 1.54·2⁻¹⁴⁹ (at −87.67): `exp` is not correctly rounded
+  there, so `ηe` is 2⁻¹⁴⁸, not 2⁻¹⁵⁰. `log` on all 2,139,095,039 positive finite floats: largest
+  relative error 4.58 u (at 0.7464). numpy's scalar and vector paths give the same bits (700,000
+  samples each), so the merges, which call `exp` on scalars, are covered. For F1 the bounds are
+  evaluated at `u = 2⁻²⁴`, `η = 2⁻¹⁵⁰`, `ue = 4u`, `ηe = 2⁻¹⁴⁸`, `ul = 5u`.
+
+Spend: $0.
+
+## 28 Nov 2026, 10:00 UTC: the two sources, reopened (M0)
+
+- **TorchLean** (blueprint chapter on rounding error in attention; the theorems are in
+  `TorchLean/Verify/RuntimeApprox/OnlineSoftmax.lean` at commit f9dff85 of 22 Nov, Lean and
+  Mathlib v4.36.0, FloatLib v4.1.0; the arXiv paper 2602.22631 has none of them).
+  `onlineAverage_error` bounds the online softmax average of its own Lean schedule, one query and
+  one value coordinate: |out − O/S| ≤ (1+u)(Eo + |O/S|·El)/(S − El) + u|O/S| + η, where El and
+  Eo give each key the allowance exp(u(M − s) + c) − 1 with c = u(B + 3T − 1) for T blocks of at
+  most B keys, plus underflow residuals; through Gibbs' inequality the normalizer's relative error
+  closes at (e^c − 1) + 2u·e^c·log N. Its model is FloatLib's: |fl(t) − t| ≤ u|t| + η, no η for
+  sums, `exp` correctly rounded, `max` exact. It holds for every partition into blocks of at most
+  B keys, but always for the sequential left fold with left-to-right sums inside a block: no tree,
+  and the page says a native kernel needs a separate agreement proof for its `exp` and its
+  summation order. The invariant was written by hand ("a closed form needs an invariant over all
+  the keys seen, which a generated recurrence doesn't supply").
+- **FloatLib** (arXiv 2609.19352, MIT, lean-dojo/FloatLib at 7835e85): it pins exactly our Lean
+  and Mathlib; all 821 modules compiled against our build with no error, in 30.3 minutes, just
+  over the brief's 30. Its model is ours except for `exp`, which it takes as correctly rounded;
+  numpy's is not (3.57 u, M2). Decision, as the brief says past 30 minutes: our own model, which
+  has the errors of `exp` and `log` as parameters.
+- **Prior mechanized work** (a sweep of 12 sources) changes one claim of the plan. FloatLib
+  already proves a depth law for sums over every association order (sums, sums of absolute
+  values, dot products), stated once over all trees; `sum_tree_bound` is an instance of known
+  mechanized work, not a new result. FloatLib's nodes must approximate an addition, so softmax and
+  variance merges are outside it, and no mechanized bound for them over every merge order was
+  found. ELSA (CVPR Findings 2026) states a depth law for online-softmax merges on paper,
+  u(2⌈log₂ n⌉ + 3); a note of November 2026 shows it false as stated: it lacks a cancellation
+  factor and a term in the logits' magnitude. Nothing on a floating-point theorem for conditional
+  rescaling parametric in τ. The closest to "an LLM proposes the bound": bounds developed with a
+  chatbot and formalised in Rocq (Mar 2026) and agents proving a floating-point stack in Lean
+  (NeurIPS 2026); neither has an adversarial search as a second judge.
+
+## 28 Nov 2026, 10:05 UTC: the prover refutes the statement's form twice (M3, negative for the form)
+
+The model proposes B in the brief's grammar (sonnet), the float32 adversary attacks it (climbs on
+error/B over families, blocks of 64 and 256, left, balanced and random trees), and a surviving B
+goes to the prover with the generated statement. The first two forms of the statement were wrong,
+and the prover said so instead of trying:
+
+- **Version 1** had no hypothesis on the depth. Sonnet's first bounds survived the adversary:
+  2Du + 2Ru + 2ue + 2d(Ru + ue + 2u) + 4n(η + ηe) for the online state, 2(d + 1)(Ru + 2nu + Mu
+  + 2u + ue + n·ul + n·ηe + Du) for the one-field state. Asked for the one-field proof, it answered
+  with a counterexample in the model: u = 1/256, which `small F` allows, 2001 copies of 10⁶, a
+  caterpillar tree of depth 2000: the rounding of the state compounds as (1 + u)^depth, and no
+  bound linear in the depth covers that. Correct. Version 2 adds the classical hypothesis of the
+  γ_k bounds, (d + D + 1)(u + ue + ul) ≤ 1/16; float32 runs satisfy it by a factor of 1,000.
+- **Version 2** had no hypothesis on the absolute errors. Asked for the online proof, it refuted
+  again: u = ue = ul = 0, η = ηe = 2⁻¹⁰⁰, a comb of about 2¹⁰⁰ leaves: the absolute errors of
+  the products bring d̂ to 0, and the readout to Lean's 1/0 = 0. Correct. Version 3 adds
+  n(η + ηe) ≤ u (float32: n ≤ 2¹²⁴). Before any run, the same reading showed the attention's form
+  false too: with subnormal values v, no B · Σ p|v| covers the absolute errors; in version 3 the
+  attention's B has the scale S = Σ p|v| / Σ p and the bound V on |v| among its atoms, and so an
+  absolute term.
+
+The float32 adversary cannot see either flaw: it only reaches u = 2⁻²⁴ and depths up to 63. The
+model's two refutations are kept (`results/m3/v1/`, `results/m3/v2/`). The version 1 and 2 runs
+could not be stopped (the process kill was refused by the session's safety check) and finish on
+their own, their outputs in `results/m3/` and `results/m3/v2/`; version 3 runs in `results/m3/v3/`.
+
+## 28 Nov 2026, 10:15 UTC: the bounds of version 3, and a prover with Lean in the loop (M3, in progress)
+
+- **The bounds.** With statement version 3, sonnet's first proposal survived the float32
+  adversary for all five programs (`results/m3/v3/prompts/`):
+
+  | program | B (grammar of `bound.py`) |
+  |---|---|
+  | SoftmaxOnline | 2(d+1)R·u + 2(d+1)·ue + 2(2d+D)·u + 4n(η+ηe) |
+  | SoftmaxLse | 2(u(D+R+M+n+2) + ue + ul(n+1)) + 2d(u(M+n+2) + ue + ul) |
+  | AttentionOnline | 3S((D+3d+3)u + (d+1)(Ru+ue)) + 4n(η+ηe)(V+1) |
+  | VarianceWelford | 2(D+7d+6)u·S2 + 3(d+1)(D+3d+2)²u²M² + 2RMu·d(D+2d+1) + 6η(d+1)²(1+R)² |
+  | VarianceSumsq | 4(D+d+3)u·Q + 6η |
+
+  The forms are the expected ones and nothing in the prompts suggested them [12:35 UTC: not so
+  for the attention and the variance, see the review]: the online state
+  pays R·u per merge (the rounding of the subtraction in `exp(L.m − m)`, which no closed form of
+  TorchLean's carries per merge but its per-key allowance u(M − s) does), the one-field state pays
+  M·u (the magnitude of the logits), the sum of squares pays u·Q (the mean of the squares: the
+  cancellation), the attention is relative to S = Σ p|v| with an absolute term.
+- **The prover, as specified, does not write the proofs.** With the one-shot prover of
+  `fpbound.py` (whole proof in one reply, Lean's errors back, 3 rounds of sonnet then 3 of opus)
+  the replies were refutations of versions 1 and 2, `sorry`, or an outline marked "INCOMPLETE:
+  a full proof needs a closeness relation, the block case from fsum_bounds, the merge case, the
+  depth law, the final algebra". The protocol does not let a long proof grow: the deny list
+  refuses `sorry`, so a partial proof never reaches Lean. Decision: keep these runs as the F3
+  measure, and add `agentprove.py`: `claude -p` as an agent in a sandbox outside the repository
+  (Read, Write, Edit there, and shell commands that start with `lean`; no web, no MCP, no
+  settings; the diary and the research notes are not reachable [12:35 UTC: false, see the
+  review: the three tools had no path rule, and Lean could read files]), `sorry` allowed while it works;
+  at the end the helpers and the proof are cut out of its file and judged by the same judge,
+  which rebuilds the module around the generated statement.
+- **A runaway proof.** At 10:07 UTC one model proof judged by `fpbound` took 17.5 GB of memory in
+  Lean (a tactic searching without bound) and left 0.2 GB free on the machine; the session's
+  safety check refused to stop the process, and the judge's 900 s timeout ends it. From now on
+  every Lean run of the judge and of the agents has `--memory=6000`.
+
+## 28 Nov 2026, 10:30 UTC: conditional rescaling, exact and overflow theorems proved (M4, in progress)
+
+The IR has two new forms, `(param tau 8)` (a named constant, a variable in Lean) and
+`(ifgt a b x y)` (x when a > b, else y). `policies.py` writes FlashAttention-4's policy as
+`softmax-conditional`: the merge keeps the left reference `L.m` unless `R.m − L.m > tau`.
+`fp_export.export_policy` writes its exact semantics out (no library module) and three statements;
+the agentic prover proved two of them on the first try (`results/m4/`):
+
+- **Exact over ℝ for every merge tree**: `znorm (t.eval (block_a τ) (merge_a τ)) = Σ exp x`,
+  for every τ. Sonnet, 8 turns, 71 s, $0.10: the merge keeps `d·e^m` whichever reference the
+  condition picks (`split_ifs <;> exact key _`), then an induction on the tree.
+- **The overflow condition**: the sum field is at most `n·exp(τ·ρ)`, ρ the tree's right depth
+  (a leaf 0, a node max(ρ_left, ρ_right + 1)). Sonnet, 12 turns, 102 s, $0.18. For the kernel's
+  left fold ρ = 1, so `n·e^τ`; for a right comb ρ is the depth.
+- **The lower bound, measured** (`results/m4/SoftmaxConditional-worst.json`): block maxima rising
+  by 0.98 τ, 16 blocks of 256: the left fold's reference lags the maximum by 0.97 τ; on a right
+  comb (ρ = 15) it lags by 14.69 τ, 98% of the proved τ·ρ, and at τ = 8 float32 overflows (the
+  sum reaches e^117.6). A threshold that is safe in the kernel's loop is not safe in a tree of
+  merges: a split-KV combine or a parallel reduction that keeps stale references needs τ·ρ below
+  about 88 − ln n.
+- The floating-point bound, parametric in τ: in progress.
+
+M3: the agentic prover closed the sum of squares, |v̂ − var| ≤ 4(D + d + 3)·u·Q + 6η (sonnet,
+59 turns, 18 min, $1.59, 455 lines with 11 lemmas of its own; the three standard axioms).
+
+## 28 Nov 2026, 10:40 UTC: the one-field bound proved, a judge bug, the attention refuted (M3)
+
+- **A bug of PR 12's judge (negative for the judge).** Sonnet's agent left a 785-line proof of
+  the one-field softmax bound with no `sorry`; the judge refused it before Lean ran: "not
+  allowed: def". The proof has the identifier `hφdef`; the deny list split words with an
+  ASCII-only pattern, read `h`, then `def`. Lean identifiers take Greek letters and subscripts.
+  The pattern now reads words as Lean does (any letter, digits, subscripts, primes, `!`, `?`);
+  real `def`, `#eval` and `sorry` are still refused (test). Judged again, the proof is accepted:
+  **SoftmaxLse, |log Ẑ − log Z| ≤ 2(u(D + R + M + n + 2) + ue + ul(n + 1)) + 2d(u(M + n + 2) +
+  ue + ul)**, sonnet, the three standard axioms (`results/m3/agent/SoftmaxLse-rejudged.json`).
+- **The attention's version-3 statement is false; both models said why.** Sonnet (2 turns) and
+  opus (7 turns) each gave a counterexample instead of a proof: u = 1/256, R·u = 8, one block of
+  two elements, every rounding exact but the subtraction s − m: the weight is off by a factor
+  e^(Ru) ≈ 2,981, while B grows as Ru. In the softmax statements the quantity is a logarithm and
+  the same error adds Ru; in the attention's |ô − o| it multiplies. Version 4 adds (hi − lo)·u ≤
+  1/16 to the attention's statement only (float32: logits within a range of 10⁶), and the whole
+  path (proposal, adversary, agent) runs again on it.
+- So far: 2 bounds proved (SoftmaxLse, VarianceSumsq); the online softmax and Welford are with
+  the agents; the attention restarts at version 4.
+
+## 28 Nov 2026, 10:50 UTC: the search under a certificate (M5): recall again, and a noisy fitness
+
+`certsearch.py`, softmax, sonnet as proposer, no lemma in the prompts, 6 proposals per run, 3
+seeds per arm (`results/m5/report.json`):
+
+- **cert**: the archive search, where a correct candidate enters the archive only with a
+  certificate (the model proposes B for its policy-form statement, the adversary of `policyrun`
+  attacks it for τ in {0, 2, 8} and left, right, balanced and random trees), and the
+  certificate's value at a reference point (n = 4,096, blocks of 256, left fold, R = 10, M = 100,
+  float32) is the fitness; **iid**: independent samples certified the same way; **plain**: PR 12's
+  search with no certificate, its elites certified afterwards.
+- **No new program.** In all 9 runs the elite of the two-field cell is `softmax-online`, byte for
+  byte the library's (digest fbc0a917); in the one-field cell a one-field log-sum-exp variant. To
+  the brief's question (a program whose certified bound beats every published form of its cell
+  at equal time) the answer here is no.
+- **F5.** Proposal 1 is the final elite in 2 of 3 `cert` runs, 0 of 3 `iid` and 1 of 3 `plain`;
+  the published form is in the first batch of three proposals (submitted together) in every run.
+  It is recall, as in PR 12.
+- **A negative result for the method: the certificate measures the certifier.** Four
+  programs of the two-field cell that differ only in the text the model wrote got certificates of
+  148.8, 400, 524 and 526 u, because the certifier proposed a tighter or a looser B for each. In a
+  cell the search rewards the luckier bound, not the better program. A certified fitness needs a
+  canonical bound per program (for instance, the tightest B a fixed procedure proves), not the
+  first one a model proposes.
+- The first try of the `cert` arm stopped on a bug of mine (the adversary read a field `a.d` that
+  only the online state has); fixed, the three runs were made again. Cost of the runs: $1.14 at
+  list price, not counting the certificates computed before the bug, which are cached and reused.
+- The two distinct final elites (the online form, a one-field form) go to the agentic prover with
+  their certificates' B: an elite counts as certified only when that proof is accepted.
+
+## 28 Nov 2026, 11:00 UTC: three bounds proved; the certified order flips PR 12's choice (M3 closed)
+
+`results/m3/summary.json` (from `fpreport.py`), `results/m3/agent/` (records, proofs, statements),
+`results/m3/f1/` (the long attacks):
+
+| program | proved bound B (version 3) | prover | tightness | F1 |
+|---|---|---|---|---|
+| SoftmaxOnline | 2(d+1)R·u + 2(d+1)·ue + 2(2d+D)·u + 4n(η+ηe) | sonnet, agent, 128 turns, 49 min, $4.46 | 20.3 | holds |
+| SoftmaxLse | 2(u(D+R+M+n+2) + ue + ul(n+1)) + 2d(u(M+n+2) + ue + ul) | sonnet, agent (judged again) | 4.9 | holds |
+| VarianceSumsq | 4(D+d+3)·u·Q + 6η | sonnet, agent, 59 turns, 18 min, $1.59 | 9.7 | holds |
+
+Tightness is B over the largest error the long attack found (400 steps, 4 seeds, every family,
+plus the worst rows of M1 climbed again), at the run where error/B is largest; F1 holds when no
+run exceeds B. The worst runs: logits around 10⁴ on a balanced tree (one field), the mean-10⁴
+rows (sum of squares, an absolute error of 64 on a variance of 0.014).
+
+- **F4, the brief's first test bench, passes.** At the logits of M1's families (n = 4,096,
+  blocks of 256, left fold): around 100 the certified bounds put the online state 382 times
+  below the one-field state, the measured errors 102 times; around 10⁴, 1,071 times certified,
+  12,370 times measured. The order agrees on both pairs. PR 12 elected the one-field state the
+  elite of its cell because it was smaller at the same time; the certified bound reverses that
+  choice, as the brief asked.
+- **The first bound proposed was the one proved, three times out of three** (on statement
+  version 3; the earlier versions' first bounds were right for float32 but their statements were
+  false). The bounds are 5 to 20 times above the worst error found.
+- **F3 is falsified.** With the one-shot prover (3 rounds of sonnet, then 3 of opus) no surviving
+  bound was proved: 0 of 11 so far (results/m3/*.json, v2/, v3/). Some of those statements were
+  false; on the valid ones the replies were outlines or `sorry`. The brief's fallback is a
+  mechanical procedure for the positive-sum fragment; I took a different one, the agentic prover
+  (the model with Lean in a sandbox), which keeps the model writing the whole proof. It closed 3
+  of the 3 valid statements it was given so far, at 18 to 49 minutes each.
+- Open: Welford (with the agent), the attention at version 4 (the path runs again).
+
+## 28 Nov 2026, 11:15 UTC: two of M6's extras, while the agents work
+
+- **A digest up to renaming.** `Program.canonical_digest()` renames, in order of appearance,
+  everything a program chooses (its name, passes, state fields, temporaries, parameters); the
+  archive now counts a renamed program as a duplicate. On the library it merges
+  `SoftmaxLseAbs` and `SoftmaxLseCompact` (they differ in a temporary's name): 10 programs, not
+  11. The old digest stays the library's key. Tests in `test_policies.py`.
+- **Close kernels timed side by side.** `gpu.paired` times two checked kernels one after the
+  other on the same inputs, 5 rounds, the order swapped each round, and takes the median of the
+  per-round ratios; `loop.run` calls it when a new kernel's time is within 2% of its cell's
+  elite or their ranges overlap, and the archive decides on the ratio (beyond 2% the faster
+  wins, within it the smaller program). On the A1000 a kernel timed against itself gives a ratio
+  within 10% of 1 (test). This answers the closing remark of PR 12: two timings taken minutes
+  apart compared the GPU's drift as much as the kernels.
+- `SoftmaxLse` has a second accepted proof: opus, on its own, 72 turns, 26 min
+  (`results/m3/agent/SoftmaxLse-agent.json`); sonnet's is `SoftmaxLse-proof-sonnet.lean`.
+- **A limit, found by checking a claim of mine (negative).** The statements assume `small F`,
+  whose comment said float32, float16 and bfloat16 all satisfy it. Float16 does not: its η is
+  2⁻²⁵ and `small F` asks for η ≤ 2⁻¹⁰⁰. So the proved bounds say nothing about float16, and
+  bfloat16 (u = 2⁻⁸) meets the depth hypothesis (d + D + 1)(u + ue + ul) ≤ 1/16 only for trees a
+  few levels deep: in practice the theorems are about float32. (numpy's float16 `exp` and `log`
+  are correctly rounded, 0.999 u at most, measured on all 63,488 finite values:
+  `results/m2/libm.json`.) The comments are corrected; the statements are not changed.
+
+## 28 Nov 2026, 11:30 UTC: M5's online elite certified with a tighter bound (M5)
+
+The agent proved the online elite's certificate (`results/m5/proofs/Candfbc0a9179c-agent.json`,
+sonnet, 117 turns, 41 min, $4.06): |log Ẑ − log Z| ≤ 2uR + (5/4)(Du + 2du + u + (d+1)ue) +
+4n(d+2)(η + ηe). It is tighter than M3's bound for the same program: R·u appears once, not per
+merge. The rounding of the subtraction in exp(L.m − m) moves an element's exponent by u times the
+shift of its maximum, and along a merge tree the shifts of one element's maximum add up to at
+most R, the final maximum minus the element's first: the errors telescope. The certifier
+proposed it and the agent proved it; at the reference point it is 149 u against about 400 u for
+M3's. F1 holds, tightness 12.2 (`results/m5/f1/SoftmaxOnline.json`). The one-field elites are
+with the agent.
+
+## 28 Nov 2026, 11:40 UTC: the attention's bound proved at version 4 (M3)
+
+With version 4 (the logit range bounded, (hi − lo)·u ≤ 1/16) sonnet's first proposal survived the
+adversary and the agent proved it (`results/m3/agent/AttentionOnline-v4.json`, 166 turns, 60 min,
+$6.77): |ô − o| ≤ 3S(R·u + (d+1)·ue + (2d + D + 2)·u) + 5n·η + 3(d+1)·n·ηe·V + 3S·n(η + (d+1)·ηe),
+with S = Σ p|v| / Σ p. F1 holds, tightness 14.9 (`results/m3/f1/AttentionOnline.json`). This is
+the bound TorchLean proved by hand, for its left fold; here the model proposed it with no hint
+[12:35 UTC: withdrawn, the docstring of S called it the scale of the output's error]
+and proved it for every merge tree, R·u again once (the shifts of a maximum telescope). Four
+programs now have a proved bound (online softmax, one-field softmax, attention, sum of squares);
+Welford is with opus.
+- 11:55 UTC: the one-field elite of the `cert` run with seed 0 (digest 4fb63217) is certified too:
+  |log Ẑ − log Z| ≤ 2(d+1)(u(R + D + M + n + 3) + ue + ul(n+1)), sonnet, 84 turns, 27 min, $3.06
+  (`results/m5/proofs/Cand4fb632176b-agent.json`). The other one-field elite (4f04f566) is with
+  the agent.
+
+## 28 Nov 2026, 12:15 UTC: the τ-parametric bound not proved; a weakened statement tried (M4)
+
+- With policy statement version 4 the model proposed (11/10)(uD + 2ud + ue + ue·d + 2uR + 2uτρ +
+  3u), which survived the adversary (τ in {0, 2, 8}, right combs included). It counts the
+  rounding of the exponent shifts once, R + τρ: a reference can go down, to a stale left
+  reference, by at most τ per right step, and the ups telescope. Not proved
+  (`results/m4/v4/SoftmaxConditional-fp-agent.json`): sonnet reasoned for 31 minutes in 3 turns,
+  never ran Lean, and stopped, saying the statement is not false (its stress cases stay a factor
+  of 2 under B) but that the absolute errors η, ηe of a stale sum must be weighed element by
+  element against the surviving weights, and that no closeness relation per subtree closes under
+  the merge; opus timed out after an hour with no output. The run goes on with the next proposal.
+- **A weakened statement, named apart** (`fp-nounderflow`, the brief's rule for weakened proofs):
+  the same statement with F.η = 0 and F.ηe = 0, no subnormal result, which removes the obstacle
+  the provers named. In float32 it covers the rows whose logits span less than about 80 (no `exp`
+  result below the normal range). Same B, to the agent (`results/m4/nounderflow/`).
+- 12:20 UTC: the third elite (4f04f566, one field) is certified too: |log Ẑ − log Z| ≤
+  (3/2)(uR + ue + Du + ul·n + uM + un + n·ηe + d(3u + ue + ul + ηe + uM + un)), sonnet, 61 turns,
+  24 min, $2.63. Every final elite of M5 has a proved bound (`results/m5/elite-proofs.json`):
+  the elites the search under a certificate kept are certified, as the brief asks, and they are
+  the published forms.
+
+## 28 Nov 2026, 12:35 UTC: the adversarial review (M6): holes in the judge, hints in the prompts
+
+A workflow of reviewing agents, one per area (the rounding model, the judge, the contamination of
+the prompts), each finding attacked by a second agent: 17 findings held, 5 refuted. What they
+found, and what changed:
+
+- **The judge had four holes; all are closed.**
+  - The deny list read every non-ASCII letter as part of an identifier (my fix of 10:40 UTC went
+    too far): `λdef` passed, though Lean reads `λ`, then `def`. It now uses Lean's own classes of
+    identifier characters (`prove._WORD`; tests).
+  - A name in a program holding `-/` closed the doc comment of the generated statements and could
+    put commands into the module the judge trusts. Names that go into Lean must now be plain
+    identifiers, and the program's text in the comment is escaped (`fp_export._check_names`,
+    `_comment_safe`; tests).
+  - The judge compiled the statements at a path an agent could predict, and an agent's Lean can
+    write files (`#eval` runs IO). Every judgement now compiles them in a fresh directory with a
+    random name.
+  - The agent's tools reached the whole disk: Read, Write and Edit had no path rule, and `lean`
+    ran any `#eval`. Now Claude Code's deny rules keep the three tools out of the projects, the
+    home directory and the earlier sandboxes (checked: an agent asked to read the diary, read the
+    session's notes and write into the repository was refused three times), and the sandbox's
+    `lean` refuses a file that names file or process IO (checked: refused).
+- **Did a hole let a proof through? No.** The 11 accepted proofs (M3: 5, M4: 3, M5: 3) were
+  judged again by the fixed judge, each in a fresh directory, against statements generated again
+  by the current exporter: 11 of 11 accepted, the statements unchanged once comments are removed,
+  the three standard axioms, 7 minutes in all (`results/m6/rejudge.json`, from `rejudge.py`). No
+  file of the Lean toolchain or of Mathlib changed during the session, and the files of the
+  `Discovery` build last changed at 09:35 UTC, before any agent ran. In the 25 sandboxes `#eval`
+  appears only in scratch files that print numbers; no file reads a file or names the repository.
+  The agents' transcripts were not kept, so it cannot be shown that no agent read the diary with
+  its Read tool: the prompts held no bound, but the disk did.
+- **Three hints of mine were in the prompts (negative; claims withdrawn).**
+  - The attention's statements called `attnScale` "the scale of the output's error", that is, how
+    to use it. S itself is a named functional of the data, which the brief allows; the sentence
+    is not. The diary's "with no hint" (11:40 UTC) is withdrawn.
+  - The variance's atoms are my choice of functionals: S2 (the variance) and Q (the mean of the
+    squares), the textbook scale of the sum of squares' cancellation. The proved B = 4(D + d +
+    3)·u·Q + 6η uses Q: the model picked the scale among the atoms offered, it did not find it.
+    The "nothing in the prompts suggested them" of 10:15 UTC is withdrawn for the attention and
+    the variance; for the softmax the atoms are the generic ones (n, depths, R, M).
+  - The docstring of `rdepth` said "a stale reference can lag the maximum by τ at each right
+    step", an invariant of mine. It was in every prompt of M4 (exact, overflow, the τ-parametric
+    B and its proofs) and of M5's certificates. M5's elites have no parameter and no stale
+    reference, so the sentence did not describe them, but the brief's rule is broken; the τρ term
+    of the B of 12:15 UTC may come from it.
+  - The docstrings are neutral now (tests), and M4 runs again in the closed sandbox.
+- **The measurements.** A run that overflows counted as a broken bound in `fpbound` and `fpcheck`
+  (overflow is outside the model; `policyrun` already skipped such runs), and crashed the
+  attention's path; such runs are now skipped. The 'random' merge order of the attacks was the
+  same tree every time; it is now drawn from the climb's generator. The statements read the
+  normalizer at the element 0, the adversary at the row's maximum: the two agree for outputs
+  exp(x − c)·g with c and g free of x, which all 11 library programs and both policies are; other
+  outputs now get no statement. The policy runner assumed the parameter is named `tau`, and a
+  parameter named like a binder of the statement (`lo`, `hi`, …) would have been shadowed; the
+  first is fixed, the second refused. The cert arm of M5 showed the parent's certified bound to
+  the proposer as a GPU time in microseconds (fixed; M5's runs had it). The scalar-path and
+  float16 checks of `libm.json` were inline scripts; they are now in `libm.py`, which reproduces
+  the file byte for byte.
+- **A comment of mine was wrong (negative).** The depth hypothesis (d + D + 1)(u + ue + ul) ≤
+  1/16 holds in float32 only while d + D + 1 ≤ 104,857, not for "every float32 run": a left fold
+  over more than about 10⁵ blocks is outside the proved bounds. Every run of the session is far
+  inside (depths up to 63).
+- **Refuted by the second agents**, among others: that the policy adversary compares B with runs
+  that break the statement's hypotheses (with float32's η they do, but with no subnormal result
+  each such run is a run of the model with η = ηe = 0, which the theorem covers), and that the
+  lemmas cut from the prompt (`sum_tree_error`) leak through the prover's Lean environment (they
+  are there, but a search finds them only from a goal already written in their form).
+- **A side effect of the review.** One reviewing agent ran Lean's package manager without the
+  session's settings and installed a 3.2 GB copy of the toolchain in the home directory; removed.
+
+## 28 Nov 2026, 13:05 UTC: checkpoint: F3 and F4 counted again; the spend
+
+- **F4 was miscounted by my summary (negative).** `fpreport` also compared the certified order of
+  a pair with an unproved bound: Welford's record arrived (both agents timed out after an hour,
+  `results/m3/agent/VarianceWelford-agent.json`), its proposed B entered the comparison, and the
+  variance pair read "agrees". A B that is not proved certifies nothing: the pair is now
+  "unresolved" (`results/m3/summary.json`). F4 agrees on 2 pairs of 3; the third is open.
+- **F3, read again.** The one-shot prover received 11 bounds that survived the adversary and
+  proved none ($15.42; `results/m3/SoftmaxOnline.json`, `SoftmaxLse.json`, `v2/`, `v3/`). All 11
+  were on statements later shown false (versions 1 and 2, and the attention's version 3). Its
+  runs on the valid version-3 statements of the two softmax forms and the two variances left
+  their prompts (`results/m3/v3/prompts/`) but no record: the processes ended without writing
+  one, and the "INCOMPLETE" outline quoted at 10:15 UTC is in no versioned file. So F3 is
+  falsified as worded, 0 of 11, but the one-shot prover's rate on valid statements was never
+  measured.
+- **Spend so far: $52.93 at list price, a lower bound** (`results/m6/spend.json`, from
+  `spend.py`): M3 $35.11, M4 $6.63, M5 $10.89, M4's runs again $0.30. The agentic prover's 25
+  attempts cost $36.15, and 3 more timed out with no cost reported; the one-shot rounds $15.42.
+  Not counted: the session's reviewing agents, and M5's certificates computed before its bug.
+- Tests: 263 passed, 2 skipped; ruff clean.
+
+## 28 Nov 2026, 13:10 UTC: M4 again, in the closed sandbox and without the hint
+
+Everything of M4 that had seen the sentence on the stale reference ran again, with the neutral
+docstrings, the agent's tools denied the repository and the home directory, a `lean` that refuses
+file IO, and the judge's fresh directory (`results/m6/m4/`, prompts included):
+
+- **Exact over ℝ for every merge tree**, again: sonnet, 7 turns, 55 s, $0.09.
+- **The overflow condition** (the sum at most n·e^(τρ)), again: sonnet, 10 turns, 102 s, $0.21.
+- **The floating-point bound without subnormal results** (`fp-nounderflow`, the weakened statement
+  named apart: F.η = 0 and F.ηe = 0), with a new proposal. Without the sentence the model did not
+  propose a τρ term: its B, 2(d+1)R·u + 2D·u + 4d·u + 2(d+1)·ue, does not depend on τ at all. It
+  survived the adversary (τ in {0, 2, 8}, right combs included; tightness 28.2 on that attack)
+  and sonnet proved it in 44 turns, 11 minutes, $1.09. It is M3's bound for the state that always
+  rescales, term for term once η = ηe = 0: a stale reference is some element's value, so it lags
+  the maximum by at most R, and relative roundings do not care how large the stale sum grows. So
+  the threshold costs no accuracy in the bound, only the overflow margin n·e^(τρ). The hinted B
+  of 12:15 UTC, (11/10)(uD + 2ud + ue + ue·d + 2uR + 2uτρ + 3u), is tighter while τρ stays well
+  below d·R, and it was proved too; both stand, the first with the caveat of the hint.
+- **The full statement** (subnormal results allowed, version 4's stale hypothesis): the model's
+  new proposal, 2D·u + 2ue + 2R·u + 4d·ue + 2d·τ·u + 8d·u + 4u, has a τ term with the depth in
+  place of the right depth; it survived the adversary and is with the agent. The run of 10:35 UTC
+  (with the hint, in the old sandbox) is still on its second proposal.
+- **Welford**, M3's open program, runs again in the closed sandbox with two hours per attempt:
+  two new proposals (sonnet's and opus's runs), and M3's own B again. The new proposals, 32(d +
+  D + 2)·u·Q + 8(d + D + 2)·η and 3(d + D + 6)·u·S2 + 30(d + 1)(d + D + 6)·u·M² + 20(d + 1)²·η·(1 +
+  R)², are valid for the adversary but loose: at a mean of 10⁴ either would certify Welford as
+  worse than the sum of squares, the reverse of the measured order. `fpreport` now takes, for
+  each program, the tightest of its proved bounds at each point.
+
+## 28 Nov 2026, 13:25 UTC: F1 on every proved bound; Welford's new proposals refuted by the prover
+
+- **F1 now covers every proved error bound.** The bounds of M5's elites and of M4 had only had
+  the short attack of their proposal; each now had the long one (the policy adversary, 4 seeds,
+  400 steps; `certsearch.py --arm f1`, `policyrun.py --kind f1`). None broke: M5's online elite
+  12.1 (as with `fpcheck`, 12.2), its one-field elites 11.0 and 5.8 (`results/m5/f1/`); M4's
+  hinted no-underflow B 11.2 (`results/m4/nounderflow/`), the clean one 18.4 (`results/m6/m4/`;
+  28.2 on its short attack). Over every proved bound of the session, B is 4.9 to 20.3 times the
+  worst error found.
+- **Welford (M3), with opus: both new proposals refuted by the prover (negative).** 32(d + D +
+  2)·u·Q + 8(d + D + 2)·η survived the float32 adversary, but opus gave a counterexample in 3
+  turns: a rounding of the mean in one merge, amplified by the next merge's squared difference,
+  gives twice the bound. The second proposal, 256(d + D + 2)·u·Q + 64(d + D + 2)·n·η, fell the
+  same way in 9 turns: with one element A = 2¹⁵ among 2³¹ the error is about u·A/2 while the
+  bound stays near 8,704·u, and the ratio grows like √m: no bound of the form c·depth·u·Q holds
+  (`results/m6/m3-opus/`, $1.20 with the proposals). Neither counterexample is in float32's
+  reach of n ≤ 4,096: the prover is the stronger judge, as at 10:05 UTC. Sonnet's run (a B with
+  u·M²) and M3's own B are with the agents.

@@ -1,0 +1,191 @@
+{
+ "proofs": [
+  {
+   "proof": "m3/agent/SoftmaxOnline-proof.lean",
+   "namespace": "SoftmaxOnline",
+   "kind": "library",
+   "B": "2*(d+1)*R*u + 2*(d+1)*ue + 2*(2*d + D)*u + 4*n*(eta + etae)",
+   "digest_matches": true,
+   "same_statement": true,
+   "ok": true,
+   "stage": "ok",
+   "errors": [],
+   "axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+   ],
+   "seconds": 64.5
+  },
+  {
+   "proof": "m3/agent/SoftmaxLse-proof.lean",
+   "namespace": "SoftmaxLse",
+   "kind": "library",
+   "B": "2*(u*(D + R + M + n + 2) + ue + ul*(n + 1)) + 2*d*(u*(M + n + 2) + ue + ul)",
+   "digest_matches": true,
+   "same_statement": true,
+   "ok": true,
+   "stage": "ok",
+   "errors": [],
+   "axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+   ],
+   "seconds": 37.0
+  },
+  {
+   "proof": "m3/agent/SoftmaxLse-proof-sonnet.lean",
+   "namespace": "SoftmaxLse",
+   "kind": "library",
+   "B": "2*(u*(D + R + M + n + 2) + ue + ul*(n + 1)) + 2*d*(u*(M + n + 2) + ue + ul)",
+   "digest_matches": true,
+   "same_statement": true,
+   "ok": true,
+   "stage": "ok",
+   "errors": [],
+   "axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+   ],
+   "seconds": 37.1
+  },
+  {
+   "proof": "m3/agent/VarianceSumsq-proof.lean",
+   "namespace": "VarianceSumsq",
+   "kind": "library",
+   "B": "4*(D + d + 3)*u*Q + 6*eta",
+   "digest_matches": true,
+   "same_statement": true,
+   "ok": true,
+   "stage": "ok",
+   "errors": [],
+   "axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+   ],
+   "seconds": 34.6
+  },
+  {
+   "proof": "m3/agent/AttentionOnline-v4-1-proof.lean",
+   "namespace": "AttentionOnline",
+   "kind": "library",
+   "B": "3*S*(R*u + (d+1)*ue + (2*d + D + 2)*u) + 5*n*eta + 3*(d+1)*n*etae*V + 3*S*n*(eta + (d+1)*etae)",
+   "digest_matches": true,
+   "same_statement": true,
+   "ok": true,
+   "stage": "ok",
+   "errors": [],
+   "axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+   ],
+   "seconds": 43.4
+  },
+  {
+   "proof": "m4/SoftmaxConditional-exact-proof.lean",
+   "namespace": "SoftmaxConditionalExact",
+   "kind": "exact",
+   "B": "u",
+   "digest_matches": true,
+   "same_statement": true,
+   "ok": true,
+   "stage": "ok",
+   "errors": [],
+   "axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+   ],
+   "seconds": 21.8
+  },
+  {
+   "proof": "m4/SoftmaxConditional-overflow-proof.lean",
+   "namespace": "SoftmaxConditionalOverflow",
+   "kind": "overflow",
+   "B": "u",
+   "digest_matches": true,
+   "same_statement": true,
+   "ok": true,
+   "stage": "ok",
+   "errors": [],
+   "axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+   ],
+   "seconds": 24.5
+  },
+  {
+   "proof": "m4/nounderflow/SoftmaxConditional-fp-nounderflow-proof.lean",
+   "namespace": "SoftmaxConditionalFpNounderflow",
+   "kind": "fp-nounderflow",
+   "B": "(11/10)*(u*D + 2*u*d + ue + ue*d + 2*u*R + 2*u*tau*rd + 3*u)",
+   "digest_matches": true,
+   "same_statement": true,
+   "ok": true,
+   "stage": "ok",
+   "errors": [],
+   "axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+   ],
+   "seconds": 37.2
+  },
+  {
+   "proof": "m5/proofs/Cand4f04f56628-proof.lean",
+   "namespace": "Cand4f04f56628",
+   "kind": "fp",
+   "B": "3*(u*R + ue + D*u + ul*n + u*M + u*n + n*etae + d*(3*u + ue + ul + etae + u*M + u*n))/2",
+   "digest_matches": true,
+   "same_statement": true,
+   "ok": true,
+   "stage": "ok",
+   "errors": [],
+   "axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+   ],
+   "seconds": 41.0
+  },
+  {
+   "proof": "m5/proofs/Cand4fb632176b-proof.lean",
+   "namespace": "Cand4fb632176b",
+   "kind": "fp",
+   "B": "2*(d+1)*(u*(R+D+M+n+3)+ue+ul*(n+1))",
+   "digest_matches": true,
+   "same_statement": true,
+   "ok": true,
+   "stage": "ok",
+   "errors": [],
+   "axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+   ],
+   "seconds": 44.7
+  },
+  {
+   "proof": "m5/proofs/Candfbc0a9179c-proof.lean",
+   "namespace": "Candfbc0a9179c",
+   "kind": "fp",
+   "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)",
+   "digest_matches": true,
+   "same_statement": true,
+   "ok": true,
+   "stage": "ok",
+   "errors": [],
+   "axioms": [
+    "propext",
+    "Classical.choice",
+    "Quot.sound"
+   ],
+   "seconds": 55.2
+  }
+ ]
+}

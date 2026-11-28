@@ -1,0 +1,45 @@
+{
+ "program": "SoftmaxLse",
+ "B": "2*(u*(D + R + M + n + 2) + ue + ul*(n + 1)) + 2*d*(u*(M + n + 2) + ue + ul)",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox\\SoftmaxLse-5738eacfc392238d-1795860284",
+   "seconds": 1449.2,
+   "cost_usd": 2.5050855999999992,
+   "turns": 74,
+   "result": "have := le_max_left |lo| |hi|\n        have := le_max_right |lo| |hi|\n        have := neg_abs_le lo\n        have := le_abs_self hi\n        constructor <;> linarith\n      have h\u03b2 : |Real.log (r.flat.map Real.exp).sum| \u2264 max |lo| |hi| + N := by\n        rw [abs_le]\n        have := le_max_left |lo| |hi|\n        have := le_max_right |lo| |hi|\n        have := neg_abs_le lo\n        have := le_abs_self hi\n        constructor <;> linarith\n      have hms := h_merge_step F hu hue hul h\u03b7e (max |lo| |hi| + N)\n        (\u03b50 + cc * ((max l.depth r.depth : \u2115) : \u211d)) _ _ (by linarith) hE0 h\u03b1 h\u03b2\n        hE a c st hx hy hfm\n      rw [Real.exp_log hlp, Real.exp_log hrp, \u2190 List.sum_append, \u2190 List.map_append] at hms\n      rw [\u2190 hcc] at hms\n      have : \u03b50 + cc * (((max l.depth r.depth : \u2115) : \u211d) + 1) =\n          \u03b50 + cc * ((max l.depth r.depth : \u2115) : \u211d) + cc := by ring\n      rw [this]\n      exact hms\n```\n\n```lean fp_bound\n  intro F D lo hi X hX hb hsm hn t hflat hne hdep st hf\n  obtain \u27e8hu, hue, hul, _, _\u27e9 := hsm\n  obtain \u27e8x0, hx0\u27e9 := List.exists_mem_of_ne_nil X hX\n  have hlohi : lo \u2264 hi := (hb x0 hx0).1.trans (hb x0 hx0).2\n  have hb' : \u2200 x \u2208 t.flat, lo \u2264 x \u2227 x \u2264 hi := by rw [hflat]; exact hb\n  have hlen : (t.flat.length : \u211d) \u2264 (X.length : \u211d) := by rw [hflat]\n  have h := h_tree F hu hue hul D lo hi hlohi (X.length : \u211d) hn t hne hb' hlen hdep st hf\n  rw [hflat] at h\n  have hz : Real.log (znorm st) = st.s := by\n    unfold znorm\n    rw [one_div, \u2190 Real.exp_neg, Real.log_exp]; ring\n  rw [hz]\n  linarith\n```",
+   "subtype": "success",
+   "error": "",
+   "stage": "deny",
+   "ok": false,
+   "errors": [
+    "not allowed in your text: def"
+   ]
+  },
+  {
+   "model": "opus",
+   "sandbox": "C:\\dev\\fpbox\\SoftmaxLse-5738eacfc392238d-1795861760",
+   "seconds": 1589.0,
+   "cost_usd": 3.5360142000000003,
+   "turns": 72,
+   "result": "ot.sound. The helper lemmas and the proof are in `FPProofs.lean`; I left the header, the statement and the `fp_bound_holds` line unchanged.\n\nHow the proof goes: `log (znorm st)` equals `st.s`, and the exact block value equals `log (\u03a3 exp x)`. So the claim is that the computed `s` is close to the exact log-sum-exp. I proved it by induction over the merge tree:\n\n- **One block:** the largest element's term is computed exactly as `exp 0 = 1`. So the float sum is at least about 1, and the tiny-result errors (at most `n\u00b7\u03b7e \u2264 u` in total) become relative errors. Each term is then within a factor `exp(\u00b1u(hi\u2212lo))` of exact. The error stays within the `2\u00b7(u\u00b7(D + (hi\u2212lo) + max|lo||hi| + n + 2) + ue + ul\u00b7(n+1))` part of the bound.\n- **One merge:** log-sum-exp is 1-Lipschitz, so input errors carry through as their maximum. For the smaller term, rounding the shifted exponent changes `exp` by at most `u` whatever the gap. Each merge adds at most `2\u00b7(u\u00b7(max|lo||hi| + n + 2) + ue + ul)`.\n- **Error compounding:** the final addition multiplies the error already present by `u`. The hypothesis `(depth + D + 1)(u + ue + ul) \u2264 1/16` keeps that error below `M/5 + n/5 + 1`, where `M = max|lo||hi|`, so the extra term fits in each merge's slack. A merge needs at least two elements, which is where the slack comes from.\n\nI proved my own induction on `FEval` rather than using `depth_law`, because the merge step needs facts about the exact sub-block values that `depth_law`'s step condition doesn't provide.",
+   "subtype": "success",
+   "error": "",
+   "stage": "ok",
+   "ok": true,
+   "errors": []
+  }
+ ],
+ "proved": {
+  "model": "opus",
+  "axioms": [
+   "propext",
+   "Classical.choice",
+   "Quot.sound"
+  ],
+  "B": "2*(u*(D + R + M + n + 2) + ue + ul*(n + 1)) + 2*d*(u*(M + n + 2) + ue + ul)",
+  "lean": "(((2 : \u211d) * ((F.u * ((D : \u211d) + (hi - lo) + (max |lo| |hi|) + (X.length : \u211d) + (2 : \u211d))) + F.ue + (F.ul * ((X.length : \u211d) + (1 : \u211d))))) + ((2 : \u211d) * (t.depth : \u211d) * ((F.u * ((max |lo| |hi|) + (X.length : \u211d) + (2 : \u211d))) + F.ue + F.ul)))"
+ },
+ "cost_usd": 6.0411
+}

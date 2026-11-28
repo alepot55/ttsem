@@ -1,0 +1,557 @@
+{
+ "runs": [
+  {
+   "arm": "cert",
+   "seed": 0,
+   "proposals": 6,
+   "statuses": {
+    "new-cell": 2,
+    "improved": 1,
+    "kept": 2,
+    "duplicate": 1
+   },
+   "elites": [
+    {
+     "cell": [
+      2,
+      2,
+      "stable"
+     ],
+     "name": "softmax-online",
+     "digest": "fbc0a9179c9f2d15",
+     "iteration": 1,
+     "certified_u": 148.75,
+     "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)"
+    },
+    {
+     "cell": [
+      2,
+      1,
+      "stable"
+     ],
+     "name": "softmax-lse1",
+     "digest": "4fb632176b99e99e",
+     "iteration": 5,
+     "certified_u": 790592.0,
+     "B": "2*(d+1)*(u*(R+D+M+n+3)+ue+ul*(n+1))"
+    }
+   ],
+   "proposal1_is_final_elite": true,
+   "two_field_elite_iteration": 1,
+   "two_field_elite_is_library_online": true,
+   "usage": {
+    "calls": 6,
+    "seconds": 107.4,
+    "input_tokens": 20121,
+    "output_tokens": 7099,
+    "cost_usd": 0.0983,
+    "errors": 0
+   },
+   "certifier_usage": {
+    "calls": 2,
+    "seconds": 61.4,
+    "input_tokens": 7164,
+    "output_tokens": 5592,
+    "cost_usd": 0.0846,
+    "errors": 0
+   }
+  },
+  {
+   "arm": "cert",
+   "seed": 1,
+   "proposals": 6,
+   "statuses": {
+    "new-cell": 2,
+    "kept": 3,
+    "duplicate": 1
+   },
+   "elites": [
+    {
+     "cell": [
+      2,
+      2,
+      "stable"
+     ],
+     "name": "softmax-online",
+     "digest": "fbc0a9179c9f2d15",
+     "iteration": 1,
+     "certified_u": 148.75,
+     "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)"
+    },
+    {
+     "cell": [
+      2,
+      1,
+      "stable"
+     ],
+     "name": "softmax-lse1",
+     "digest": "4f04f566283b07e6",
+     "iteration": 5,
+     "certified_u": 131727.0,
+     "B": "3*(u*R + ue + D*u + ul*n + u*M + u*n + n*etae + d*(3*u + ue + ul + etae + u*M + u*n))/2"
+    }
+   ],
+   "proposal1_is_final_elite": true,
+   "two_field_elite_iteration": 1,
+   "two_field_elite_is_library_online": true,
+   "usage": {
+    "calls": 6,
+    "seconds": 90.2,
+    "input_tokens": 20121,
+    "output_tokens": 4719,
+    "cost_usd": 0.0638,
+    "errors": 0
+   },
+   "certifier_usage": {
+    "calls": 2,
+    "seconds": 81.8,
+    "input_tokens": 7085,
+    "output_tokens": 7969,
+    "cost_usd": 0.108,
+    "errors": 0
+   }
+  },
+  {
+   "arm": "cert",
+   "seed": 2,
+   "proposals": 6,
+   "statuses": {
+    "new-cell": 2,
+    "duplicate": 3,
+    "kept": 1
+   },
+   "elites": [
+    {
+     "cell": [
+      2,
+      2,
+      "stable"
+     ],
+     "name": "softmax-online",
+     "digest": "fbc0a9179c9f2d15",
+     "iteration": 3,
+     "certified_u": 148.75,
+     "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)"
+    },
+    {
+     "cell": [
+      2,
+      1,
+      "stable"
+     ],
+     "name": "softmax-lse1",
+     "digest": "4f04f566283b07e6",
+     "iteration": 5,
+     "certified_u": 131727.0,
+     "B": "3*(u*R + ue + D*u + ul*n + u*M + u*n + n*etae + d*(3*u + ue + ul + etae + u*M + u*n))/2"
+    }
+   ],
+   "proposal1_is_final_elite": false,
+   "two_field_elite_iteration": 3,
+   "two_field_elite_is_library_online": true,
+   "usage": {
+    "calls": 6,
+    "seconds": 109.6,
+    "input_tokens": 20119,
+    "output_tokens": 7520,
+    "cost_usd": 0.0918,
+    "errors": 0
+   },
+   "certifier_usage": {
+    "calls": 1,
+    "seconds": 34.0,
+    "input_tokens": 3555,
+    "output_tokens": 3039,
+    "cost_usd": 0.0446,
+    "errors": 0
+   }
+  },
+  {
+   "arm": "iid",
+   "seed": 0,
+   "proposals": 6,
+   "statuses": {
+    "new-cell": 1,
+    "duplicate": 3,
+    "improved": 1,
+    "kept": 1
+   },
+   "elites": [
+    {
+     "cell": [
+      2,
+      2,
+      "stable"
+     ],
+     "name": "softmax-online",
+     "digest": "fbc0a9179c9f2d15",
+     "iteration": 5,
+     "certified_u": 148.75,
+     "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)"
+    }
+   ],
+   "proposal1_is_final_elite": false,
+   "two_field_elite_iteration": 5,
+   "two_field_elite_is_library_online": true,
+   "usage": {
+    "calls": 6,
+    "seconds": 85.2,
+    "input_tokens": 20074,
+    "output_tokens": 3533,
+    "cost_usd": 0.0626,
+    "errors": 0
+   },
+   "certifier_usage": {
+    "calls": 2,
+    "seconds": 59.4,
+    "input_tokens": 7075,
+    "output_tokens": 5121,
+    "cost_usd": 0.0795,
+    "errors": 0
+   }
+  },
+  {
+   "arm": "iid",
+   "seed": 1,
+   "proposals": 6,
+   "statuses": {
+    "new-cell": 1,
+    "duplicate": 5
+   },
+   "elites": [
+    {
+     "cell": [
+      2,
+      2,
+      "stable"
+     ],
+     "name": "softmax-online",
+     "digest": "fbc0a9179c9f2d15",
+     "iteration": 3,
+     "certified_u": 148.75,
+     "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)"
+    }
+   ],
+   "proposal1_is_final_elite": false,
+   "two_field_elite_iteration": 3,
+   "two_field_elite_is_library_online": true,
+   "usage": {
+    "calls": 6,
+    "seconds": 76.9,
+    "input_tokens": 20067,
+    "output_tokens": 3496,
+    "cost_usd": 0.0516,
+    "errors": 0
+   },
+   "certifier_usage": {
+    "calls": 0,
+    "seconds": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0,
+    "errors": 0
+   }
+  },
+  {
+   "arm": "iid",
+   "seed": 2,
+   "proposals": 6,
+   "statuses": {
+    "new-cell": 1,
+    "duplicate": 4,
+    "improved": 1
+   },
+   "elites": [
+    {
+     "cell": [
+      2,
+      2,
+      "stable"
+     ],
+     "name": "softmax-online",
+     "digest": "fbc0a9179c9f2d15",
+     "iteration": 3,
+     "certified_u": 148.75,
+     "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)"
+    }
+   ],
+   "proposal1_is_final_elite": false,
+   "two_field_elite_iteration": 3,
+   "two_field_elite_is_library_online": true,
+   "usage": {
+    "calls": 6,
+    "seconds": 79.9,
+    "input_tokens": 20066,
+    "output_tokens": 3479,
+    "cost_usd": 0.0514,
+    "errors": 0
+   },
+   "certifier_usage": {
+    "calls": 0,
+    "seconds": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": 0,
+    "errors": 0
+   }
+  },
+  {
+   "arm": "plain",
+   "seed": 0,
+   "proposals": 6,
+   "statuses": {
+    "new-cell": 2,
+    "duplicate": 2,
+    "kept": 2
+   },
+   "elites": [
+    {
+     "cell": [
+      2,
+      2,
+      "stable"
+     ],
+     "name": "softmax-2pass",
+     "digest": "fbc0a9179c9f2d15",
+     "iteration": 1,
+     "certified_u": 148.75,
+     "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)"
+    },
+    {
+     "cell": [
+      2,
+      1,
+      "stable"
+     ],
+     "name": "softmax-lse1",
+     "digest": "4f04f566283b07e6",
+     "iteration": 4,
+     "certified_u": 131727.0,
+     "B": "3*(u*R + ue + D*u + ul*n + u*M + u*n + n*etae + d*(3*u + ue + ul + etae + u*M + u*n))/2"
+    },
+    {
+     "cell": [
+      3,
+      2,
+      "stable"
+     ],
+     "name": "softmax-3pass",
+     "digest": "5f3aa4189b4e6375",
+     "iteration": 0,
+     "certified_u": null,
+     "B": null
+    }
+   ],
+   "proposal1_is_final_elite": true,
+   "two_field_elite_iteration": 1,
+   "two_field_elite_is_library_online": true,
+   "usage": {
+    "calls": 6,
+    "seconds": 112.8,
+    "input_tokens": 20654,
+    "output_tokens": 6525,
+    "cost_usd": 0.1266,
+    "errors": 0
+   },
+   "certifier_usage": null
+  },
+  {
+   "arm": "plain",
+   "seed": 1,
+   "proposals": 6,
+   "statuses": {
+    "new-cell": 2,
+    "duplicate": 1,
+    "kept": 3
+   },
+   "elites": [
+    {
+     "cell": [
+      2,
+      2,
+      "stable"
+     ],
+     "name": "softmax-online",
+     "digest": "fbc0a9179c9f2d15",
+     "iteration": 2,
+     "certified_u": 148.75,
+     "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)"
+    },
+    {
+     "cell": [
+      2,
+      1,
+      "stable"
+     ],
+     "name": "softmax-lse1",
+     "digest": "f8bcf25e5f03b0b1",
+     "iteration": 5,
+     "certified_u": null,
+     "B": null
+    },
+    {
+     "cell": [
+      3,
+      2,
+      "stable"
+     ],
+     "name": "softmax-3pass",
+     "digest": "5f3aa4189b4e6375",
+     "iteration": 0,
+     "certified_u": null,
+     "B": null
+    }
+   ],
+   "proposal1_is_final_elite": false,
+   "two_field_elite_iteration": 2,
+   "two_field_elite_is_library_online": true,
+   "usage": {
+    "calls": 6,
+    "seconds": 108.9,
+    "input_tokens": 20661,
+    "output_tokens": 6120,
+    "cost_usd": 0.1438,
+    "errors": 0
+   },
+   "certifier_usage": null
+  },
+  {
+   "arm": "plain",
+   "seed": 2,
+   "proposals": 6,
+   "statuses": {
+    "new-cell": 2,
+    "kept": 2,
+    "duplicate": 2
+   },
+   "elites": [
+    {
+     "cell": [
+      2,
+      2,
+      "stable"
+     ],
+     "name": "softmax-2pass",
+     "digest": "fbc0a9179c9f2d15",
+     "iteration": 2,
+     "certified_u": 148.75,
+     "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)"
+    },
+    {
+     "cell": [
+      2,
+      1,
+      "stable"
+     ],
+     "name": "softmax-lse1",
+     "digest": "4f04f566283b07e6",
+     "iteration": 6,
+     "certified_u": 131727.0,
+     "B": "3*(u*R + ue + D*u + ul*n + u*M + u*n + n*etae + d*(3*u + ue + ul + etae + u*M + u*n))/2"
+    },
+    {
+     "cell": [
+      3,
+      2,
+      "stable"
+     ],
+     "name": "softmax-3pass",
+     "digest": "5f3aa4189b4e6375",
+     "iteration": 0,
+     "certified_u": null,
+     "B": null
+    }
+   ],
+   "proposal1_is_final_elite": false,
+   "two_field_elite_iteration": 2,
+   "two_field_elite_is_library_online": true,
+   "usage": {
+    "calls": 6,
+    "seconds": 100.1,
+    "input_tokens": 20662,
+    "output_tokens": 5736,
+    "cost_usd": 0.1286,
+    "errors": 0
+   },
+   "certifier_usage": null
+  }
+ ],
+ "proposal1_final_elite": {
+  "cert": 2,
+  "iid": 0,
+  "plain": 1
+ },
+ "library_online_is_two_field_elite": 9,
+ "certified_values_of_online_variants_u": {
+  "46f25623a0": 524.0,
+  "fbc0a9179c": 148.8,
+  "ab4fca0eb8": 400.0,
+  "3f60b5facd": 526.0
+ },
+ "certificates": {
+  "5f3aa4189b": {
+   "name": "softmax-3pass",
+   "value_u": null,
+   "B": null,
+   "tightness": null,
+   "why": "no statement: rescaling policies: one-pass softmax programs, kind in POLICY_KINDS"
+  },
+  "46f25623a0": {
+   "name": "softmax-online",
+   "value_u": 524.0,
+   "B": "2*((d+1)*(u*R+ue) + (D+2*d)*u + 2*n*(d+1)*(eta+etae))",
+   "tightness": 45.77826604577881,
+   "why": null
+  },
+  "fbc0a9179c": {
+   "name": "softmax-online",
+   "value_u": 148.75,
+   "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)",
+   "tightness": 22.000275357081634,
+   "why": null
+  },
+  "ab4fca0eb8": {
+   "name": "softmax-online",
+   "value_u": 400.0,
+   "B": "2*(D+2*d+1)*(u+ue) + R*u + 8*n*(eta+etae)",
+   "tightness": 54.787789294742204,
+   "why": null
+  },
+  "4fb632176b": {
+   "name": "softmax-lse1",
+   "value_u": 790592.0,
+   "B": "2*(d+1)*(u*(R+D+M+n+3)+ue+ul*(n+1))",
+   "tightness": 26.70256626741351,
+   "why": null
+  },
+  "3f60b5facd": {
+   "name": "softmax-online2",
+   "value_u": 526.0,
+   "B": "2*((d+1)*(ue + R*u) + (2*d + D + 1)*u) + 4*n*(eta + etae)",
+   "tightness": 46.595251573197025,
+   "why": null
+  },
+  "4f04f56628": {
+   "name": "softmax-lse1",
+   "value_u": 131727.0,
+   "B": "3*(u*R + ue + D*u + ul*n + u*M + u*n + n*etae + d*(3*u + ue + ul + etae + u*M + u*n))/2",
+   "tightness": 9.514151069670438,
+   "why": null
+  },
+  "6bc7543d3f": {
+   "name": "softmax-lse",
+   "value_u": 298758.0,
+   "B": "2*((R + D + M + n + 1)*u + ue + ul*n + d*((R + M + 2*n + 1)*u + ue + ul))",
+   "tightness": 15.305640167798632,
+   "why": null
+  },
+  "c5b368c2f4": {
+   "name": "softmax-logsum",
+   "value_u": 1242402.0,
+   "B": "3*((d+1)*(u*(2*R+n+2) + ue + ul*n) + D*u + ue + u*R + ul*n + etae*(n+4*d+4))",
+   "tightness": 46651.045530952644,
+   "why": null
+  }
+ },
+ "cost_usd": 1.14
+}

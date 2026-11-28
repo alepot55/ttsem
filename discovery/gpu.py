@@ -461,6 +461,43 @@ def fitness(
     return {"ok": True, **t, "shape": list(shape), "worst_error": result["worst"]}
 
 
+PAIRED_ROUNDS = 5
+
+
+def paired(
+    prog_a: ir.Program,
+    prog_b: ir.Program,
+    problem: Problem,
+    shape: tuple[int, ...] | None = None,
+    rounds: int = PAIRED_ROUNDS,
+) -> dict:
+    """Two checked kernels timed one after the other on the same inputs, ``rounds`` times, the
+    order swapped every round: ``ratio`` is the median of the per-round ratios a / b of their
+    do_bench medians. Two timings taken minutes apart differ by the GPU's drift (clock, heat);
+    the two halves of a round share it, so close kernels are compared by their ratio."""
+    ka = load(write(prog_a, problem, None))
+    kb = load(write(prog_b, problem, None))
+    shape = shape or FITNESS_SHAPE[codegen_triton.layout(problem)]
+    ratios, a_ms, b_ms = [], [], []
+    with exclusive():
+        inputs = make_inputs(problem, shape, "normal", 0)
+        for r in range(rounds):
+            first, second = (ka, kb) if r % 2 == 0 else (kb, ka)
+            t1 = float(statistics.median(_do_bench(lambda k=first: k.run(inputs))))
+            t2 = float(statistics.median(_do_bench(lambda k=second: k.run(inputs))))
+            ta, tb = (t1, t2) if r % 2 == 0 else (t2, t1)
+            a_ms.append(ta)
+            b_ms.append(tb)
+            ratios.append(ta / tb)
+    return {
+        "ratio": float(statistics.median(ratios)),
+        "ratios": ratios,
+        "a_ms": a_ms,
+        "b_ms": b_ms,
+        "shape": list(shape),
+    }
+
+
 # --------------------------------------------------------------------------- command line
 
 

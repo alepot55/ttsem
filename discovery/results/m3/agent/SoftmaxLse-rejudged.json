@@ -1,0 +1,14 @@
+{
+ "program": "SoftmaxLse",
+ "B": "2*(u*(D + R + M + n + 2) + ue + ul*(n + 1)) + 2*d*(u*(M + n + 2) + ue + ul)",
+ "model": "sonnet",
+ "sandbox": "C:\\dev\\fpbox\\SoftmaxLse-5738eacfc392238d-1795860284",
+ "stage": "ok",
+ "ok": true,
+ "axioms": [
+  "propext",
+  "Classical.choice",
+  "Quot.sound"
+ ],
+ "note": "first judged with the ASCII-only deny list, which refused the identifier h\u03c6def; judged again after the fix"
+}

@@ -1,0 +1,38 @@
+{
+ "program": "AttentionOnline",
+ "B": "3*S*((D + 3*d + 3)*u + (d + 1)*(R*u + ue)) + 4*n*(eta + etae)*(V + 1)",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox\\AttentionOnline-2936ee4cc2852214-1795861441",
+   "seconds": 49.3,
+   "cost_usd": 0.09724840000000001,
+   "turns": 2,
+   "result": "FALSE\n\nThe statement fails because `hi - lo` is unbounded. The hypotheses only bound `(depth + D + 1)(u + ue + ul)`, so a large `(hi - lo)\u00b7u` is allowed. The subtraction `s - m` is rounded with relative error `u`, which shifts the argument of `exp` by up to `u\u00b7|s - m|`. The resulting relative error on a term is about `e^{(hi-lo)u} - 1`. The bound only allows about `3(hi-lo)u` times `attnScale`, so it breaks once `(hi-lo)u` is moderately large. I did not run this counterexample through Lean.\n\n**Counterexample.**\n- Take `u = 1/256` and `ue = ul = \u03b7 = \u03b7e = 0`.\n- Let the tree be `leaf X`, so depth is 0, and let `D = 1`.\n- Let `X = [(0, 0), (-H, V)]` with `H = 2560`, so `Hu = 10`, and `V = 1`.\n- Set `lo = -H`, `hi = 0` and `Vmax = V`.\n- Then `n(\u03b7 + \u03b7e) = 0 \u2264 u`, and `(0 + 1 + 1)\u00b7u \u2264 1/16`.\n- Choose all roundings exact except the subtraction `-H - 0`. There, take `\u03b4 = -u`, so `q1 = -H(1 - u)`.\n- The block maximum is `m = 0`. This gives `d = 1 + a` and `o = aV`, with `a = e^{-H(1-u)}`.\n- The output is `w = aV/(1 + a)`.\n- The true value is `attn = bV/(1 + b)`, with `b = e^{-H}`.\n\n**Comparison.**\n- The error is about `V\u00b7a = V\u00b7b\u00b7e^{10}`, which is about `22026\u00b7V\u00b7b`.\n- The bound is `3\u00b7S\u00b7(4u + Hu)` plus zero, with `S \u2248 V\u00b7b`. That is about `30\u00b7V\u00b7b`.\n- The error exceeds the bound.",
+   "subtype": "success",
+   "error": "",
+   "stage": "deny",
+   "ok": false,
+   "errors": [
+    "not allowed in your text: sorry"
+   ]
+  },
+  {
+   "model": "opus",
+   "sandbox": "C:\\dev\\fpbox\\AttentionOnline-2936ee4cc2852214-1795861519",
+   "seconds": 212.6,
+   "cost_usd": 0.6532306,
+   "turns": 7,
+   "result": "f of `fp_bound`. Instead I proved the negation in Lean: `theorem not_fp : \u00ac fp_bound_statement` in `Scratch.lean` compiles with no errors and no `sorry`. `FPProofs.lean` is unchanged and still has `sorry`.\n\n**Why it fails:** the bound treats rounding `s - m` as a relative error of `(hi - lo)\u00b7u` in the exponential. The real effect is a factor `e^{(hi-lo)u}`. Nothing in the hypotheses keeps `(hi - lo)\u00b7u` small: the condition `(depth + D + 1)(u + ue + ul) \u2264 1/16` doesn't involve `hi - lo`. Once `(hi - lo)\u00b7u` is large, the exponential factor beats the linear bound.\n\n**Counterexample:**\n- **Rounding:** u = 1/256 and \u03b7 = ue = \u03b7e = ul = 0. This satisfies `small F`, and `n(\u03b7 + \u03b7e) \u2264 u` holds.\n- **Inputs:** D = 1, lo = 0, hi = 2048, X = [(2048, 0), (0, 1)], Vmax = 1.\n- **Tree:** t = `leaf X`, so depth = 0 and (0 + 1 + 1)\u00b7u = 1/128 \u2264 1/16.\n- **In-block sums:** the tree `node (leaf [x\u2081]) (leaf [x\u2082])`, which has depth 1.\n- **The one inexact step:** rounding 0 \u2212 2048 with \u03b4 = \u22121/256 gives \u22122040, so q = exp(\u22122040) = e\u2078/E, where E = e\u00b2\u2070\u2074\u2078. Every other operation is exact.\n- **Result:** the state is (m, d, o) = (2048, 1 + q, q), and w = q/(1 + q) = e\u2078/(E + e\u2078).\n- **Exact output:** attn X = attnScale X = 1/(E + 1).\n\nThe bound in the statement is 3\u00b7(1/(E+1))\u00b7(4u + 2048u) = 24.05/(E+1). The actual error is w \u2212 attn \u2248 (e\u2078 \u2212 1)/(E+1), and e\u2078 \u2265 169, so the error is larger.\n\n**Possible fix:** add a hypothesis that bounds `(hi - lo)\u00b7u`, or replace `(hi - lo)\u00b7u + ue` with the exact exponential factor.",
+   "subtype": "success",
+   "error": "",
+   "stage": "deny",
+   "ok": false,
+   "errors": [
+    "not allowed in your text: sorry"
+   ]
+  }
+ ],
+ "proved": null,
+ "cost_usd": 0.7505
+}

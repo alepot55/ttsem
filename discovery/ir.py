@@ -4,6 +4,7 @@ A program reads as one S-expression::
 
     (program NAME
       (input FIELD ...)                     ; the fields of one element: x, or s and v
+      (param NAME NUMBER) ...               ; named constants, none or more (a threshold tau)
       (pass NAME                            ; one pass over the elements, one or more
         (state FIELD ...)                   ; what a block reduces to
         (block (FIELD EXPR) ...)            ; the summary of one nonempty block
@@ -23,9 +24,10 @@ Expressions are numbers, names and calls. Names are:
 * ``p.f``: state field ``f`` of the finished pass ``p``, any pass before the one being defined.
 
 Calls: ``+ - * /`` (``+`` and ``*`` take two or more arguments, ``-`` and ``/`` two),
-``neg exp log sqrt abs`` (one), ``max min`` (two), and the reductions over the elements of the
-block, ``sum rmax rmin`` (one argument; anywhere in a ``block`` binding, but not inside another
-reduction).
+``neg exp log sqrt abs`` (one), ``max min`` (two), ``ifgt`` (four: ``(ifgt a b x y)`` is ``x``
+when ``a > b`` and ``y`` otherwise; ``a`` and ``b`` scalars), and the reductions over the
+elements of the block, ``sum rmax rmin`` (one argument; anywhere in a ``block`` binding, but not
+inside another reduction).
 
 Values have a type, ``scalar`` or ``vec`` (a vector of the problem's dimension ``D``); the
 arithmetic operators broadcast a scalar over a vector, ``rmax``, ``rmin``, ``max``, ``min`` and
@@ -118,6 +120,7 @@ Expr = Num | Var | Call | Reduce
 UNARY = {"neg", "exp", "log", "sqrt", "abs"}
 BINARY = {"-", "/", "max", "min"}
 VARIADIC = {"+", "*"}
+SELECT = {"ifgt"}  # (ifgt a b x y): x if a > b, else y
 REDUCTIONS = {"sum", "rmax", "rmin"}
 SCALAR_ONLY = {"max", "min", "log", "sqrt"}
 
@@ -143,6 +146,7 @@ class Program:
     passes: list[Pass]
     output: Output
     types: dict[str, str] = dataclasses.field(default_factory=dict)  # "p.f" -> scalar | vec
+    params: dict[str, float] = dataclasses.field(default_factory=dict)  # named constants
 
     def text(self) -> str:
         return unparse(self)
@@ -151,6 +155,12 @@ class Program:
         """Identity of the program up to its name and layout."""
         body = unparse(dataclasses.replace(self, name="_"))
         return hashlib.sha256(body.encode()).hexdigest()[:16]
+
+    def canonical_digest(self) -> str:
+        """Identity of the program up to every name it chooses: its own, its passes', its state
+        fields', its temporaries' and its parameters', renamed in order of appearance. The
+        element fields and the outputs' names are the problem's and stay."""
+        return hashlib.sha256(unparse(canonical(self)).encode()).hexdigest()[:16]
 
 
 # --------------------------------------------------------------------------- parsing
@@ -199,8 +209,10 @@ def parse_expr(form) -> Expr:
         raise IRError(f"({head} ...) takes two arguments: {_show(form)}")
     if head in VARIADIC and len(args) < 2:
         raise IRError(f"({head} ...) takes two or more arguments: {_show(form)}")
-    if head not in UNARY | BINARY | VARIADIC:
-        known = ", ".join(sorted(UNARY | BINARY | VARIADIC | REDUCTIONS))
+    if head in SELECT and len(args) != 4:
+        raise IRError(f"({head} a b x y) takes four arguments: {_show(form)}")
+    if head not in UNARY | BINARY | VARIADIC | SELECT:
+        known = ", ".join(sorted(UNARY | BINARY | VARIADIC | SELECT | REDUCTIONS))
         raise IRError(f"unknown operator `{head}` (known: {known})")
     return Call(head, args)
 
@@ -223,8 +235,17 @@ def parse(text: str) -> Program:
     inp = _expect_list(form[2], "input")
     if inp[0] != "input" or not all(isinstance(f, str) for f in inp[1:]) or len(inp) < 2:
         raise IRError("(input FIELD ...) names the fields of one element")
+    rest = list(form[3:-1])
+    params: dict[str, float] = {}
+    while rest and isinstance(rest[0], list) and rest[0] and rest[0][0] == "param":
+        pf = rest.pop(0)
+        if len(pf) != 3 or not isinstance(pf[1], str) or not isinstance(pf[2], float):
+            raise IRError(f"a parameter is (param NAME NUMBER): {_show(pf)}")
+        if pf[1] in params or pf[1] in inp[1:]:
+            raise IRError(f"parameter `{pf[1]}` is named twice")
+        params[pf[1]] = pf[2]
     passes: list[Pass] = []
-    for item in form[3:-1]:
+    for item in rest:
         p = _expect_list(item, "pass")
         if p[0] != "pass" or len(p) != 5 or not isinstance(p[1], str):
             raise IRError(f"a pass is (pass NAME (state ...) (block ...) (merge ...)): {_show(p)}")
@@ -250,7 +271,7 @@ def parse(text: str) -> Program:
         output = Output("elementwise", [("y", parse_expr(out[2]))])
     else:
         output = Output("final", _bindings(["final", *out[2:]], "output final"))
-    prog = Program(name, list(inp[1:]), passes, output)
+    prog = Program(name, list(inp[1:]), passes, output, params=params)
     check(prog)
     return prog
 
@@ -265,9 +286,9 @@ def check(prog: Program, elem_types: dict[str, str] | None = None) -> None:
     for f in prog.inputs:
         if f not in elem:
             raise IRError(f"input field `{f}` is not a field of this problem's elements")
-    reserved = set(prog.inputs) | {"L", "R"}
+    reserved = set(prog.inputs) | {"L", "R"} | set(prog.params)
     seen_pass: set[str] = set()
-    finished: dict[str, str] = {}  # "p.f" -> type
+    finished: dict[str, str] = dict.fromkeys(prog.params, "scalar")  # "p.f" -> type; params
     for p in prog.passes:
         if p.name in reserved or p.name in seen_pass or "." in p.name:
             raise IRError(f"pass name `{p.name}` is taken or invalid")
@@ -306,7 +327,7 @@ def check(prog: Program, elem_types: dict[str, str] | None = None) -> None:
     for _, e in prog.output.exprs:
         where = "elementwise" if prog.output.kind == "elementwise" else "final"
         _type(e, where, elem, {}, finished, None, None)
-    prog.types = finished
+    prog.types = {k: v for k, v in finished.items() if k not in prog.params}
 
 
 def _type(
@@ -355,7 +376,50 @@ def _type(
     ts = [_type(a, where, elem, local, finished, sides, p, in_reduce) for a in e.args]
     if e.op in SCALAR_ONLY and any(t != "scalar" for t in ts):
         raise IRError(f"{ctx}: ({e.op} ...) takes scalars")
+    if e.op in SELECT:
+        if ts[0] != "scalar" or ts[1] != "scalar":
+            raise IRError(f"{ctx}: ({e.op} a b x y) compares scalars a and b")
+        return "vec" if "vec" in ts[2:] else "scalar"
     return "vec" if "vec" in ts else "scalar"
+
+
+# --------------------------------------------------------------------------- renaming
+
+
+def _rename(e: Expr, names: dict[str, str]) -> Expr:
+    if isinstance(e, Var):
+        return Var(names.get(e.name, e.name))
+    if isinstance(e, Call):
+        return Call(e.op, tuple(_rename(a, names) for a in e.args))
+    if isinstance(e, Reduce):
+        return Reduce(e.op, _rename(e.body, names))
+    return e
+
+
+def canonical(prog: Program) -> Program:
+    """``prog`` with its own names replaced by their positions: parameters c0.., passes p0..,
+    a pass's state fields f0.. (in the order of its state), block temporaries b0.., merge
+    temporaries m0.., and the program's name ``_``."""
+    names: dict[str, str] = {n: f"c{i}" for i, n in enumerate(prog.params)}
+    passes = []
+    for i, p in enumerate(prog.passes):
+        fields = {f: f"f{j}" for j, f in enumerate(p.fields)}
+        local = dict(fields)
+        for n, _ in p.block:
+            if n not in local:
+                local[n] = f"b{len(local) - len(fields)}"
+        block = [(local[n], _rename(e, {**names, **local})) for n, e in p.block]
+        local = dict(fields)
+        for n, _ in p.merge:
+            if n not in local:
+                local[n] = f"m{len(local) - len(fields)}"
+        sides = {f"{side}.{f}": f"{side}.{g}" for side in "LR" for f, g in fields.items()}
+        merge = [(local[n], _rename(e, {**names, **local, **sides})) for n, e in p.merge]
+        passes.append(Pass(f"p{i}", list(fields.values()), block, merge))
+        names.update({f"{p.name}.{f}": f"p{i}.{g}" for f, g in fields.items()})
+    output = Output(prog.output.kind, [(n, _rename(e, names)) for n, e in prog.output.exprs])
+    params = {names[n]: v for n, v in prog.params.items()}
+    return Program("_", list(prog.inputs), passes, output, params=params)
 
 
 # --------------------------------------------------------------------------- printing
@@ -373,6 +437,7 @@ def unparse_expr(e: Expr) -> str:
 
 def unparse(prog: Program) -> str:
     lines = [f"(program {prog.name}", f"  (input {' '.join(prog.inputs)})"]
+    lines += [f"  (param {n} {_num(v)})" for n, v in prog.params.items()]
     for p in prog.passes:
         lines.append(f"  (pass {p.name}")
         lines.append(f"    (state {' '.join(p.fields)})")

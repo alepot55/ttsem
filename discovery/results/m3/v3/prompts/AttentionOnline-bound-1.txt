@@ -1,0 +1,128 @@
+Attention for one query. Element j has a score s_j (q.k_j/sqrt(D), computed from a key row of D float32 values in memory) and a value vector v_j (D float32 values). Output: o = sum_j p_j v_j, a vector of length D, with p_j = exp(s_j - c) / sum_k exp(s_k - c) and c = max_k s_k.
+
+The program below computes it by blocked folds: each block of a row is summarised (block), and
+adjacent summaries are combined (merge) along a merge tree; the output reads the final summary.
+
+```
+(program attention-online
+  (input s v)
+  (pass a
+    (state m d o)
+    (block (m (rmax s))
+           (d (sum (exp (- s m))))
+           (o (sum (* (exp (- s m)) v))))
+    (merge (m (max L.m R.m))
+           (d (+ (* L.d (exp (- L.m m))) (* R.d (exp (- R.m m)))))
+           (o (+ (* L.o (exp (- L.m m))) (* R.o (exp (- R.m m)))))))
+  (output final (o (/ a.o a.d))))
+```
+
+The rounding model (Lean, `Discovery.Rounding`, every field a parameter):
+
+  u  : relative error of + - * / sqrt          η  : absolute error of * / with a subnormal result
+  ue : relative error of exp                   ηe : absolute error of exp with a subnormal result
+  ul : relative error of log
+
+  F.add x v : ∃ δ, |δ| ≤ F.u ∧ v = x * (1 + δ)                       -- + and -, x the exact result
+  F.mul x v : ∃ δ e, |δ| ≤ F.u ∧ |e| ≤ F.η ∧ v = x * (1 + δ) + e ∧ 0 ≤ x * v   -- * and /
+  F.exp x v : ∃ δ e, |δ| ≤ F.ue ∧ |e| ≤ F.ηe ∧ v = Real.exp x * (1 + δ) + e ∧ 0 ≤ v
+  F.log x v : ∃ δ, |δ| ≤ F.ul ∧ v = Real.log x * (1 + δ)
+  F.sqrt x v : ∃ δ, |δ| ≤ F.u ∧ v = Real.sqrt x * (1 + δ)
+  max, min, neg, abs: exact.
+
+Every operation of the program is one such rounding with its own error variables; a block's sum
+adds its terms along any binary tree of depth at most D (`Discovery.fsum`); the block summaries
+merge along any merge tree `t` (`Discovery.Tree.FEval`). Overflow is outside the model.
+
+The Lean definitions generated from the program:
+
+```lean
+/-- Pass `a` on one block `A`, in floating point: `st` is one possible summary,
+every in-block sum along a tree of depth at most `D`. -/
+def fblock_a (F : Discovery.Rounding) (D : ℕ) (A : List (ℝ × ℝ)) (st : (State_a ℝ)) : Prop :=
+  ∃ v_m v_d v_o r1 r2 r3,
+    r1 = lmax (A.map fun e => e.1) ∧
+    v_m = r1 ∧
+    Discovery.fsum F D (fun x y => ∃ q1 q2, F.add (x.1 - v_m) q1 ∧ F.exp q1 q2 ∧ y = q2) A r2 ∧
+    v_d = r2 ∧
+    Discovery.fsum F D (fun x y => ∃ q1 q2 q3, F.add (x.1 - v_m) q1 ∧ F.exp q1 q2 ∧ F.mul (q2 * x.2) q3 ∧ y = q3) A r3 ∧
+    v_o = r3 ∧
+    st = ⟨v_m, v_d, v_o⟩
+
+/-- Pass `a`, two adjacent float summaries `L` then `R` merged in floating
+point: `st` is one possible result. -/
+def fmerge_a (F : Discovery.Rounding) (L R st : (State_a ℝ)) : Prop :=
+  ∃ v_m v_d v_o r1 r2 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12 r13 r14,
+    v_m = (max L.m R.m) ∧
+    F.add (L.m - v_m) r1 ∧
+    F.exp r1 r2 ∧
+    F.mul (L.d * r2) r3 ∧
+    F.add (R.m - v_m) r4 ∧
+    F.exp r4 r5 ∧
+    F.mul (R.d * r5) r6 ∧
+    F.add (r3 + r6) r7 ∧
+    v_d = r7 ∧
+    F.add (L.m - v_m) r8 ∧
+    F.exp r8 r9 ∧
+    F.mul (L.o * r9) r10 ∧
+    F.add (R.m - v_m) r11 ∧
+    F.exp r11 r12 ∧
+    F.mul (R.o * r12) r13 ∧
+    F.add (r10 + r13) r14 ∧
+    v_o = r14 ∧
+    st = ⟨v_m, v_d, v_o⟩
+
+/-- The output `o`, rounded as its expression rounds it: `w` is one possible
+value. -/
+def fout_o (F : Discovery.Rounding) (st : (State_a ℝ)) (w : ℝ) : Prop :=
+  ∃ r1,
+    F.mul (st.o / st.d) r1 ∧
+    w = r1
+
+/-- The exact output (one component): `Σ exp s · v / Σ exp s`. -/
+noncomputable def attn (X : List (ℝ × ℝ)) : ℝ :=
+  (X.map fun e => Real.exp e.1 * e.2).sum / (X.map fun e => Real.exp e.1).sum
+
+/-- The scale of the output's error: `Σ exp s · |v| / Σ exp s`. -/
+noncomputable def attnScale (X : List (ℝ × ℝ)) : ℝ :=
+  (X.map fun e => Real.exp e.1 * |e.2|).sum / (X.map fun e => Real.exp e.1).sum
+```
+
+The statement to be proved, with B to be chosen:
+
+```lean
+  ∀ (F : Discovery.Rounding) (D : ℕ) (lo hi : ℝ) (X : List (ℝ × ℝ)), X ≠ [] →
+    (∀ e ∈ X, lo ≤ e.1 ∧ e.1 ≤ hi) → ∀ (Vmax : ℝ), (∀ e ∈ X, |e.2| ≤ Vmax) →
+    small F → (X.length : ℝ) * (F.η + F.ηe) ≤ F.u →
+    ∀ (t : Discovery.Tree (ℝ × ℝ)), t.flat = X → (∀ b ∈ t.leaves, b ≠ []) →
+    ((t.depth : ℝ) + D + 1) * (F.u + F.ue + F.ul) ≤ 1 / 16 →
+    ∀ (st : (State_a ℝ)), Discovery.Tree.FEval (fblock_a F D) (fmerge_a F) t st →
+    ∀ (w : ℝ), fout_o F st w →
+      |w - attn X| ≤ B
+```
+
+where `small F` is: F.u ≤ 1 / 256 ∧ F.ue ≤ 1 / 64 ∧ F.ul ≤ 1 / 64 ∧ F.η ≤ 1 / 2 ^ 100 ∧ F.ηe ≤ 1 / 2 ^ 100.
+
+Give B, an upper bound that makes the statement true for every such X, lo, hi, D, merge tree t,
+and every admissible choice of the rounding errors. B is a sum of products of nonnegative numbers
+and these atoms, with parentheses and integer powers 1 to 4 (no subtraction; divide only by a
+number):
+
+  u     relative error of + - * / sqrt (F.u)
+  ue    relative error of exp (F.ue)
+  ul    relative error of log (F.ul)
+  eta   absolute error of * / below the normal range (F.η)
+  etae  absolute error of exp below the normal range (F.ηe)
+  D     the bound on the depth of the in-block summation trees
+  d     the depth of the merge tree t (t.depth)
+  n     the number of elements of the row (X.length)
+  R     hi - lo
+  M     max |lo| |hi|
+  S     the scale Σ exp(s)·|v| / Σ exp(s) of the row (attnScale X)
+  V     the bound Vmax on |v|
+
+The bound will be tested against floating-point runs and then proved in Lean. A false bound is
+rejected; among true bounds a smaller one is better.
+
+Reply with the bound alone on the last line, in the form
+B = <expression>

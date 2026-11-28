@@ -1,0 +1,193 @@
+{
+ "program": "AttentionOnline",
+ "proposals": [
+  {
+   "k": 1,
+   "reply_tail": "`(\u03b7+\u03b7e)\u00b7(V+1)`, covering both the `|v| \u2264 V` terms and the final division. This gives `4\u00b7n\u00b7(eta+etae)\u00b7(V+1)`.\n\n**Caveat.** `ul` does not appear because the program never uses `log`. A polynomial bound in `R\u00b7u` is only reliable while `R\u00b7u` is moderate. For very large `R\u00b7u` the true error grows like `exp(R\u00b7u)`, so this bound could fail there.\n\nB = 3*S*((D+3*d+3)*u+(d+1)*(R*u+ue))+4*n*(eta+etae)*(V+1)",
+   "B": "3*S*((D+3*d+3)*u+(d+1)*(R*u+ue))+4*n*(eta+etae)*(V+1)",
+   "attack": {
+    "ratio": 0.019552023244896525,
+    "family": "twolevel",
+    "seed": 0,
+    "block": 256,
+    "order": "balanced",
+    "error": 2.3689565953333158e-07,
+    "B": 1.2116171127976034e-05,
+    "u": 5.960464477539063e-08,
+    "ue": 2.384185791015625e-07,
+    "ul": 2.980232238769531e-07,
+    "eta": 7.006492321624085e-46,
+    "etae": 2.802596928649634e-45,
+    "D": 8.0,
+    "d": 4.0,
+    "n": 4096.0,
+    "R": 17.003352880477905,
+    "M": 16.0,
+    "V": 21.296146392822266,
+    "S": 0.5292942713556644
+   },
+   "broken": false,
+   "tightness": 51.14560204203011,
+   "proof": [
+    {
+     "round": 1,
+     "model": "sonnet",
+     "stage": "deny",
+     "ok": false,
+     "seconds": 0.0,
+     "errors": [
+      "not allowed in your text: sorry"
+     ]
+    },
+    {
+     "round": 2,
+     "model": "sonnet",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 29.7,
+     "errors": [
+      "line 17 `|w - attn X| \u2264 (((3 : \u211d) * (attnScale X) * ((((D : \u211d) + ((3 : \u211d) * (t.depth : \u211d)) + (3 : \u211d)) * F.u) `: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List (\u211d \u00d7 \u211d)),\n    X \u2260 [] \u2192\n      (\u2200 e \u2208 X, lo \u2264 e.1 \u2227 e.1 \u2264 hi) \u2192\n        \u2200 (Vmax : \u211d),\n          (\u2200 e \u2208 X, |e.2| \u2264 Vmax) \u2192\n            small F \u2192\n              \u2191X.length * (F.\u03b7 + F.\u03b7e) \u2264 F.u \u2192\n                \u2200 (t : Tree (\u211d \u00d7 \u211d)),\n                  t.flat = X \u2192\n                    (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                      (\u2191t.depth + \u2191D + 1) * (F.u + F.ue + F.ul) \u2264 1 / 16 \u2192\n                        \u2200 (st : State_a \u211d),\n                          Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                            \u2200 (w : \u211d),\n                              fout_o F st w \u2192\n                                |w - attn X| \u2264\n                                  3 * attnScale X *\n                                      ((\u2191D + 3 * \u2191t.depth + 3) * F.u + (\u2191t.depth + 1) * ((hi - lo) * F.u + F.ue)) +\n                                    4 * \n... (37 more characters)"
+     ]
+    },
+    {
+     "round": 3,
+     "model": "sonnet",
+     "stage": "deny",
+     "ok": false,
+     "seconds": 0.0,
+     "errors": [
+      "not allowed in your text: example, sorry"
+     ]
+    },
+    {
+     "round": 4,
+     "model": "opus",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 9.2,
+     "errors": [
+      "line 55 `|w - attn X| \u2264 (((3 : \u211d) * (attnScale X) * ((((D : \u211d) + ((3 : \u211d) * (t.depth : \u211d)) + (3 : \u211d)) * F.u) `: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List (\u211d \u00d7 \u211d)),\n    X \u2260 [] \u2192\n      (\u2200 e \u2208 X, lo \u2264 e.1 \u2227 e.1 \u2264 hi) \u2192\n        \u2200 (Vmax : \u211d),\n          (\u2200 e \u2208 X, |e.2| \u2264 Vmax) \u2192\n            small F \u2192\n              \u2191X.length * (F.\u03b7 + F.\u03b7e) \u2264 F.u \u2192\n                \u2200 (t : Tree (\u211d \u00d7 \u211d)),\n                  t.flat = X \u2192\n                    (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                      (\u2191t.depth + \u2191D + 1) * (F.u + F.ue + F.ul) \u2264 1 / 16 \u2192\n                        \u2200 (st : State_a \u211d),\n                          Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                            \u2200 (w : \u211d),\n                              fout_o F st w \u2192\n                                |w - attn X| \u2264\n                                  3 * attnScale X *\n                                      ((\u2191D + 3 * \u2191t.depth + 3) * F.u + (\u2191t.depth + 1) * ((hi - lo) * F.u + F.ue)) +\n                                    4 * \n... (37 more characters)"
+     ]
+    },
+    {
+     "round": 5,
+     "model": "opus",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 16.8,
+     "errors": [
+      "line 161 `|w - attn X| \u2264 (((3 : \u211d) * (attnScale X) * ((((D : \u211d) + ((3 : \u211d) * (t.depth : \u211d)) + (3 : \u211d)) * F.u) `: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List (\u211d \u00d7 \u211d)),\n    X \u2260 [] \u2192\n      (\u2200 e \u2208 X, lo \u2264 e.1 \u2227 e.1 \u2264 hi) \u2192\n        \u2200 (Vmax : \u211d),\n          (\u2200 e \u2208 X, |e.2| \u2264 Vmax) \u2192\n            small F \u2192\n              \u2191X.length * (F.\u03b7 + F.\u03b7e) \u2264 F.u \u2192\n                \u2200 (t : Tree (\u211d \u00d7 \u211d)),\n                  t.flat = X \u2192\n                    (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                      (\u2191t.depth + \u2191D + 1) * (F.u + F.ue + F.ul) \u2264 1 / 16 \u2192\n                        \u2200 (st : State_a \u211d),\n                          Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                            \u2200 (w : \u211d),\n                              fout_o F st w \u2192\n                                |w - attn X| \u2264\n                                  3 * attnScale X *\n                                      ((\u2191D + 3 * \u2191t.depth + 3) * F.u + (\u2191t.depth + 1) * ((hi - lo) * F.u + F.ue)) +\n                                    4 * \n... (37 more characters)"
+     ]
+    },
+    {
+     "round": 6,
+     "model": "opus",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 11.7,
+     "errors": [
+      "line 161 `|w - attn X| \u2264 (((3 : \u211d) * (attnScale X) * ((((D : \u211d) + ((3 : \u211d) * (t.depth : \u211d)) + (3 : \u211d)) * F.u) `: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List (\u211d \u00d7 \u211d)),\n    X \u2260 [] \u2192\n      (\u2200 e \u2208 X, lo \u2264 e.1 \u2227 e.1 \u2264 hi) \u2192\n        \u2200 (Vmax : \u211d),\n          (\u2200 e \u2208 X, |e.2| \u2264 Vmax) \u2192\n            small F \u2192\n              \u2191X.length * (F.\u03b7 + F.\u03b7e) \u2264 F.u \u2192\n                \u2200 (t : Tree (\u211d \u00d7 \u211d)),\n                  t.flat = X \u2192\n                    (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                      (\u2191t.depth + \u2191D + 1) * (F.u + F.ue + F.ul) \u2264 1 / 16 \u2192\n                        \u2200 (st : State_a \u211d),\n                          Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                            \u2200 (w : \u211d),\n                              fout_o F st w \u2192\n                                |w - attn X| \u2264\n                                  3 * attnScale X *\n                                      ((\u2191D + 3 * \u2191t.depth + 3) * F.u + (\u2191t.depth + 1) * ((hi - lo) * F.u + F.ue)) +\n                                    4 * \n... (37 more characters)"
+     ]
+    }
+   ]
+  },
+  {
+   "k": 2,
+   "reply_tail": "r, since `R\u00b7u` is not controlled by the hypotheses.\n- **Subnormal term.** The absolute errors `\u03b7` and `\u03b7e` from subnormal results are bounded using `n\u00b7(\u03b7 + \u03b7e)\u00b7(V + 1)`, as in proposal 1.\n\nThe bound can still fail when `R\u00b7u` is large, because the exponential's error is then not captured by a low-order polynomial.\n\nB = 4*S*((D+3*d+4)*u+(d+1)*(R*u+ue)) + 4*S*((d+1)*(R*u+ue))^2 + 4*n*(eta+etae)*(V+1)",
+   "B": "4*S*((D+3*d+4)*u+(d+1)*(R*u+ue)) + 4*S*((d+1)*(R*u+ue))^2 + 4*n*(eta+etae)*(V+1)",
+   "attack": {
+    "ratio": 0.014550283515867167,
+    "family": "twolevel",
+    "seed": 0,
+    "block": 256,
+    "order": "balanced",
+    "error": 2.3689565953333158e-07,
+    "B": 1.628117137889413e-05,
+    "u": 5.960464477539063e-08,
+    "ue": 2.384185791015625e-07,
+    "ul": 2.980232238769531e-07,
+    "eta": 7.006492321624085e-46,
+    "etae": 2.802596928649634e-45,
+    "D": 8.0,
+    "d": 4.0,
+    "n": 4096.0,
+    "R": 17.003352880477905,
+    "M": 16.0,
+    "V": 21.296146392822266,
+    "S": 0.5292942713556644
+   },
+   "broken": false,
+   "tightness": 68.72718314454109,
+   "proof": [
+    {
+     "round": 1,
+     "model": "sonnet",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 21.1,
+     "errors": [
+      "line 29 `|w - attn X| \u2264 (((4 : \u211d) * (attnScale X) * ((((D : \u211d) + ((3 : \u211d) * (t.depth : \u211d)) + (4 : \u211d)) * F.u) `: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List (\u211d \u00d7 \u211d)),\n    X \u2260 [] \u2192\n      (\u2200 e \u2208 X, lo \u2264 e.1 \u2227 e.1 \u2264 hi) \u2192\n        \u2200 (Vmax : \u211d),\n          (\u2200 e \u2208 X, |e.2| \u2264 Vmax) \u2192\n            small F \u2192\n              \u2191X.length * (F.\u03b7 + F.\u03b7e) \u2264 F.u \u2192\n                \u2200 (t : Tree (\u211d \u00d7 \u211d)),\n                  t.flat = X \u2192\n                    (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                      (\u2191t.depth + \u2191D + 1) * (F.u + F.ue + F.ul) \u2264 1 / 16 \u2192\n                        \u2200 (st : State_a \u211d),\n                          Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                            \u2200 (w : \u211d),\n                              fout_o F st w \u2192\n                                |w - attn X| \u2264\n                                  4 * attnScale X *\n                                        ((\u2191D + 3 * \u2191t.depth + 4) * F.u + (\u2191t.depth + 1) * ((hi - lo) * F.u + F.ue)) +\n                                      \n... (145 more characters)"
+     ]
+    },
+    {
+     "round": 2,
+     "model": "sonnet",
+     "stage": "deny",
+     "ok": false,
+     "seconds": 0.0,
+     "errors": [
+      "not allowed in your text: end"
+     ]
+    },
+    {
+     "round": 3,
+     "model": "sonnet",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 12.0,
+     "errors": [
+      "line 16 `|w - attn X| \u2264 (((4 : \u211d) * (attnScale X) * ((((D : \u211d) + ((3 : \u211d) * (t.depth : \u211d)) + (4 : \u211d)) * F.u) `: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List (\u211d \u00d7 \u211d)),\n    X \u2260 [] \u2192\n      (\u2200 e \u2208 X, lo \u2264 e.1 \u2227 e.1 \u2264 hi) \u2192\n        \u2200 (Vmax : \u211d),\n          (\u2200 e \u2208 X, |e.2| \u2264 Vmax) \u2192\n            small F \u2192\n              \u2191X.length * (F.\u03b7 + F.\u03b7e) \u2264 F.u \u2192\n                \u2200 (t : Tree (\u211d \u00d7 \u211d)),\n                  t.flat = X \u2192\n                    (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                      (\u2191t.depth + \u2191D + 1) * (F.u + F.ue + F.ul) \u2264 1 / 16 \u2192\n                        \u2200 (st : State_a \u211d),\n                          Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                            \u2200 (w : \u211d),\n                              fout_o F st w \u2192\n                                |w - attn X| \u2264\n                                  4 * attnScale X *\n                                        ((\u2191D + 3 * \u2191t.depth + 4) * F.u + (\u2191t.depth + 1) * ((hi - lo) * F.u + F.ue)) +\n                                      \n... (145 more characters)"
+     ]
+    },
+    {
+     "round": 4,
+     "model": "opus",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 12.0,
+     "errors": [
+      "line 25 `|w - attn X| \u2264 (((4 : \u211d) * (attnScale X) * ((((D : \u211d) + ((3 : \u211d) * (t.depth : \u211d)) + (4 : \u211d)) * F.u) `: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List (\u211d \u00d7 \u211d)),\n    X \u2260 [] \u2192\n      (\u2200 e \u2208 X, lo \u2264 e.1 \u2227 e.1 \u2264 hi) \u2192\n        \u2200 (Vmax : \u211d),\n          (\u2200 e \u2208 X, |e.2| \u2264 Vmax) \u2192\n            small F \u2192\n              \u2191X.length * (F.\u03b7 + F.\u03b7e) \u2264 F.u \u2192\n                \u2200 (t : Tree (\u211d \u00d7 \u211d)),\n                  t.flat = X \u2192\n                    (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                      (\u2191t.depth + \u2191D + 1) * (F.u + F.ue + F.ul) \u2264 1 / 16 \u2192\n                        \u2200 (st : State_a \u211d),\n                          Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                            \u2200 (w : \u211d),\n                              fout_o F st w \u2192\n                                |w - attn X| \u2264\n                                  4 * attnScale X *\n                                        ((\u2191D + 3 * \u2191t.depth + 4) * F.u + (\u2191t.depth + 1) * ((hi - lo) * F.u + F.ue)) +\n                                      \n... (145 more characters)"
+     ]
+    },
+    {
+     "round": 5,
+     "model": "opus",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 10.8,
+     "errors": [
+      "line 23 `|w - attn X| \u2264 (((4 : \u211d) * (attnScale X) * ((((D : \u211d) + ((3 : \u211d) * (t.depth : \u211d)) + (4 : \u211d)) * F.u) `: unsolved goals\n\u22a2 \u2200 (F : Rounding) (D : \u2115) (lo hi : \u211d) (X : List (\u211d \u00d7 \u211d)),\n    X \u2260 [] \u2192\n      (\u2200 e \u2208 X, lo \u2264 e.1 \u2227 e.1 \u2264 hi) \u2192\n        \u2200 (Vmax : \u211d),\n          (\u2200 e \u2208 X, |e.2| \u2264 Vmax) \u2192\n            small F \u2192\n              \u2191X.length * (F.\u03b7 + F.\u03b7e) \u2264 F.u \u2192\n                \u2200 (t : Tree (\u211d \u00d7 \u211d)),\n                  t.flat = X \u2192\n                    (\u2200 b \u2208 t.leaves, b \u2260 []) \u2192\n                      (\u2191t.depth + \u2191D + 1) * (F.u + F.ue + F.ul) \u2264 1 / 16 \u2192\n                        \u2200 (st : State_a \u211d),\n                          Tree.FEval (fblock_a F D) (fmerge_a F) t st \u2192\n                            \u2200 (w : \u211d),\n                              fout_o F st w \u2192\n                                |w - attn X| \u2264\n                                  4 * attnScale X *\n                                        ((\u2191D + 3 * \u2191t.depth + 4) * F.u + (\u2191t.depth + 1) * ((hi - lo) * F.u + F.ue)) +\n                                      \n... (145 more characters)"
+     ]
+    },
+    {
+     "round": 6,
+     "model": "opus",
+     "stage": "compile",
+     "ok": false,
+     "seconds": 17.6,
+     "errors": [
+      "line 152 `exact absurd trivial (fun _ => fp_bound_statement_false (by exact?))`: `exact?` could not close the goal. Try `apply?` to see partial suggestions."
+     ]
+    }
+   ]
+  },
+  {
+   "k": 3,
+   "reply_tail": " first-order part stays. The main risk in that bound is the second-order effect of the exponent shifts, since R\u00b7u is not constrained by the hypotheses. I therefore added cubic and quartic terms in (d+1)(R\u00b7u+ue) and raised the coefficient on the higher-order terms.\n\nB = 4*S*((D+3*d+4)*u+(d+1)*(R*u+ue)) + 8*S*((d+1)*(R*u+ue))^2 + 8*S*((d+1)*(R*u+ue))^3 + 8*S*((d+1)*(R*u+ue))^4 + 4*n*(eta+etae)*(V+1)",
+   "rejected": "grammar: a bound has at most 60 operations and atoms"
+  }
+ ],
+ "proved": null,
+ "cost_usd": 3.3066,
+ "seconds": 1595.6
+}

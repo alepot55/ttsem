@@ -1,0 +1,133 @@
+Mean and variance of a row. The elements are x_1..x_N (float32 in memory). Outputs: mean = (1/N) sum_i x_i and var = (1/N) sum_i (x_i - mean)^2 (population variance).
+
+The program below computes it by blocked folds: each block of a row is summarised (block), and
+adjacent summaries are combined (merge) along a merge tree; the output reads the final summary.
+
+```
+(program variance-welford
+  (input x)
+  (pass a
+    (state n mu q)
+    (block (n (sum 1))
+           (mu (/ (sum x) n))
+           (q (sum (* (- x mu) (- x mu)))))
+    (merge (n (+ L.n R.n))
+           (mu (+ L.mu (* (- R.mu L.mu) (/ R.n n))))
+           (q (+ L.q R.q (* (- R.mu L.mu) (- R.mu L.mu) (/ (* L.n R.n) n))))))
+  (output final (mean a.mu) (var (/ a.q a.n))))
+```
+
+The rounding model (Lean, `Discovery.Rounding`, every field a parameter):
+
+  u  : relative error of + - * / sqrt          η  : absolute error of * / with a subnormal result
+  ue : relative error of exp                   ηe : absolute error of exp with a subnormal result
+  ul : relative error of log
+
+  F.add x v : ∃ δ, |δ| ≤ F.u ∧ v = x * (1 + δ)                       -- + and -, x the exact result
+  F.mul x v : ∃ δ e, |δ| ≤ F.u ∧ |e| ≤ F.η ∧ v = x * (1 + δ) + e ∧ 0 ≤ x * v   -- * and /
+  F.exp x v : ∃ δ e, |δ| ≤ F.ue ∧ |e| ≤ F.ηe ∧ v = Real.exp x * (1 + δ) + e ∧ 0 ≤ v
+  F.log x v : ∃ δ, |δ| ≤ F.ul ∧ v = Real.log x * (1 + δ)
+  F.sqrt x v : ∃ δ, |δ| ≤ F.u ∧ v = Real.sqrt x * (1 + δ)
+  max, min, neg, abs: exact.
+
+Every operation of the program is one such rounding with its own error variables; a block's sum
+adds its terms along any binary tree of depth at most D (`Discovery.fsum`); the block summaries
+merge along any merge tree `t` (`Discovery.Tree.FEval`). Overflow is outside the model.
+
+The Lean definitions generated from the program:
+
+```lean
+/-- Pass `a` on one block `A`, in floating point: `st` is one possible summary,
+every in-block sum along a tree of depth at most `D`. -/
+def fblock_a (F : Discovery.Rounding) (D : ℕ) (A : List (ℝ)) (st : State_a) : Prop :=
+  ∃ v_n v_mu v_q r1 r2 r3 r4,
+    r1 = (A.length : ℝ) ∧
+    v_n = r1 ∧
+    Discovery.fsum F D (fun x y => y = x) A r2 ∧
+    F.mul (r2 / v_n) r3 ∧
+    v_mu = r3 ∧
+    Discovery.fsum F D (fun x y => ∃ q1 q2 q3, F.add (x - v_mu) q1 ∧ F.add (x - v_mu) q2 ∧ F.mul (q1 * q2) q3 ∧ y = q3) A r4 ∧
+    v_q = r4 ∧
+    st = ⟨v_n, v_mu, v_q⟩
+
+/-- Pass `a`, two adjacent float summaries `L` then `R` merged in floating
+point: `st` is one possible result. -/
+def fmerge_a (F : Discovery.Rounding) (L R st : State_a) : Prop :=
+  ∃ v_n v_mu v_q r1 r2 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12,
+    v_n = L.n + R.n ∧
+    F.add (R.mu - L.mu) r1 ∧
+    F.mul (R.n / v_n) r2 ∧
+    F.mul (r1 * r2) r3 ∧
+    F.add (L.mu + r3) r4 ∧
+    v_mu = r4 ∧
+    F.add (R.mu - L.mu) r5 ∧
+    F.add (R.mu - L.mu) r6 ∧
+    F.mul (L.n * R.n) r7 ∧
+    F.mul (r7 / v_n) r8 ∧
+    F.mul (r5 * r6) r9 ∧
+    F.mul (r9 * r8) r10 ∧
+    F.add (L.q + R.q) r11 ∧
+    F.add (r11 + r10) r12 ∧
+    v_q = r12 ∧
+    st = ⟨v_n, v_mu, v_q⟩
+
+/-- The output `var`, rounded as its expression rounds it: `w` is one possible
+value. -/
+def fout_var (F : Discovery.Rounding) (st : State_a) (w : ℝ) : Prop :=
+  ∃ r1,
+    F.mul (st.q / st.n) r1 ∧
+    w = r1
+
+/-- The exact (population) variance of a row. -/
+noncomputable def vr (X : List ℝ) : ℝ :=
+  (X.map fun x => (x - X.sum / X.length) ^ 2).sum / X.length
+
+/-- The exact mean of the squares of a row. -/
+noncomputable def msq (X : List ℝ) : ℝ := (X.map fun x => x ^ 2).sum / X.length
+```
+
+The statement to be proved, with B to be chosen:
+
+```lean
+  ∀ (F : Discovery.Rounding) (D : ℕ) (lo hi : ℝ) (X : List (ℝ)), X ≠ [] →
+    (∀ x ∈ X, lo ≤ x ∧ x ≤ hi) → small F → (X.length : ℝ) * (F.η + F.ηe) ≤ F.u → (X.length : ℝ) * F.u ≤ 1 →
+    ∀ (t : Discovery.Tree (ℝ)), t.flat = X → (∀ b ∈ t.leaves, b ≠ []) →
+    ((t.depth : ℝ) + D + 1) * (F.u + F.ue + F.ul) ≤ 1 / 16 →
+    ∀ (st : State_a), Discovery.Tree.FEval (fblock_a F D) (fmerge_a F) t st →
+    ∀ (w : ℝ), fout_var F st w →
+      |w - vr X| ≤ B
+```
+
+where `small F` is: F.u ≤ 1 / 256 ∧ F.ue ≤ 1 / 64 ∧ F.ul ≤ 1 / 64 ∧ F.η ≤ 1 / 2 ^ 100 ∧ F.ηe ≤ 1 / 2 ^ 100.
+
+Give B, an upper bound that makes the statement true for every such X, lo, hi, D, merge tree t,
+and every admissible choice of the rounding errors. B is a sum of products of nonnegative numbers
+and these atoms, with parentheses and integer powers 1 to 4 (no subtraction; divide only by a
+number):
+
+  u     relative error of + - * / sqrt (F.u)
+  ue    relative error of exp (F.ue)
+  ul    relative error of log (F.ul)
+  eta   absolute error of * / below the normal range (F.η)
+  etae  absolute error of exp below the normal range (F.ηe)
+  D     the bound on the depth of the in-block summation trees
+  d     the depth of the merge tree t (t.depth)
+  n     the number of elements of the row (X.length)
+  R     hi - lo
+  M     max |lo| |hi|
+  S2    the exact variance of the row (vr X)
+  Q     the exact mean of the squares of the row (msq X)
+
+The bound will be tested against floating-point runs and then proved in Lean. A false bound is
+rejected; among true bounds a smaller one is better.
+
+Your earlier proposals and what happened to them:
+- proposal 1: B = 32*(d+D+2)*u*Q + 8*(d+D+2)*eta was not proved. The prover said: t state with `(n, 2⁻¹², 0)`. With `a = 2⁻¹² − 1/n` and `w = n·n/(2n) = 2²³`, every operation is exact, so the computed `q` is the exact `q` plus `(2ae + e²)·w`.
+- **Comparison:** the error is `|w − vr X| = (2ae + e²)·w/N ≈ 2¹²·u/N`. The bound is `32·(2+24+2)·u·msq X = 1792·u·(2/N)/2 ≈ 1792·u/N`, since `msq X = 2/N`. So the error is more than twice the bound.
+
+**Check.** Lean's `norm_num` confirmed the final numeric inequality, `(2ae + e²)·w/(2n) > 32·28·u·(2/(2n))` with these values, in `Scratch.lean`. I worked out the rest of the counterexample by hand and did not formalise it in Lean.
+
+FALSE
+
+Reply with the bound alone on the last line, in the form
+B = <expression>

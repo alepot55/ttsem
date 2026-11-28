@@ -1,0 +1,38 @@
+{
+ "program": "VarianceWelford",
+ "B": "2*(D + 7*d + 6)*u*S2 + 3*(d+1)*(D + 3*d + 2)^2*u^2*M^2 + 2*R*M*u*d*(D + 2*d + 1) + 6*eta*(d+1)^2*(1+R)^2",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox\\VarianceWelford-fd44417d02700c6f-1795861441",
+   "seconds": 3601.2,
+   "cost_usd": 0.0,
+   "turns": null,
+   "result": "",
+   "subtype": null,
+   "error": "timeout after 3600 s",
+   "stage": "deny",
+   "ok": false,
+   "errors": [
+    "not allowed in your text: sorry"
+   ]
+  },
+  {
+   "model": "opus",
+   "sandbox": "C:\\dev\\fpbox\\VarianceWelford-fd44417d02700c6f-1795865071",
+   "seconds": 3601.0,
+   "cost_usd": 0.0,
+   "turns": null,
+   "result": "",
+   "subtype": null,
+   "error": "timeout after 3600 s",
+   "stage": "deny",
+   "ok": false,
+   "errors": [
+    "not allowed in your text: sorry"
+   ]
+  }
+ ],
+ "proved": null,
+ "cost_usd": 0.0
+}

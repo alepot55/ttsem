@@ -91,6 +91,29 @@ def _overlap(a: Record, b: Record) -> bool:
     return ra[0] <= rb[1] and rb[0] <= ra[1]
 
 
+def close(
+    us: float, rng: tuple[float, float] | None, elite: Record, tol: float = TOLERANCE
+) -> bool:
+    """Whether a time (and its range) is too close to an elite's to tell them apart: within
+    ``tol`` or with overlapping ranges. Such pairs are timed again side by side (gpu.paired)."""
+    if elite.measured_us is None:
+        return False
+    if abs(us - elite.measured_us) <= tol * min(us, elite.measured_us):
+        return True
+    er = elite.measured_range
+    return rng is not None and er is not None and rng[0] <= er[1] and er[0] <= rng[1]
+
+
+def _better_paired(a: Record, b: Record, ratio: float, tolerance: float = TOLERANCE) -> bool:
+    """``a`` against the elite ``b`` from their paired ratio a / b: faster beyond ``tolerance``
+    wins; within it, a tie, which goes to the smaller program."""
+    if ratio < 1 - tolerance:
+        return True
+    if ratio > 1 + tolerance:
+        return False
+    return a.verdict.nodes < b.verdict.nodes
+
+
 def _better(a: Record, b: Record, tolerance: float = TOLERANCE) -> bool:
     """Whether ``a`` beats ``b``: faster by more than ``tolerance`` and, when both were timed,
     with a range of timings apart from ``b``'s; otherwise (a tie) smaller. With a tolerance of 0
@@ -112,6 +135,7 @@ class Archive:
         self.records: list[Record] = []
         self.elites: dict[Cell, Record] = {}
         self.by_digest: dict[str, Record] = {}  # the first record of each program
+        self.canonicals: set[str] = set()  # the programs seen, up to renaming
 
     def eligible(self, rec: Record) -> bool:
         """Whether a record may be its cell's elite: correct, not a duplicate, its kernel not
@@ -130,6 +154,7 @@ class Archive:
         measured_us: float | None = None,
         gpu_failure: str = "",
         measured_range: tuple[float, float] | None = None,
+        paired_ratio: float | None = None,
     ) -> Record:
         """Record one evaluated candidate; a correct one may become its cell's elite.
         ``measured_us`` is the time its kernel took on the GPU and ``measured_range`` the range of
@@ -145,7 +170,8 @@ class Archive:
             measured_range=measured_range,
         )
         cell = verdict.cell()
-        if verdict.digest and verdict.digest in self.by_digest:
+        renamed = bool(verdict.canonical) and verdict.canonical in self.canonicals
+        if verdict.digest and (verdict.digest in self.by_digest or renamed):
             rec.status = "duplicate"
         elif not verdict.correct:
             rec.status = "rejected"
@@ -155,6 +181,9 @@ class Archive:
             rec.status = "unmeasured"
         elif cell not in self.elites:
             rec.status = "new-cell"
+        elif paired_ratio is not None:  # timed side by side with the elite: their ratio decides
+            better = _better_paired(rec, self.elites[cell], paired_ratio, self.tolerance)
+            rec.status = "improved" if better else "kept"
         elif _better(rec, self.elites[cell], self.tolerance):
             rec.status = "improved"
         else:
@@ -163,6 +192,8 @@ class Archive:
             self.elites[cell] = rec
         if verdict.digest and rec.status != "duplicate":
             self.by_digest[verdict.digest] = rec
+            if verdict.canonical:
+                self.canonicals.add(verdict.canonical)
         self.records.append(rec)
         return rec
 

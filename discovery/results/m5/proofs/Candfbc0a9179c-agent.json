@@ -1,0 +1,30 @@
+{
+ "program": "Candfbc0a9179c",
+ "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox\\Candfbc0a9179c-a7d1da049cd21d6d-1795862867",
+   "seconds": 2441.9,
+   "cost_usd": 4.063018100000001,
+   "turns": 117,
+   "result": "+ F.\u03b7e) \u2264 ((K : \u211d) + 1) * n * (F.\u03b7 + F.\u03b7e) := by\n      linarith [mul_nonneg (mul_nonneg hK1 h\u03b7'0) (by linarith : (0:\u211d) \u2264 n - 1)]\n    rw [hzdef]; linarith [mul_nonneg hK0 h\u03b7ep]\n  have hAK : Q - z \u2264 Q - 5 / 2 * (K : \u211d) * F.\u03b7 := by linarith\n  have hd0 : 0 < st.d := by linarith\n  have hS0 : 0 < S := by linarith\n  have hc0 : 0 \u2264 F.u * (hi - lo) := mul_nonneg hu (by linarith)\n  have hlow := lower_core (F.u * (hi - lo)) st.d S Sm _ _ (n * (2 * ((K : \u211d) + 1) * (F.\u03b7 + F.\u03b7e)))\n    (Q - z) hS1 hc2 hL hA haK0 hnBK (by linarith) hAK (by linarith)\n  have hup := upper_core (F.u * (hi - lo)) st.d S _ (n * (2 * ((K : \u211d) + 1) * (F.\u03b7 + F.\u03b7e))) Sp hS1 hc1\n    (logP F.u F.ue hu hue D K).1 hc0 hnBK hU hd0\n  have hlogP := (logP F.u F.ue hu hue D K).2\n  have hlogQ := logQ F.u (F.ue + F.\u03b7e) hu (by linarith) (by linarith) (by linarith) D K\n  rw [show (1:\u211d) - (F.ue + F.\u03b7e) = 1 - F.ue - F.\u03b7e by ring] at hlogQ\n  have hlogW := log_sub_ge Q z hQpos hz0 (by linarith)\n  have hzdiv : z / (Q - z) \u2264 10 / 7 * z := by\n    rw [div_le_iff\u2080 (by linarith)]\n    have := mul_le_mul_of_nonneg_left hQz hz0\n    linarith\n  unfold znorm\n  rw [hm, hsumexp, log_connect _ _ _ hd0 hS0, abs_le]\n  have hDu := mul_nonneg hD hu\n  have hKu := mul_nonneg hK0 hu\n  have hKue := mul_nonneg hK0 hue\n  have hnK := mul_nonneg (mul_nonneg hK0 hn0) h\u03b7'0\n  have hn\u03b70 := mul_nonneg hn0 h\u03b7'0\n  have h\u0394 : F.u * (hi - lo) \u2264 2 * F.u * (hi - lo) := by linarith\n  constructor\n  \u00b7 linarith\n  \u00b7 linarith\n```\n\n```lean fp_bound\n  exact fp_bound_main\n```\n\nDONE",
+   "subtype": "success",
+   "error": "",
+   "stage": "ok",
+   "ok": true,
+   "errors": []
+  }
+ ],
+ "proved": {
+  "model": "sonnet",
+  "axioms": [
+   "propext",
+   "Classical.choice",
+   "Quot.sound"
+  ],
+  "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)",
+  "lean": "(((2 : \u211d) * F.u * (hi - lo)) + (((5 : \u211d) * ((1 : \u211d) / 4)) * (((D : \u211d) * F.u) + ((2 : \u211d) * (t.depth : \u211d) * F.u) + F.u + (((t.depth : \u211d) + (1 : \u211d)) * F.ue))) + ((4 : \u211d) * (X.length : \u211d) * ((t.depth : \u211d) + (2 : \u211d)) * (F.\u03b7 + F.\u03b7e)))"
+ },
+ "cost_usd": 4.063
+}

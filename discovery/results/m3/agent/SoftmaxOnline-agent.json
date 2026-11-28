@@ -1,0 +1,30 @@
+{
+ "program": "SoftmaxOnline",
+ "B": "2*(d+1)*R*u + 2*(d+1)*ue + 2*(2*d + D)*u + 4*n*(eta + etae)",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox\\SoftmaxOnline-a7494e48763a210d-1795860284",
+   "seconds": 2965.3,
+   "cost_usd": 4.463159099999999,
+   "turns": 128,
+   "result": "+ Real.log ((t.flat.map fun x => Real.exp (x - lmax t.flat)).sum) := by\n    rw [hsum, Real.log_mul (Real.exp_pos _).ne' hSpos.ne', Real.log_exp]\n  have e : Real.log (znorm st) - Real.log ((t.flat.map Real.exp).sum) =\n      Real.log st.d - Real.log ((t.flat.map fun x => Real.exp (x - lmax t.flat)).sum) := by\n    rw [hlog1, hlog2]; ring\n  rw [e]\n  -- numeric parameters\n  have hku : (t.depth:\u211d) * F.u \u2264 1/16 := by\n    have := mul_nonneg hk0 hue\n    have := mul_nonneg hk0 hul\n    have := mul_nonneg hD0 hu\n    have := mul_nonneg hD0 hue\n    have := mul_nonneg hD0 hul\n    nlinarith\n  have hg : (t.flat.length:\u211d) * (F.\u03b7 + F.\u03b7e) \u2264 F.u := hnX\n  have hEnn : 0 \u2264 (t.flat.length:\u211d) * (F.\u03b7e + (t.depth:\u211d) * ((6/5)*(F.\u03b7e + F.\u03b7))) := by positivity\n  have hE : (t.flat.length:\u211d) * (F.\u03b7e + (t.depth:\u211d) * ((6/5)*(F.\u03b7e + F.\u03b7))) \u2264 2/25 := by\n    have h1 : (t.depth:\u211d) * ((t.flat.length:\u211d) * (F.\u03b7 + F.\u03b7e)) \u2264 (t.depth:\u211d) * F.u :=\n      mul_le_mul_of_nonneg_left hg hk0\n    have h2 : 0 \u2264 (t.flat.length:\u211d) * F.\u03b7 := mul_nonneg hn0 h\u03b7\n    nlinarith\n  have hapos : 0 \u2264 (F.u*(hi-lo) + 51/50*F.ue + 51/50*(D*F.u)) +\n      (t.depth:\u211d) * (F.u*(hi-lo) + 2*(51/50)*F.u + 51/50*F.ue) := by\n    have : 0 \u2264 hi - lo := by linarith\n    positivity\n  have fin := final_ana _ _ _ _ hS1 hapos hEnn hE hd45 hd (by simpa using he)\n  refine le_trans fin ?_\n  have := goal_ineq F.u F.ue F.\u03b7 F.\u03b7e (hi - lo) D t.depth t.flat.length hu hue h\u03b7 h\u03b7e\n    (by linarith) hD0 hk0 hn0 hg\n  nlinarith\n```\n\n```lean fp_bound\nexact fp_bound_aux\n```\n\nDONE",
+   "subtype": "success",
+   "error": "",
+   "stage": "ok",
+   "ok": true,
+   "errors": []
+  }
+ ],
+ "proved": {
+  "model": "sonnet",
+  "axioms": [
+   "propext",
+   "Classical.choice",
+   "Quot.sound"
+  ],
+  "B": "2*(d+1)*R*u + 2*(d+1)*ue + 2*(2*d + D)*u + 4*n*(eta + etae)",
+  "lean": "(((2 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * (hi - lo) * F.u) + ((2 : \u211d) * ((t.depth : \u211d) + (1 : \u211d)) * F.ue) + ((2 : \u211d) * (((2 : \u211d) * (t.depth : \u211d)) + (D : \u211d)) * F.u) + ((4 : \u211d) * (X.length : \u211d) * (F.\u03b7 + F.\u03b7e)))"
+ },
+ "cost_usd": 4.4632
+}

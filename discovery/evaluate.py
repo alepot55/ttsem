@@ -42,6 +42,7 @@ class Verdict:
     state_fields: int = 0
     nodes: int = 0
     digest: str = ""
+    canonical: str = ""  # the digest up to renaming (ir.Program.canonical_digest)
     name: str = ""
     text: str = ""
     # merge(block A, block B) == block(A ++ B) on random splits: what a proof needs
@@ -214,7 +215,13 @@ def evaluate(
     except ir.IRError as exc:
         return Verdict("parse", f"does not parse: {exc}", text=text)
     v = Verdict(
-        "exact", "", name=prog.name, text=prog.text(), digest=prog.digest(), nodes=ir.size(prog)
+        "exact",
+        "",
+        name=prog.name,
+        text=prog.text(),
+        digest=prog.digest(),
+        canonical=prog.canonical_digest(),
+        nodes=ir.size(prog),
     )
     v.passes = sum(1 for fields in ir.reads_elements(prog) if fields)
     v.state_fields = sum(len(p.fields) for p in prog.passes)

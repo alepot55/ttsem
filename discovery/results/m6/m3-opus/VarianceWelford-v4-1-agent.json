@@ -1,0 +1,23 @@
+{
+ "program": "VarianceWelford-v4-1",
+ "B": "32*(d+D+2)*u*Q + 8*(d+D+2)*eta",
+ "attempts": [
+  {
+   "model": "opus",
+   "sandbox": "C:\\dev\\fpbox2\\VarianceWelford-v4-1-2ba60b90a01bfb9b-1795871197",
+   "seconds": 149.7,
+   "cost_usd": 0.3849846,
+   "turns": 3,
+   "result": "plies the error by `(R.mu \u2212 L.mu)\u00b7L.n\u00b7R.n/n`. This makes the error in `q` grow like `u\u00b7\u221an\u00b7\u03a3x\u00b2`, but the claimed bound only allows `32(d+D+2)\u00b7u\u00b7\u03a3x\u00b2`, which grows with `log n`.\n\n**Counterexample.** All roundings are exact except one.\n- **Format:** `u = 2\u207b\u00b2\u2075`, `\u03b7 = \u03b7e = ue = ul = 0`. This satisfies `small F`, `N(\u03b7+\u03b7e) \u2264 u`, `N\u00b7u = 1 \u2264 1`, and `(d+D+1)\u00b7u \u2264 1/16`.\n- **Data:** `n = 2\u00b2\u2074` and `X = [1] ++ replicate (n\u22121) 0 ++ replicate n 2\u207b\u00b9\u00b2`, so `N = 2\u00b2\u2075`. Take `lo = 0`, `hi = 1`.\n- **Trees:** the merge tree is `node (node (leaf [1]) (leaf zeros)) (leaf cs)`, which has depth `d = 2`. The in-block sums use balanced trees of depth `D = 24`.\n- **First merge:** it combines `(1, 1, 0)` with `(n\u22121, 0, 0)`. Here `r3 = (\u22121)\u00b7((n\u22121)/n)\u00b7(1+u)` is allowed (`|\u03b4| = u`, and the sign condition holds). That gives `mu~ = 1/n \u2212 e` with `e = u(n\u22121)/n \u2248 u`, while `q` stays exact.\n- **Second merge:** it combines that state with `(n, 2\u207b\u00b9\u00b2, 0)`. With `a = 2\u207b\u00b9\u00b2 \u2212 1/n` and `w = n\u00b7n/(2n) = 2\u00b2\u00b3`, every operation is exact, so the computed `q` is the exact `q` plus `(2ae + e\u00b2)\u00b7w`.\n- **Comparison:** the error is `|w \u2212 vr X| = (2ae + e\u00b2)\u00b7w/N \u2248 2\u00b9\u00b2\u00b7u/N`. The bound is `32\u00b7(2+24+2)\u00b7u\u00b7msq X = 1792\u00b7u\u00b7(2/N)/2 \u2248 1792\u00b7u/N`, since `msq X = 2/N`. So the error is more than twice the bound.\n\n**Check.** Lean's `norm_num` confirmed the final numeric inequality, `(2ae + e\u00b2)\u00b7w/(2n) > 32\u00b728\u00b7u\u00b7(2/(2n))` with these values, in `Scratch.lean`. I worked out the rest of the counterexample by hand and did not formalise it in Lean.\n\nFALSE",
+   "subtype": "success",
+   "error": "",
+   "stage": "deny",
+   "ok": false,
+   "errors": [
+    "not allowed in your text: sorry"
+   ]
+  }
+ ],
+ "proved": null,
+ "cost_usd": 0.385
+}

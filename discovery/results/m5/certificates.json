@@ -1,0 +1,79 @@
+{
+ "5f3aa4189b4e6375": {
+  "name": "softmax-3pass",
+  "text": "(program softmax-3pass\n  (input x)\n  (pass a\n    (state m)\n    (block (m (rmax x)))\n    (merge (m (max L.m R.m))))\n  (pass b\n    (state d)\n    (block (d (sum (exp (- x a.m)))))\n    (merge (d (+ L.d R.d))))\n  (output elementwise (/ (exp (- x a.m)) b.d)))",
+  "why": "no statement: rescaling policies: one-pass softmax programs, kind in POLICY_KINDS"
+ },
+ "46f25623a0de7696": {
+  "name": "softmax-online",
+  "text": "(program softmax-online\n  (input x)\n  (pass a\n    (state m d)\n    (block (m (rmax x))\n           (d (sum (exp (- x m)))))\n    (merge (M (max L.m R.m))\n           (d (+ (* L.d (exp (- L.m M))) (* R.d (exp (- R.m M)))))\n           (m M)))\n  (output elementwise (/ (exp (- x a.m)) a.d)))",
+  "value": 524.0,
+  "B": "2*((d+1)*(u*R+ue) + (D+2*d)*u + 2*n*(d+1)*(eta+etae))",
+  "kind": "softmax",
+  "proposals": 1,
+  "tightness": 45.77826604577881
+ },
+ "fbc0a9179c9f2d15": {
+  "name": "softmax-online",
+  "text": "(program softmax-online\n  (input x)\n  (pass a\n    (state m d)\n    (block (m (rmax x))\n           (d (sum (exp (- x m)))))\n    (merge (m (max L.m R.m))\n           (d (+ (* L.d (exp (- L.m m))) (* R.d (exp (- R.m m)))))))\n  (output elementwise (/ (exp (- x a.m)) a.d)))",
+  "value": 148.75,
+  "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)",
+  "kind": "softmax",
+  "proposals": 1,
+  "tightness": 22.000275357081634
+ },
+ "ab4fca0eb80750d5": {
+  "name": "softmax-online",
+  "text": "(program softmax-online\n  (input x)\n  (pass a\n    (state m d)\n    (block (m (rmax x))\n           (d (sum (exp (- x m)))))\n    (merge (M (max L.m R.m))\n           (m M)\n           (d (+ (* L.d (exp (- L.m M))) (* R.d (exp (- R.m M)))))))\n  (output elementwise (/ (exp (- x a.m)) a.d)))",
+  "value": 400.0,
+  "B": "2*(D+2*d+1)*(u+ue) + R*u + 8*n*(eta+etae)",
+  "kind": "softmax",
+  "proposals": 1,
+  "tightness": 54.787789294742204
+ },
+ "4fb632176b99e99e": {
+  "name": "softmax-lse1",
+  "text": "(program softmax-lse1\n  (input x)\n  (pass a\n    (state s)\n    (block (mx (rmax x))\n           (t (sum (exp (- x mx))))\n           (s (+ mx (log t))))\n    (merge (mm (max L.s R.s))\n           (s (+ mm (log (+ (exp (- L.s mm)) (exp (- R.s mm))))))))\n  (output elementwise (exp (- x a.s))))",
+  "value": 790592.0,
+  "B": "2*(d+1)*(u*(R+D+M+n+3)+ue+ul*(n+1))",
+  "kind": "softmax",
+  "proposals": 1,
+  "tightness": 26.70256626741351
+ },
+ "3f60b5facd6851e8": {
+  "name": "softmax-online2",
+  "text": "(program softmax-online2\n  (input x)\n  (pass a\n    (state m d)\n    (block (m (rmax x))\n           (d (sum (exp (- x m)))))\n    (merge (m (max L.m R.m))\n           (d (ifgt L.m R.m (+ L.d (* R.d (exp (- R.m L.m)))) (+ R.d (* L.d (exp (- L.m R.m))))))))\n  (output elementwise (/ (exp (- x a.m)) a.d)))",
+  "value": 526.0,
+  "B": "2*((d+1)*(ue + R*u) + (2*d + D + 1)*u) + 4*n*(eta + etae)",
+  "kind": "softmax",
+  "proposals": 1,
+  "tightness": 46.595251573197025
+ },
+ "4f04f566283b07e6": {
+  "name": "softmax-lse1",
+  "text": "(program softmax-lse1\n  (input x)\n  (pass a\n    (state s)\n    (block (mx (rmax x))\n           (s (+ mx (log (sum (exp (- x mx)))))))\n    (merge (mm (max L.s R.s))\n           (s (+ mm (log (+ (exp (- L.s mm)) (exp (- R.s mm))))))))\n  (output elementwise (exp (- x a.s))))",
+  "value": 131727.0,
+  "B": "3*(u*R + ue + D*u + ul*n + u*M + u*n + n*etae + d*(3*u + ue + ul + etae + u*M + u*n))/2",
+  "kind": "softmax",
+  "proposals": 1,
+  "tightness": 9.514151069670438
+ },
+ "6bc7543d3fc1231c": {
+  "name": "softmax-lse",
+  "text": "(program softmax-lse\n  (input x)\n  (pass a\n    (state s)\n    (block (mx (rmax x))\n           (s (+ mx (log (sum (exp (- x mx)))))))\n    (merge (s (+ (max L.s R.s) (log (+ (exp (- L.s (max L.s R.s))) (exp (- R.s (max L.s R.s)))))))))\n  (output elementwise (exp (- x a.s))))",
+  "value": 298758.0,
+  "B": "2*((R + D + M + n + 1)*u + ue + ul*n + d*((R + M + 2*n + 1)*u + ue + ul))",
+  "kind": "softmax",
+  "proposals": 1,
+  "tightness": 15.305640167798632
+ },
+ "c5b368c2f4eae74d": {
+  "name": "softmax-logsum",
+  "text": "(program softmax-logsum\n  (input x)\n  (pass a\n    (state m s)\n    (block (m (rmax x))\n           (s (log (sum (exp (- x m))))))\n    (merge (m (max L.m R.m))\n           (s (log (+ (exp (+ L.s (- L.m m))) (exp (+ R.s (- R.m m))))))))\n  (output elementwise (exp (- x (+ a.m a.s)))))",
+  "value": 1242402.0,
+  "B": "3*((d+1)*(u*(2*R+n+2) + ue + ul*n) + D*u + ue + u*R + ul*n + etae*(n+4*d+4))",
+  "kind": "softmax",
+  "proposals": 1,
+  "tightness": 46651.045530952644
+ }
+}
