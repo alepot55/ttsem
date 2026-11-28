@@ -1,0 +1,443 @@
+[
+  {
+    "name": "softmax-online",
+    "problem": "softmax",
+    "statement": "over the reals, for any blocking and any merge tree, softmax-online computes what softmax-3pass computes: in pass a, merging the summaries (m (rmax x)) (d (sum (exp (- x m)))) of two nonempty blocks with (m (max L.m R.m)) (d (+ (* L.d (exp (- L.m m))) (* R.d (exp (- R.m m))))) gives the summary of the two blocks together",
+    "module": "Discovery.Library.SoftmaxOnline",
+    "file": "SoftmaxOnline.lean",
+    "program": "(program softmax-online\n  (input x)\n  (pass a\n    (state m d)\n    (block (m (rmax x))\n           (d (sum (exp (- x m)))))\n    (merge (m (max L.m R.m))\n           (d (+ (* L.d (exp (- L.m m))) (* R.d (exp (- R.m m)))))))\n  (output elementwise (/ (exp (- x a.m)) a.d)))",
+    "digest": "fbc0a9179c9f2d15",
+    "spec": "softmax-3pass",
+    "statements": {
+      "merge_block_a": "theorem merge_block_a (A B : List ℝ) (hA : A ≠ []) (hB : B ≠ []) :\n    merge_a (block_a A) (block_a B) = block_a (A ++ B)",
+      "spec_eq": "theorem spec_eq (X : List ℝ) (hX : X ≠ []) (x : ℝ) :\n    output X x = Spec.output X x",
+      "blocked_eq_spec": "theorem blocked_eq_spec (X : List ℝ) (hX : X ≠ []) (t_a : Discovery.Tree ℝ) (h_a : t_a.flat = X) (l_a : ∀ blk ∈ t_a.leaves, blk ≠ []) (x : ℝ) :\n    blocked t_a x = Spec.output X x"
+    },
+    "helpers": [
+      "theorem shift_exp_sum (A : List ℝ) (a b : ℝ) : (A.map fun x => Real.exp (x - a)).sum = Real.exp (b - a) * (A.map fun x => Real.exp (x - b)).sum"
+    ],
+    "axioms": {
+      "blocked_eq_spec": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "spec_eq": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "merge_block_a": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    },
+    "date": "2026-11-27T23:59:44+00:00",
+    "model": "claude-cli:sonnet",
+    "rounds": 1
+  },
+  {
+    "name": "attention-online",
+    "problem": "attention",
+    "statement": "over the reals, for any blocking and any merge tree, attention-online computes what attention-3pass computes: in pass a, merging the summaries (m (rmax s)) (d (sum (exp (- s m)))) (o (sum (* (exp (- s m)) v))) of two nonempty blocks with (m (max L.m R.m)) (d (+ (* L.d (exp (- L.m m))) (* R.d (exp (- R.m m))))) (o (+ (* L.o (exp (- L.m m))) (* R.o (exp (- R.m m))))) gives the summary of the two blocks together",
+    "module": "Discovery.Library.AttentionOnline",
+    "file": "AttentionOnline.lean",
+    "program": "(program attention-online\n  (input s v)\n  (pass a\n    (state m d o)\n    (block (m (rmax s))\n           (d (sum (exp (- s m))))\n           (o (sum (* (exp (- s m)) v))))\n    (merge (m (max L.m R.m))\n           (d (+ (* L.d (exp (- L.m m))) (* R.d (exp (- R.m m)))))\n           (o (+ (* L.o (exp (- L.m m))) (* R.o (exp (- R.m m)))))))\n  (output final (o (/ a.o a.d))))",
+    "digest": "981b077cbdfe4ce3",
+    "spec": "attention-3pass",
+    "statements": {
+      "merge_block_a": "theorem merge_block_a (A B : List (ℝ × V)) (hA : A ≠ []) (hB : B ≠ []) :\n    merge_a (block_a A) (block_a B) = block_a (A ++ B)",
+      "spec_eq": "theorem spec_eq (X : List (ℝ × V)) (hX : X ≠ []) :\n    output X = Spec.output X",
+      "blocked_eq_spec": "theorem blocked_eq_spec (X : List (ℝ × V)) (hX : X ≠ []) (t_a : Discovery.Tree (ℝ × V)) (h_a : t_a.flat = X) (l_a : ∀ blk ∈ t_a.leaves, blk ≠ []) :\n    blocked t_a = Spec.output X"
+    },
+    "helpers": [
+      "theorem sum_exp_shift_aux {V : Type*} (A : List (ℝ × V)) (c m : ℝ) : (A.map fun e => Real.exp (e.1 - c)).sum = (A.map fun e => Real.exp (e.1 - m)).sum * Real.exp (m - c)",
+      "theorem vsum_exp_shift_aux {V : Type*} [AddCommGroup V] [Module ℝ V] (A : List (ℝ × V)) (c m : ℝ) : (A.map fun e => Real.exp (e.1 - c) • e.2).sum = Real.exp (m - c) • (A.map fun e => Real.exp (e.1 - m) • e.2).sum"
+    ],
+    "axioms": {
+      "blocked_eq_spec": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "spec_eq": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "merge_block_a": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    },
+    "date": "2026-11-28T00:01:38+00:00",
+    "model": "claude-cli:sonnet",
+    "rounds": 2
+  },
+  {
+    "name": "variance-welford",
+    "problem": "variance",
+    "statement": "over the reals, for any blocking and any merge tree, variance-welford computes what variance-2pass computes: in pass a, merging the summaries (n (sum 1)) (mu (/ (sum x) n)) (q (sum (* (- x mu) (- x mu)))) of two nonempty blocks with (n (+ L.n R.n)) (mu (+ L.mu (* (- R.mu L.mu) (/ R.n n)))) (q (+ L.q R.q (* (- R.mu L.mu) (- R.mu L.mu) (/ (* L.n R.n) n)))) gives the summary of the two blocks together",
+    "module": "Discovery.Library.VarianceWelford",
+    "file": "VarianceWelford.lean",
+    "program": "(program variance-welford\n  (input x)\n  (pass a\n    (state n mu q)\n    (block (n (sum 1))\n           (mu (/ (sum x) n))\n           (q (sum (* (- x mu) (- x mu)))))\n    (merge (n (+ L.n R.n))\n           (mu (+ L.mu (* (- R.mu L.mu) (/ R.n n))))\n           (q (+ L.q R.q (* (- R.mu L.mu) (- R.mu L.mu) (/ (* L.n R.n) n))))))\n  (output final (mean a.mu) (var (/ a.q a.n))))",
+    "digest": "babb67f94322eed7",
+    "spec": "variance-2pass",
+    "statements": {
+      "merge_block_a": "theorem merge_block_a (A B : List ℝ) (hA : A ≠ []) (hB : B ≠ []) :\n    merge_a (block_a A) (block_a B) = block_a (A ++ B)",
+      "spec_eq": "theorem spec_eq (X : List ℝ) (hX : X ≠ []) :\n    output X = Spec.output X",
+      "blocked_eq_spec": "theorem blocked_eq_spec (X : List ℝ) (hX : X ≠ []) (t_a : Discovery.Tree ℝ) (h_a : t_a.flat = X) (l_a : ∀ blk ∈ t_a.leaves, blk ≠ []) :\n    blocked t_a = Spec.output X"
+    },
+    "helpers": [
+      "theorem one_sum (A : List ℝ) : (A.map fun _ => (1 : ℝ)).sum = A.length",
+      "theorem q_expand (A : List ℝ) (c : ℝ) : (A.map fun x => (x - c) * (x - c)).sum = (A.map fun x => x * x).sum - 2 * c * A.sum + c * c * A.length"
+    ],
+    "axioms": {
+      "blocked_eq_spec": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "spec_eq": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "merge_block_a": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    },
+    "date": "2026-11-28T00:02:23+00:00",
+    "model": "claude-cli:sonnet",
+    "rounds": 1
+  },
+  {
+    "name": "variance-sumsq",
+    "problem": "variance",
+    "statement": "over the reals, for any blocking and any merge tree, variance-sumsq computes what variance-2pass computes: in pass a, merging the summaries (n (sum 1)) (t (sum x)) (u (sum (* x x))) of two nonempty blocks with (n (+ L.n R.n)) (t (+ L.t R.t)) (u (+ L.u R.u)) gives the summary of the two blocks together",
+    "module": "Discovery.Library.VarianceSumsq",
+    "file": "VarianceSumsq.lean",
+    "program": "(program variance-sumsq\n  (input x)\n  (pass a\n    (state n t u)\n    (block (n (sum 1))\n           (t (sum x))\n           (u (sum (* x x))))\n    (merge (n (+ L.n R.n))\n           (t (+ L.t R.t))\n           (u (+ L.u R.u))))\n  (output final (mean (/ a.t a.n)) (var (- (/ a.u a.n) (* (/ a.t a.n) (/ a.t a.n))))))",
+    "digest": "ae2513dfa2a3a1de",
+    "spec": "variance-2pass",
+    "statements": {
+      "merge_block_a": "theorem merge_block_a (A B : List ℝ) (hA : A ≠ []) (hB : B ≠ []) :\n    merge_a (block_a A) (block_a B) = block_a (A ++ B)",
+      "spec_eq": "theorem spec_eq (X : List ℝ) (hX : X ≠ []) :\n    output X = Spec.output X",
+      "blocked_eq_spec": "theorem blocked_eq_spec (X : List ℝ) (hX : X ≠ []) (t_a : Discovery.Tree ℝ) (h_a : t_a.flat = X) (l_a : ∀ blk ∈ t_a.leaves, blk ≠ []) :\n    blocked t_a = Spec.output X"
+    },
+    "helpers": [
+      "theorem sumsq_helper (A : List ℝ) (m : ℝ) : (A.map fun x => (x - m) * (x - m)).sum = (A.map fun x => x * x).sum - 2 * m * A.sum + m * m * (A.length : ℝ)"
+    ],
+    "axioms": {
+      "blocked_eq_spec": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "spec_eq": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "merge_block_a": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    },
+    "date": "2026-11-28T00:03:01+00:00",
+    "model": "claude-cli:sonnet",
+    "rounds": 1
+  },
+  {
+    "name": "softmax-lse",
+    "problem": "softmax",
+    "statement": "over the reals, for any blocking and any merge tree, softmax-lse computes what softmax-3pass computes: in pass a, merging the summaries (m (rmax x)) (s (+ m (log (sum (exp (- x m)))))) of two nonempty blocks with (m (max L.s R.s)) (s (+ m (log (+ (exp (- L.s m)) (exp (- R.s m)))))) gives the summary of the two blocks together",
+    "module": "Discovery.Library.SoftmaxLse",
+    "file": "SoftmaxLse.lean",
+    "program": "(program softmax-lse\n  (input x)\n  (pass a\n    (state s)\n    (block (m (rmax x))\n           (s (+ m (log (sum (exp (- x m)))))))\n    (merge (m (max L.s R.s))\n           (s (+ m (log (+ (exp (- L.s m)) (exp (- R.s m))))))))\n  (output elementwise (exp (- x a.s))))",
+    "digest": "7e75f7ea56184bd2",
+    "spec": "softmax-3pass",
+    "statements": {
+      "merge_block_a": "theorem merge_block_a (A B : List ℝ) (hA : A ≠ []) (hB : B ≠ []) :\n    merge_a (block_a A) (block_a B) = block_a (A ++ B)",
+      "spec_eq": "theorem spec_eq (X : List ℝ) (hX : X ≠ []) (x : ℝ) :\n    output X x = Spec.output X x",
+      "blocked_eq_spec": "theorem blocked_eq_spec (X : List ℝ) (hX : X ≠ []) (t_a : Discovery.Tree ℝ) (h_a : t_a.flat = X) (l_a : ∀ blk ∈ t_a.leaves, blk ≠ []) (x : ℝ) :\n    blocked t_a x = Spec.output X x"
+    },
+    "helpers": [
+      "theorem sm_sum_exp_pos (A : List ℝ) (hA : A ≠ []) (c : ℝ) : 0 < (A.map fun x => Real.exp (x - c)).sum",
+      "theorem sm_scale (A : List ℝ) (c m : ℝ) : (A.map fun x => Real.exp (x - c)).sum = Real.exp (m - c) * (A.map fun x => Real.exp (x - m)).sum",
+      "theorem sm_pos0 (A : List ℝ) (hA : A ≠ []) : 0 < (A.map fun x => Real.exp x).sum",
+      "theorem sm_block_s (A : List ℝ) (hA : A ≠ []) : (block_a A).s = Real.log (A.map fun x => Real.exp x).sum",
+      "theorem sm_max_log (u v : ℝ) : max u v + Real.log (Real.exp (u - max u v) + Real.exp (v - max u v)) = Real.log (Real.exp u + Real.exp v)"
+    ],
+    "axioms": {
+      "merge_block_a": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "spec_eq": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "blocked_eq_spec": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    },
+    "date": "2026-11-28T00:21:13+00:00",
+    "model": "claude-cli:sonnet",
+    "rounds": 1
+  },
+  {
+    "name": "variance-welford-lean",
+    "problem": "variance",
+    "statement": "over the reals, for any blocking and any merge tree, variance-welford-lean computes what variance-2pass computes: in pass a, merging the summaries (n (sum 1)) (m (/ (sum x) n)) (M2 (sum (* (- x m) (- x m)))) of two nonempty blocks with (n (+ L.n R.n)) (d (- R.m L.m)) (f (/ (* d R.n) n)) (m (+ L.m f)) (M2 (+ L.M2 R.M2 (* d f L.n))) gives the summary of the two blocks together",
+    "module": "Discovery.Library.VarianceWelfordLean",
+    "file": "VarianceWelfordLean.lean",
+    "program": "(program variance-welford-lean\n  (input x)\n  (pass a\n    (state n m M2)\n    (block (n (sum 1))\n           (m (/ (sum x) n))\n           (M2 (sum (* (- x m) (- x m)))))\n    (merge (n (+ L.n R.n))\n           (d (- R.m L.m))\n           (f (/ (* d R.n) n))\n           (m (+ L.m f))\n           (M2 (+ L.M2 R.M2 (* d f L.n)))))\n  (output final (mean a.m) (var (/ a.M2 a.n))))",
+    "digest": "b940cf6466f9b406",
+    "spec": "variance-2pass",
+    "statements": {
+      "merge_block_a": "theorem merge_block_a (A B : List ℝ) (hA : A ≠ []) (hB : B ≠ []) :\n    merge_a (block_a A) (block_a B) = block_a (A ++ B)",
+      "spec_eq": "theorem spec_eq (X : List ℝ) (hX : X ≠ []) :\n    output X = Spec.output X",
+      "blocked_eq_spec": "theorem blocked_eq_spec (X : List ℝ) (hX : X ≠ []) (t_a : Discovery.Tree ℝ) (h_a : t_a.flat = X) (l_a : ∀ blk ∈ t_a.leaves, blk ≠ []) :\n    blocked t_a = Spec.output X"
+    },
+    "helpers": [
+      "theorem one_sum_aux (A : List ℝ) : (A.map fun _ => (1:ℝ)).sum = (A.length : ℝ)",
+      "theorem sumsq_aux (A : List ℝ) (c : ℝ) : (A.map fun x => (x - c) * (x - c)).sum = (A.map fun x => x * x).sum - 2 * c * A.sum + c * c * (A.length : ℝ)"
+    ],
+    "axioms": {
+      "merge_block_a": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "spec_eq": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "blocked_eq_spec": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    },
+    "date": "2026-11-28T03:01:22+00:00",
+    "model": "claude-cli:sonnet",
+    "rounds": 1
+  },
+  {
+    "name": "softmax-lse-abs",
+    "problem": "softmax",
+    "statement": "over the reals, for any blocking and any merge tree, softmax-lse-abs computes what softmax-3pass computes: in pass a, merging the summaries (t (rmax x)) (l (+ t (log (sum (exp (- x t)))))) of two nonempty blocks with (l (+ (max L.l R.l) (log (+ 1 (exp (neg (abs (- L.l R.l)))))))) gives the summary of the two blocks together",
+    "module": "Discovery.Library.SoftmaxLseAbs",
+    "file": "SoftmaxLseAbs.lean",
+    "program": "(program softmax-lse-abs\n  (input x)\n  (pass a\n    (state l)\n    (block (t (rmax x))\n           (l (+ t (log (sum (exp (- x t)))))))\n    (merge (l (+ (max L.l R.l) (log (+ 1 (exp (neg (abs (- L.l R.l))))))))))\n  (output elementwise (exp (- x a.l))))",
+    "digest": "2dd77cb3c2c7aff4",
+    "spec": "softmax-3pass",
+    "statements": {
+      "merge_block_a": "theorem merge_block_a (A B : List ℝ) (hA : A ≠ []) (hB : B ≠ []) :\n    merge_a (block_a A) (block_a B) = block_a (A ++ B)",
+      "spec_eq": "theorem spec_eq (X : List ℝ) (hX : X ≠ []) (x : ℝ) :\n    output X x = Spec.output X x",
+      "blocked_eq_spec": "theorem blocked_eq_spec (X : List ℝ) (hX : X ≠ []) (t_a : Discovery.Tree ℝ) (h_a : t_a.flat = X) (l_a : ∀ blk ∈ t_a.leaves, blk ≠ []) (x : ℝ) :\n    blocked t_a x = Spec.output X x"
+    },
+    "helpers": [
+      "theorem sum_exp_pos_aux (A : List ℝ) (hA : A ≠ []) (c : ℝ) : 0 < (A.map fun x => Real.exp (x - c)).sum",
+      "theorem sum_exp_shift_aux (A : List ℝ) (c : ℝ) : (A.map fun x => Real.exp (x - c)).sum * Real.exp c = (A.map fun x => Real.exp x).sum",
+      "theorem exp_block_l_aux (A : List ℝ) (hA : A ≠ []) : Real.exp (block_a A).l = (A.map fun x => Real.exp x).sum",
+      "theorem max_log_aux (a b : ℝ) : max a b + Real.log ((1 : ℝ) + Real.exp (-|a - b|)) = Real.log (Real.exp a + Real.exp b)"
+    ],
+    "axioms": {
+      "merge_block_a": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "spec_eq": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "blocked_eq_spec": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    },
+    "date": "2026-11-28T03:02:32+00:00",
+    "model": "claude-cli:sonnet",
+    "rounds": 1
+  },
+  {
+    "name": "attention-1pass-shared",
+    "problem": "attention",
+    "statement": "over the reals, for any blocking and any merge tree, attention-1pass-shared computes what attention-3pass computes: in pass a, merging the summaries (m (rmax s)) (d (sum (exp (- s m)))) (o (sum (* (exp (- s m)) v))) of two nonempty blocks with (m (max L.m R.m)) (wl (exp (- L.m m))) (wr (exp (- R.m m))) (d (+ (* L.d wl) (* R.d wr))) (o (+ (* L.o wl) (* R.o wr))) gives the summary of the two blocks together",
+    "module": "Discovery.Library.Attention1passShared",
+    "file": "Attention1passShared.lean",
+    "program": "(program attention-1pass-shared\n  (input s v)\n  (pass a\n    (state m d o)\n    (block (m (rmax s))\n           (d (sum (exp (- s m))))\n           (o (sum (* (exp (- s m)) v))))\n    (merge (m (max L.m R.m))\n           (wl (exp (- L.m m)))\n           (wr (exp (- R.m m)))\n           (d (+ (* L.d wl) (* R.d wr)))\n           (o (+ (* L.o wl) (* R.o wr)))))\n  (output final (o (/ a.o a.d))))",
+    "digest": "ad979b949615a34c",
+    "spec": "attention-3pass",
+    "statements": {
+      "merge_block_a": "theorem merge_block_a (A B : List (ℝ × V)) (hA : A ≠ []) (hB : B ≠ []) :\n    merge_a (block_a A) (block_a B) = block_a (A ++ B)",
+      "spec_eq": "theorem spec_eq (X : List (ℝ × V)) (hX : X ≠ []) :\n    output X = Spec.output X",
+      "blocked_eq_spec": "theorem blocked_eq_spec (X : List (ℝ × V)) (hX : X ≠ []) (t_a : Discovery.Tree (ℝ × V)) (h_a : t_a.flat = X) (l_a : ∀ blk ∈ t_a.leaves, blk ≠ []) :\n    blocked t_a = Spec.output X"
+    },
+    "helpers": [
+      "theorem sum_exp_shift_aux {V : Type*} (A : List (ℝ × V)) (m M : ℝ) : (A.map fun e => Real.exp (e.1 - M)).sum = (A.map fun e => Real.exp (e.1 - m)).sum * Real.exp (m - M)",
+      "theorem sum_exp_smul_shift_aux {V : Type*} [AddCommGroup V] [Module ℝ V] (A : List (ℝ × V)) (m M : ℝ) : (A.map fun e => Real.exp (e.1 - M) • e.2).sum = Real.exp (m - M) • (A.map fun e => Real.exp (e.1 - m) • e.2).sum"
+    ],
+    "axioms": {
+      "merge_block_a": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "spec_eq": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "blocked_eq_spec": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    },
+    "date": "2026-11-28T03:05:24+00:00",
+    "model": "claude-cli:sonnet",
+    "rounds": 1
+  },
+  {
+    "name": "variance-welford-lean",
+    "problem": "variance",
+    "statement": "over the reals, for any blocking and any merge tree, variance-welford-lean computes what variance-2pass computes: in pass a, merging the summaries (n (sum 1)) (m (/ (sum x) n)) (q (sum (* (- x m) (- x m)))) of two nonempty blocks with (n (+ L.n R.n)) (d (- R.m L.m)) (w (/ R.n n)) (m (+ L.m (* d w))) (q (+ L.q R.q (* d d L.n w))) gives the summary of the two blocks together",
+    "module": "Discovery.Library.VarianceWelfordLeanca804e",
+    "file": "VarianceWelfordLeanca804e.lean",
+    "program": "(program variance-welford-lean\n  (input x)\n  (pass a\n    (state n m q)\n    (block (n (sum 1))\n           (m (/ (sum x) n))\n           (q (sum (* (- x m) (- x m)))))\n    (merge (n (+ L.n R.n))\n           (d (- R.m L.m))\n           (w (/ R.n n))\n           (m (+ L.m (* d w)))\n           (q (+ L.q R.q (* d d L.n w)))))\n  (output final (mean a.m) (var (/ a.q a.n))))",
+    "digest": "ca804e0eadc0f92b",
+    "spec": "variance-2pass",
+    "statements": {
+      "merge_block_a": "theorem merge_block_a (A B : List ℝ) (hA : A ≠ []) (hB : B ≠ []) :\n    merge_a (block_a A) (block_a B) = block_a (A ++ B)",
+      "spec_eq": "theorem spec_eq (X : List ℝ) (hX : X ≠ []) :\n    output X = Spec.output X",
+      "blocked_eq_spec": "theorem blocked_eq_spec (X : List ℝ) (hX : X ≠ []) (t_a : Discovery.Tree ℝ) (h_a : t_a.flat = X) (l_a : ∀ blk ∈ t_a.leaves, blk ≠ []) :\n    blocked t_a = Spec.output X"
+    },
+    "helpers": [
+      "theorem ones_sum_eq (A : List ℝ) : (A.map fun _ => (1 : ℝ)).sum = A.length",
+      "theorem sq_expand_sum (A : List ℝ) (c : ℝ) : (A.map fun x => (x - c) * (x - c)).sum = (A.map fun x => x * x).sum - 2 * c * A.sum + c * c * A.length"
+    ],
+    "axioms": {
+      "merge_block_a": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "spec_eq": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "blocked_eq_spec": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    },
+    "date": "2026-11-28T03:07:37+00:00",
+    "model": "claude-cli:sonnet",
+    "rounds": 1
+  },
+  {
+    "name": "softmax-lse-compact",
+    "problem": "softmax",
+    "statement": "over the reals, for any blocking and any merge tree, softmax-lse-compact computes what softmax-3pass computes: in pass a, merging the summaries (mm (rmax x)) (l (+ mm (log (sum (exp (- x mm)))))) of two nonempty blocks with (l (+ (max L.l R.l) (log (+ 1 (exp (neg (abs (- L.l R.l)))))))) gives the summary of the two blocks together",
+    "module": "Discovery.Library.SoftmaxLseCompact",
+    "file": "SoftmaxLseCompact.lean",
+    "program": "(program softmax-lse-compact\n  (input x)\n  (pass a\n    (state l)\n    (block (mm (rmax x))\n           (l (+ mm (log (sum (exp (- x mm)))))))\n    (merge (l (+ (max L.l R.l) (log (+ 1 (exp (neg (abs (- L.l R.l))))))))))\n  (output elementwise (exp (- x a.l))))",
+    "digest": "b4d0afe0ef7483d5",
+    "spec": "softmax-3pass",
+    "statements": {
+      "merge_block_a": "theorem merge_block_a (A B : List ℝ) (hA : A ≠ []) (hB : B ≠ []) :\n    merge_a (block_a A) (block_a B) = block_a (A ++ B)",
+      "spec_eq": "theorem spec_eq (X : List ℝ) (hX : X ≠ []) (x : ℝ) :\n    output X x = Spec.output X x",
+      "blocked_eq_spec": "theorem blocked_eq_spec (X : List ℝ) (hX : X ≠ []) (t_a : Discovery.Tree ℝ) (h_a : t_a.flat = X) (l_a : ∀ blk ∈ t_a.leaves, blk ≠ []) (x : ℝ) :\n    blocked t_a x = Spec.output X x"
+    },
+    "helpers": [
+      "theorem nonneg_sum_exp (A : List ℝ) (c : ℝ) : 0 ≤ (A.map fun x => Real.exp (x - c)).sum",
+      "theorem pos_sum_exp (A : List ℝ) (hA : A ≠ []) (c : ℝ) : 0 < (A.map fun x => Real.exp (x - c)).sum",
+      "theorem exp_block_a (A : List ℝ) (hA : A ≠ []) : Real.exp (block_a A).l = (A.map Real.exp).sum",
+      "theorem max_log_lemma (a b : ℝ) : max a b + Real.log ((1 : ℝ) + Real.exp (-|a - b|)) = Real.log (Real.exp a + Real.exp b)"
+    ],
+    "axioms": {
+      "merge_block_a": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "spec_eq": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "blocked_eq_spec": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    },
+    "date": "2026-11-28T03:15:53+00:00",
+    "model": "claude-cli:sonnet",
+    "rounds": 1
+  },
+  {
+    "name": "attention-1pass-lse-abs",
+    "problem": "attention",
+    "statement": "over the reals, for any blocking and any merge tree, attention-1pass-lse-abs computes what attention-3pass computes: in pass a, merging the summaries (m (rmax s)) (a (+ m (log (sum (exp (- s m)))))) (u (sum (* (exp (- s a)) v))) of two nonempty blocks with (a (+ (max L.a R.a) (log (+ 1 (exp (neg (abs (- L.a R.a)))))))) (u (+ (* L.u (exp (- L.a a))) (* R.u (exp (- R.a a))))) gives the summary of the two blocks together",
+    "module": "Discovery.Library.Attention1passLseAbs",
+    "file": "Attention1passLseAbs.lean",
+    "program": "(program attention-1pass-lse-abs\n  (input s v)\n  (pass a\n    (state a u)\n    (block (m (rmax s))\n           (a (+ m (log (sum (exp (- s m))))))\n           (u (sum (* (exp (- s a)) v))))\n    (merge (a (+ (max L.a R.a) (log (+ 1 (exp (neg (abs (- L.a R.a))))))))\n           (u (+ (* L.u (exp (- L.a a))) (* R.u (exp (- R.a a)))))))\n  (output final (o a.u)))",
+    "digest": "0a4f90885f45207c",
+    "spec": "attention-3pass",
+    "statements": {
+      "merge_block_a": "theorem merge_block_a (A B : List (ℝ × V)) (hA : A ≠ []) (hB : B ≠ []) :\n    merge_a (block_a A) (block_a B) = block_a (A ++ B)",
+      "spec_eq": "theorem spec_eq (X : List (ℝ × V)) (hX : X ≠ []) :\n    output X = Spec.output X",
+      "blocked_eq_spec": "theorem blocked_eq_spec (X : List (ℝ × V)) (hX : X ≠ []) (t_a : Discovery.Tree (ℝ × V)) (h_a : t_a.flat = X) (l_a : ∀ blk ∈ t_a.leaves, blk ≠ []) :\n    blocked t_a = Spec.output X"
+    },
+    "helpers": [
+      "theorem sum_shift (c d : ℝ) (X : List (ℝ × V)) : (X.map fun e => Real.exp (e.1 - c) • e.2).sum = Real.exp (d - c) • (X.map fun e => Real.exp (e.1 - d) • e.2).sum",
+      "theorem spec_core (m S : ℝ) (hS : 0 < S) (X : List (ℝ × V)) : (X.map fun e => Real.exp (e.1 - (m + Real.log S)) • e.2).sum = S⁻¹ • (X.map fun e => Real.exp (e.1 - m) • e.2).sum",
+      "theorem sum_exp_pos' (f : ℝ × V → ℝ) (X : List (ℝ × V)) (hX : X ≠ []) : 0 < (X.map fun e => Real.exp (f e)).sum",
+      "theorem sum_exp_shift (m : ℝ) (X : List (ℝ × V)) : (X.map fun e => Real.exp e.1).sum = Real.exp m * (X.map fun e => Real.exp (e.1 - m)).sum",
+      "theorem ba_a (A : List (ℝ × V)) : (block_a A).a = lmax (A.map fun e => e.1) + Real.log (A.map fun e => Real.exp (e.1 - lmax (A.map fun e => e.1))).sum",
+      "theorem ba_u (A : List (ℝ × V)) : (block_a A).u = (A.map fun e => Real.exp (e.1 - (block_a A).a) • e.2).sum",
+      "theorem ba_exp (A : List (ℝ × V)) (hA : A ≠ []) : Real.exp (block_a A).a = (A.map fun e => Real.exp e.1).sum",
+      "theorem ba_log (A : List (ℝ × V)) (hA : A ≠ []) : (block_a A).a = Real.log (A.map fun e => Real.exp e.1).sum",
+      "theorem merge_lse (x y : ℝ) : max x y + Real.log ((1 : ℝ) + Real.exp (-|x - y|)) = Real.log (Real.exp x + Real.exp y)"
+    ],
+    "axioms": {
+      "merge_block_a": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "spec_eq": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ],
+      "blocked_eq_spec": [
+        "propext",
+        "Classical.choice",
+        "Quot.sound"
+      ]
+    },
+    "date": "2026-11-28T03:19:42+00:00",
+    "model": "claude-cli:sonnet",
+    "rounds": 3
+  }
+]
