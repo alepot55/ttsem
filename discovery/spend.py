@@ -35,7 +35,7 @@ def _dicts(o):
 
 def _milestone(rel: str) -> str:
     head = rel.split("/")[0]
-    return {"m6": "M6 (M4 again, closed sandbox)"}.get(head, head.upper())
+    return {"m6": "M6 (runs again in the closed sandbox)"}.get(head, head.upper())
 
 
 def collect(results: Path = RESULTS) -> dict:

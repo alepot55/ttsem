@@ -1,0 +1,26 @@
+{
+ "program": "VarianceWelford",
+ "proposals": [
+  {
+   "k": 1,
+   "B": "32*(d+D+2)*u*Q + 8*(d+D+2)*eta",
+   "ratio": 0.007349566916997095,
+   "tightness_attack": 136.0624389564144,
+   "proof": {
+    "proved": null,
+    "cost_usd": 0.385
+   }
+  },
+  {
+   "k": 2,
+   "B": "256*(d+D+2)*u*Q + 64*(d+D+2)*n*eta",
+   "ratio": 0.0009186958646246368,
+   "tightness_attack": 1088.4995116513153,
+   "proof": {
+    "proved": null,
+    "cost_usd": 0.7105
+   }
+  }
+ ],
+ "proposer_cost_usd": 0.1024
+}

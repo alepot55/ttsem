@@ -1,0 +1,23 @@
+{
+ "program": "VarianceWelford-v4-2",
+ "B": "256*(d+D+2)*u*Q + 64*(d+D+2)*n*eta",
+ "attempts": [
+  {
+   "model": "opus",
+   "sandbox": "C:\\dev\\fpbox2\\VarianceWelford-v4-2-d2d99d93df92b7c4-1795871442",
+   "seconds": 312.8,
+   "cost_usd": 0.7105308000000001,
+   "turns": 9,
+   "result": "FALSE\n\nI didn't write a proof of `fp_bound`, because the statement is false. Lean checks `theorem not_fp : \u00ac fp_bound_statement` in `Scratch.lean` with no errors, using only the axioms propext, Classical.choice and Quot.sound. `FPProofs.lean` still has its `sorry`.\n\n**Why it fails.** A single rounding error in one merge's `mu` gets multiplied by the size of a later merge. That error grows like `\u221an`, but the bound only allows growth like `depth + D`.\n\n**The counterexample:**\n- **Rounding:** `u = 2\u207b\u00b3\u00b2` and `\u03b7 = ue = \u03b7e = ul = 0`.\n- **Sizes:** `m = 2\u00b3\u2070`, `A = 2\u00b9\u2075`, and in-block sum depth `D = 30`.\n- **Row and tree:** `X = [A] ++ replicate m 0 ++ replicate m 1`, merged by the tree `node (node [A] zeros) ones`, which has depth 2.\n- **Where it rounds:** every operation is exact except one. In the first merge, `R.mu \u2212 L.mu = \u2212A` comes out as `\u2212A(1+u)`.\n- **Effect:** that one error makes `mu\u2081` wrong by `\u03b5 = uA\u00b7m/(m+1)`. The second merge adds `(1 \u2212 mu\u2081)\u00b2\u00b7(m+1)m/(2m+1)`, so the computed variance is off by about `2\u03b5\u00b7m\u00b2/(2m+1)\u00b2 \u2248 uA/2 = 2\u00b9\u2074\u00b7u`.\n- **Allowed bound:** `256\u00b7(2+30+2)\u00b7u\u00b7msq X`, with `msq X = 2\u00b3\u00b9/(2\u00b3\u00b9+1) < 1`. That is under `8704\u00b7u`, well below the actual error.\n\nAll hypotheses hold: `n\u00b7u \u2264 1`, `small F`, and the depth condition `33\u00b7u \u2264 1/16`. More generally, the ratio of actual error to allowed bound grows like `\u221am / (512\u00b7(log\u2082 m + 4))`, so it eventually exceeds 1.",
+   "subtype": "success",
+   "error": "",
+   "stage": "deny",
+   "ok": false,
+   "errors": [
+    "not allowed in your text: sorry"
+   ]
+  }
+ ],
+ "proved": null,
+ "cost_usd": 0.7105
+}

@@ -88,6 +88,22 @@ def main() -> int:
             if again.get("proved"):
                 item.update(B=again["proved"]["B"], proved=True, by=again["proved"].get("model"))
                 item["version"] = later.stem.split("-v")[-1]
+        # later proofs of the same program, in the closed sandbox of M6, other bounds included
+        extra = []
+        for later in sorted((RESULTS / "m6").glob(f"m3-*/{module}*-agent.json")):
+            again = json.loads(later.read_text(encoding="utf-8"))
+            if again.get("proved"):
+                extra.append(
+                    {
+                        "B": again["proved"]["B"],
+                        "by": again["proved"].get("model"),
+                        "record": later.relative_to(RESULTS).as_posix(),
+                    }
+                )
+        if extra:
+            item["also_proved"] = extra
+            if not item["proved"]:
+                item.update(B=extra[0]["B"], proved=True, by=extra[0]["by"])
         check = f1 / f"{module}.json"
         if check.exists():
             c = json.loads(check.read_text(encoding="utf-8"))
@@ -102,14 +118,18 @@ def main() -> int:
         for m in (a, b):
             p = programs.get(m, {})
             meas = measured.get((m, "float32"), {})
+            # every proved bound of the program certifies; the tightest at the point counts
+            texts = list(dict.fromkeys([p["B"]] if p.get("B") else []))
+            texts += [e["B"] for e in p.get("also_proved", []) if e["B"] not in texts]
+            values = {t: _in_u(m, bound.parse(t, PROBLEM[m]).value(env), env) for t in texts}
             row[m] = {
                 "proved": p.get("proved", False),
-                "certified_u": _in_u(m, bound.parse(p["B"], PROBLEM[m]).value(env), env)
-                if p.get("B")
-                else None,
+                "certified_u": min(values.values()) if values else None,
                 "measured_max_u": meas.get(f"{family}_max"),
                 "adversary_max_u": meas.get("adversary_max"),
             }
+            if len(values) > 1:
+                row[m]["each_bound_u"] = values
         ma, mb = row[a]["measured_max_u"], row[b]["measured_max_u"]
         ca, cb = row[a]["certified_u"], row[b]["certified_u"]
         row["measured_ratio"] = (mb / ma) if ma and mb else None

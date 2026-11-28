@@ -24,6 +24,7 @@ import argparse
 import dataclasses
 import json
 import math
+import time
 from pathlib import Path
 
 import numpy as np
@@ -79,7 +80,7 @@ def measure(prog: ir.Program, x: np.ndarray, block: int, order: str, tau: float)
 def ratio(prog: ir.Program, b: bound.Bound, x: np.ndarray) -> tuple[float, dict]:
     """The largest error / B over τ, blockings and trees; overflowing runs are skipped."""
     worst, info = -1.0, {}
-    for tau in TAUS:
+    for tau in TAUS if prog.params else (0.0,):  # without a parameter the three are one run
         for block in BLOCKS:
             for order in ORDERS:
                 err, env = measure(prog, x, block, order, tau)
@@ -150,14 +151,17 @@ def worst(prog: ir.Program) -> dict:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--policy", default="conditional", choices=sorted(policies.POLICIES))
-    kinds = [*fp_export.POLICY_KINDS, "worst"]
+    kinds = [*fp_export.POLICY_KINDS, "worst", "f1"]
     ap.add_argument("--kind", required=True, choices=kinds)
     ap.add_argument("--out", default="discovery/results/m4")
     ap.add_argument("--proposals", type=int, default=3)
     ap.add_argument("--models", nargs="+", default=["sonnet", "opus"])
     ap.add_argument(
-        "--bound", help="fp-nounderflow: prove this B (without it, the model proposes B as for fp)"
+        "--bound",
+        help="fp-nounderflow: prove this B (without it, the model proposes B as for fp); "
+        "f1: the proved B to attack at length",
     )
+    ap.add_argument("--name", default="", help="f1: a name for the output file")
     args = ap.parse_args(argv)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -167,6 +171,25 @@ def main(argv: list[str] | None = None) -> int:
         rec = worst(prog)
         (out / f"{module}-worst.json").write_text(json.dumps(rec, indent=1), encoding="utf-8")
         print(json.dumps(rec, indent=1))
+        return 0
+    if args.kind == "f1":
+        # F1: the adversary at length on a proved bound (4 times the seeds and the steps)
+        b = bound.parse(args.bound, "policy")
+        t0 = time.time()
+        found = attack(prog, b, steps=400, seeds=(0, 1, 2, 3))
+        rec = {
+            "B": b.text,
+            "steps": 400,
+            "seeds": [0, 1, 2, 3],
+            "worst_ratio": found["ratio"],
+            "F1_violated": found["ratio"] > 1.0,
+            "tightness": 1.0 / found["ratio"] if found["ratio"] > 0 else None,
+            "worst": found,
+            "seconds": round(time.time() - t0, 1),
+        }
+        path = out / f"{module}-f1{'-' + args.name if args.name else ''}.json"
+        path.write_text(json.dumps(rec, indent=1), encoding="utf-8")
+        print(json.dumps({k: rec[k] for k in ("worst_ratio", "F1_violated", "tightness")}))
         return 0
     suffix = "".join(w.capitalize() for w in args.kind.split("-"))  # a Lean name: no hyphen
     fp = fp_export.export_policy(prog, problems.SOFTMAX, f"{module}{suffix}", args.kind)

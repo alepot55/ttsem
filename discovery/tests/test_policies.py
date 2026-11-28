@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 
 import numpy as np
 import pytest
@@ -148,3 +149,29 @@ def test_no_statement_docstring_carries_an_invariant_or_a_metric():
             bound.parse("u")
         )
         assert "lag" not in text and "stale" not in text
+
+
+def test_f1_on_a_policy_bound_writes_its_record(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_attack(prog, b, steps, seeds):
+        seen.update(steps=steps, seeds=seeds, B=b.text)
+        return {"ratio": 0.05, "family": "lag1.9"}
+
+    monkeypatch.setattr(policyrun, "attack", fake_attack)
+    policyrun.main(
+        ["--kind", "f1", "--bound", "2*R*u + 2*d*u", "--name", "t", "--out", str(tmp_path)]
+    )
+    rec = json.loads((tmp_path / "SoftmaxConditional-f1-t.json").read_text(encoding="utf-8"))
+    assert seen == {"steps": 400, "seeds": (0, 1, 2, 3), "B": "2*R*u + 2*d*u"}
+    assert rec["F1_violated"] is False and rec["tightness"] == pytest.approx(20.0)
+
+
+def test_without_a_parameter_the_policy_adversary_runs_each_tree_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        policyrun, "measure", lambda prog, x, block, order, tau: calls.append(tau) or (np.inf, {})
+    )
+    online = policies.program("always")
+    policyrun.ratio(online, bound.parse("u", "policy"), np.zeros(8))
+    assert set(calls) == {0.0} and len(calls) == len(policyrun.BLOCKS) * len(policyrun.ORDERS)

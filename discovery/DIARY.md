@@ -858,3 +858,51 @@ found, and what changed:
   attempts cost $36.15, and 3 more timed out with no cost reported; the one-shot rounds $15.42.
   Not counted: the session's reviewing agents, and M5's certificates computed before its bug.
 - Tests: 263 passed, 2 skipped; ruff clean.
+
+## 28 Nov 2026, 13:10 UTC: M4 again, in the closed sandbox and without the hint
+
+Everything of M4 that had seen the sentence on the stale reference ran again, with the neutral
+docstrings, the agent's tools denied the repository and the home directory, a `lean` that refuses
+file IO, and the judge's fresh directory (`results/m6/m4/`, prompts included):
+
+- **Exact over ℝ for every merge tree**, again: sonnet, 7 turns, 55 s, $0.09.
+- **The overflow condition** (the sum at most n·e^(τρ)), again: sonnet, 10 turns, 102 s, $0.21.
+- **The floating-point bound without subnormal results** (`fp-nounderflow`, the weakened statement
+  named apart: F.η = 0 and F.ηe = 0), with a new proposal. Without the sentence the model did not
+  propose a τρ term: its B, 2(d+1)R·u + 2D·u + 4d·u + 2(d+1)·ue, does not depend on τ at all. It
+  survived the adversary (τ in {0, 2, 8}, right combs included; tightness 28.2 on that attack)
+  and sonnet proved it in 44 turns, 11 minutes, $1.09. It is M3's bound for the state that always
+  rescales, term for term once η = ηe = 0: a stale reference is some element's value, so it lags
+  the maximum by at most R, and relative roundings do not care how large the stale sum grows. So
+  the threshold costs no accuracy in the bound, only the overflow margin n·e^(τρ). The hinted B
+  of 12:15 UTC, (11/10)(uD + 2ud + ue + ue·d + 2uR + 2uτρ + 3u), is tighter while τρ stays well
+  below d·R, and it was proved too; both stand, the first with the caveat of the hint.
+- **The full statement** (subnormal results allowed, version 4's stale hypothesis): the model's
+  new proposal, 2D·u + 2ue + 2R·u + 4d·ue + 2d·τ·u + 8d·u + 4u, has a τ term with the depth in
+  place of the right depth; it survived the adversary and is with the agent. The run of 10:35 UTC
+  (with the hint, in the old sandbox) is still on its second proposal.
+- **Welford**, M3's open program, runs again in the closed sandbox with two hours per attempt:
+  two new proposals (sonnet's and opus's runs), and M3's own B again. The new proposals, 32(d +
+  D + 2)·u·Q + 8(d + D + 2)·η and 3(d + D + 6)·u·S2 + 30(d + 1)(d + D + 6)·u·M² + 20(d + 1)²·η·(1 +
+  R)², are valid for the adversary but loose: at a mean of 10⁴ either would certify Welford as
+  worse than the sum of squares, the reverse of the measured order. `fpreport` now takes, for
+  each program, the tightest of its proved bounds at each point.
+
+## 28 Nov 2026, 13:25 UTC: F1 on every proved bound; Welford's new proposals refuted by the prover
+
+- **F1 now covers every proved error bound.** The bounds of M5's elites and of M4 had only had
+  the short attack of their proposal; each now had the long one (the policy adversary, 4 seeds,
+  400 steps; `certsearch.py --arm f1`, `policyrun.py --kind f1`). None broke: M5's online elite
+  12.1 (as with `fpcheck`, 12.2), its one-field elites 11.0 and 5.8 (`results/m5/f1/`); M4's
+  hinted no-underflow B 11.2 (`results/m4/nounderflow/`), the clean one 18.4 (`results/m6/m4/`;
+  28.2 on its short attack). Over every proved bound of the session, B is 4.9 to 20.3 times the
+  worst error found.
+- **Welford (M3), with opus: both new proposals refuted by the prover (negative).** 32(d + D +
+  2)·u·Q + 8(d + D + 2)·η survived the float32 adversary, but opus gave a counterexample in 3
+  turns: a rounding of the mean in one merge, amplified by the next merge's squared difference,
+  gives twice the bound. The second proposal, 256(d + D + 2)·u·Q + 64(d + D + 2)·n·η, fell the
+  same way in 9 turns: with one element A = 2¹⁵ among 2³¹ the error is about u·A/2 while the
+  bound stays near 8,704·u, and the ratio grows like √m: no bound of the form c·depth·u·Q holds
+  (`results/m6/m3-opus/`, $1.20 with the proposals). Neither counterexample is in float32's
+  reach of n ≤ 4,096: the prover is the stronger judge, as at 10:05 UTC. Sonnet's run (a B with
+  u·M²) and M3's own B are with the agents.

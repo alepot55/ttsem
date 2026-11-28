@@ -269,7 +269,12 @@ def prove_file(
 
 
 def propose_and_prove(
-    module: str, out: Path, proposals: int = 3, models: tuple[str, ...] = ("sonnet", "opus")
+    module: str,
+    out: Path,
+    proposals: int = 3,
+    models: tuple[str, ...] = ("sonnet", "opus"),
+    max_turns: int = 150,
+    timeout: float = 3600.0,
 ) -> dict:
     """The whole path for one library program: the model proposes B, the adversary attacks it,
     and a surviving B goes to the agent; a B the agent does not prove goes back to the proposer
@@ -306,7 +311,9 @@ def propose_and_prove(
             )
             continue
         item["tightness_attack"] = 1.0 / found["ratio"] if found["ratio"] > 0 else None
-        proof = prove_file(fp, b, f"{module}-v{fp_export.VERSION}-{k + 1}", out, models)
+        proof = prove_file(
+            fp, b, f"{module}-v{fp_export.VERSION}-{k + 1}", out, models, max_turns, timeout
+        )
         item["proof"] = {k2: proof[k2] for k2 in ("proved", "cost_usd")}
         if proof.get("proved"):
             rec["proved"] = {"B": b.text, **proof["proved"]}
@@ -328,9 +335,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--models", nargs="+", default=["sonnet", "opus"])
     ap.add_argument("--max-turns", type=int, default=150)
     ap.add_argument("--timeout", type=float, default=3600.0)
+    ap.add_argument("--proposals", type=int, default=3)
     args = ap.parse_args(argv)
     if args.bound is None:
-        rec = propose_and_prove(args.program, Path(args.out), models=tuple(args.models))
+        rec = propose_and_prove(
+            args.program,
+            Path(args.out),
+            args.proposals,
+            tuple(args.models),
+            args.max_turns,
+            args.timeout,
+        )
     else:
         rec = prove_agentic(
             args.program,

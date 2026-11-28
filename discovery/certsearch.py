@@ -135,7 +135,7 @@ def run_arm(arm: str, seed: int, iterations: int, out: Path = OUT) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--arm", choices=["cert", "iid", "plain", "prove"], required=True)
+    ap.add_argument("--arm", choices=["cert", "iid", "plain", "prove", "f1"], required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--iterations", type=int, default=6)
     ap.add_argument("--out", default=str(OUT))
@@ -143,9 +143,51 @@ def main(argv: list[str] | None = None) -> int:
     if args.arm == "prove":
         print(json.dumps(prove_elites(Path(args.out)), indent=1))
         return 0
+    if args.arm == "f1":
+        print(json.dumps(f1_elites(Path(args.out)), indent=1))
+        return 0
     s = run_arm(args.arm, args.seed, args.iterations, Path(args.out))
     print(json.dumps({k: s[k] for k in ("cells", "statuses", "usage") if k in s}, indent=1)[:3000])
     return 0
+
+
+def _elites(out: Path) -> dict[str, str]:
+    """The text of every distinct final elite of the runs that has a certificate."""
+    cache = _load(out)
+    digests: dict[str, str] = {}
+    for summary in sorted(out.glob("*-s*/summary.json")):
+        for cell in json.loads(summary.read_text(encoding="utf-8"))["cells"]:
+            if (cache.get(cell["digest"]) or {}).get("B"):
+                digests[cell["digest"]] = cell["text"]
+    return digests
+
+
+def f1_elites(out: Path = OUT, steps: int = 400, seeds: tuple[int, ...] = (0, 1, 2, 3)) -> dict:
+    """F1 on every proved elite: the policy adversary at length (4 seeds, 400 steps) on its B."""
+    proved = json.loads((out / "elite-proofs.json").read_text(encoding="utf-8"))
+    texts = _elites(out)
+    results = {}
+    for digest, rec in proved.items():
+        if not rec.get("proved"):
+            continue
+        prog = problems.SOFTMAX.parse(texts[digest])
+        b = bound.parse(rec["B"], "policy")
+        found = policyrun.attack(prog, b, steps=steps, seeds=seeds)
+        row = {
+            "name": rec["name"],
+            "B": b.text,
+            "steps": steps,
+            "seeds": list(seeds),
+            "worst_ratio": found["ratio"],
+            "F1_violated": found["ratio"] > 1.0,
+            "tightness": 1.0 / found["ratio"] if found["ratio"] > 0 else None,
+            "worst": found,
+        }
+        (out / "f1").mkdir(exist_ok=True)
+        path = out / "f1" / f"Cand{digest[:10]}.json"
+        path.write_text(json.dumps(row, indent=1), encoding="utf-8")
+        results[digest] = {k: row[k] for k in ("name", "worst_ratio", "F1_violated", "tightness")}
+    return results
 
 
 def prove_elites(out: Path = OUT, models: tuple[str, ...] = ("sonnet", "opus")) -> dict:
@@ -153,11 +195,7 @@ def prove_elites(out: Path = OUT, models: tuple[str, ...] = ("sonnet", "opus")) 
     from discovery import agentprove
 
     cache = _load(out)
-    digests: dict[str, str] = {}
-    for summary in sorted(out.glob("*-s*/summary.json")):
-        for cell in json.loads(summary.read_text(encoding="utf-8"))["cells"]:
-            if (cache.get(cell["digest"]) or {}).get("B"):
-                digests[cell["digest"]] = cell["text"]
+    digests = _elites(out)
     results = {}
     for digest, text in digests.items():
         cert = cache[digest]
