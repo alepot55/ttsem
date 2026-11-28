@@ -3,5 +3,15 @@
   "name": "softmax-online",
   "B": "2*u*R + (5/4)*(D*u + 2*d*u + u + (d+1)*ue) + 4*n*(d+2)*(eta+etae)",
   "proved": true
+ },
+ "4fb632176b99e99e": {
+  "name": "softmax-lse1",
+  "B": "2*(d+1)*(u*(R+D+M+n+3)+ue+ul*(n+1))",
+  "proved": true
+ },
+ "4f04f566283b07e6": {
+  "name": "softmax-lse1",
+  "B": "3*(u*R + ue + D*u + ul*n + u*M + u*n + n*etae + d*(3*u + ue + ul + etae + u*M + u*n))/2",
+  "proved": true
  }
 }

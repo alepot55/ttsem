@@ -1,0 +1,38 @@
+{
+ "program": "SoftmaxConditional-fp",
+ "B": "(11/10)*(u*D + 2*u*d + ue + ue*d + 2*u*R + 2*u*tau*rd + 3*u)",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox\\SoftmaxConditional-fp-a7fcf1665a2871ea-1795862266",
+   "seconds": 1856.4,
+   "cost_usd": 2.4772120999999996,
+   "turns": 3,
+   "result": "I couldn't finish this: I have no proof of `fp_bound`, and I did not run `lean FPProofs.lean` or edit `FPProofs.lean`, which still contains the original `sorry`. The two blocks below are placeholders, and the `fp_bound` block is not a proof.\n\nI also don't think the statement is false, so I'm not answering FALSE. I looked for counterexamples and found none:\n\n- **Degenerate cases.** These all satisfy the bound: `u = 0`, a single block, equal elements, and `d = 0`. The last can't occur, because the element equal to `m` always contributes about 1.\n- **Absolute-error stress cases.** I built cases where the absolute errors `\u03b7` and `\u03b7e` are scaled by a large `d` (about `exp(2u\u03c4k)`). Here `\u03c4` is `tau` and `k` is `rdepth t`. In every one the error stays below the stated bound. The `2u\u00b7(hi\u2212lo)` term and the `2u\u00b7\u03c4\u00b7rdepth` term together leave about a factor of two of room.\n\nThe obstacle is the absolute errors `\u03b7` and `\u03b7e`. A proof has to track the rounding error in the exponent shift for each element, and the absolute errors have to be compared with the weights of the surviving elements. A single error bound per subtree is not enough. The main difficulty is the lower bound when a subtree loses its contribution to the absolute errors. I did not find invariants that close under merging within the budget.\n\n```lean helpers\n-- no helper lemmas: proof not completed\n```\n\n```lean fp_bound\nsorry\n```\n\nNot DONE, and I'm not claiming FALSE.",
+   "subtype": "success",
+   "error": "",
+   "stage": "deny",
+   "ok": false,
+   "errors": [
+    "not allowed in your text: sorry"
+   ]
+  },
+  {
+   "model": "opus",
+   "sandbox": "C:\\dev\\fpbox\\SoftmaxConditional-fp-a7fcf1665a2871ea-1795864143",
+   "seconds": 3601.1,
+   "cost_usd": 0.0,
+   "turns": null,
+   "result": "",
+   "subtype": null,
+   "error": "timeout after 3600 s",
+   "stage": "deny",
+   "ok": false,
+   "errors": [
+    "not allowed in your text: sorry"
+   ]
+  }
+ ],
+ "proved": null,
+ "cost_usd": 2.4772
+}

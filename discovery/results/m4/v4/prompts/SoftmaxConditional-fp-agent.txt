@@ -324,7 +324,7 @@ def fp_bound_statement : Prop :=
     ((t.depth : ℝ) + D + 1) * (F.u + F.ue + F.ul) ≤ 1 / 16 →
     (X.length : ℝ) * Real.exp (tau * (rdepth t : ℝ)) * (F.η + F.ηe) ≤ F.u →
     ∀ (st : State_a), Discovery.Tree.FEval (fblock_a F D tau) (fmerge_a F tau) t st →
-      |Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| ≤ (((11 : ℝ) * ((1 : ℝ) / 10)) * ((F.u * (D : ℝ)) + ((2 : ℝ) * F.u * (t.depth : ℝ)) + F.ue + (F.ue * (t.depth : ℝ)) + ((2 : ℝ) * F.u * (hi - lo)) + ((2 : ℝ) * F.u * tau * (rdepth t : ℝ)) + ((3 : ℝ) * F.u)))
+      |Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| ≤ ((2 : ℝ) * ((F.u * (D : ℝ)) + ((2 : ℝ) * F.u * (t.depth : ℝ)) + F.ue + (F.ue * (t.depth : ℝ)) + ((2 : ℝ) * F.u * (hi - lo)) + ((2 : ℝ) * F.u * tau * (rdepth t : ℝ)) + ((3 : ℝ) * F.u)))
 
 end Discovery.FP.SoftmaxConditionalFp
 
@@ -339,7 +339,7 @@ theorem fp_bound : ∀ (F : Discovery.Rounding) (D : ℕ) (tau : ℝ), 0 ≤ tau
     ((t.depth : ℝ) + D + 1) * (F.u + F.ue + F.ul) ≤ 1 / 16 →
     (X.length : ℝ) * Real.exp (tau * (rdepth t : ℝ)) * (F.η + F.ηe) ≤ F.u →
     ∀ (st : State_a), Discovery.Tree.FEval (fblock_a F D tau) (fmerge_a F tau) t st →
-      |Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| ≤ (((11 : ℝ) * ((1 : ℝ) / 10)) * ((F.u * (D : ℝ)) + ((2 : ℝ) * F.u * (t.depth : ℝ)) + F.ue + (F.ue * (t.depth : ℝ)) + ((2 : ℝ) * F.u * (hi - lo)) + ((2 : ℝ) * F.u * tau * (rdepth t : ℝ)) + ((3 : ℝ) * F.u))) := by
+      |Real.log (znorm st) - Real.log ((X.map Real.exp).sum)| ≤ ((2 : ℝ) * ((F.u * (D : ℝ)) + ((2 : ℝ) * F.u * (t.depth : ℝ)) + F.ue + (F.ue * (t.depth : ℝ)) + ((2 : ℝ) * F.u * (hi - lo)) + ((2 : ℝ) * F.u * tau * (rdepth t : ℝ)) + ((3 : ℝ) * F.u))) := by
   ...
 ```
 

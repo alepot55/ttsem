@@ -149,10 +149,12 @@ def worst(prog: ir.Program) -> dict:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--policy", default="conditional", choices=sorted(policies.POLICIES))
-    ap.add_argument("--kind", required=True, choices=["exact", "overflow", "fp", "worst"])
+    kinds = [*fp_export.POLICY_KINDS, "worst"]
+    ap.add_argument("--kind", required=True, choices=kinds)
     ap.add_argument("--out", default="discovery/results/m4")
     ap.add_argument("--proposals", type=int, default=3)
     ap.add_argument("--models", nargs="+", default=["sonnet", "opus"])
+    ap.add_argument("--bound", help="fp-nounderflow: the bound B that survived the adversary")
     args = ap.parse_args(argv)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -163,12 +165,18 @@ def main(argv: list[str] | None = None) -> int:
         (out / f"{module}-worst.json").write_text(json.dumps(rec, indent=1), encoding="utf-8")
         print(json.dumps(rec, indent=1))
         return 0
-    fp = fp_export.export_policy(
-        prog, problems.SOFTMAX, f"{module}{args.kind.capitalize()}", args.kind
-    )
+    suffix = "".join(w.capitalize() for w in args.kind.split("-"))  # a Lean name: no hyphen
+    fp = fp_export.export_policy(prog, problems.SOFTMAX, f"{module}{suffix}", args.kind)
     name = f"{module}-{args.kind}"
     if args.kind in ("exact", "overflow"):
         rec = agentprove.prove_file(fp, bound.parse("u"), name, out, tuple(args.models))
+        print(json.dumps(rec, indent=1)[:3000])
+        return 0
+    if args.kind == "fp-nounderflow":
+        # the weakened statement, with the bound that survived the adversary on all runs
+        rec = agentprove.prove_file(
+            fp, bound.parse(args.bound, "policy"), name, out, tuple(args.models)
+        )
         print(json.dumps(rec, indent=1)[:3000])
         return 0
     # the floating-point bound: propose, attack, prove

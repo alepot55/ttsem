@@ -1,0 +1,30 @@
+{
+ "program": "Cand4f04f56628",
+ "B": "3*(u*R + ue + D*u + ul*n + u*M + u*n + n*etae + d*(3*u + ue + ul + etae + u*M + u*n))/2",
+ "attempts": [
+  {
+   "model": "sonnet",
+   "sandbox": "C:\\dev\\fpbox\\Cand4f04f56628-cfac36145a47e206-1795867037",
+   "seconds": 1426.0,
+   "cost_usd": 2.6339163,
+   "turns": 61,
+   "result": "this\n    exact_mod_cast this\n  have hlh : lo \u2264 hi := by\n    obtain \u27e8x, hx\u27e9 := List.exists_mem_of_ne_nil X hX\n    have := hr x hx; linarith [this.1, this.2]\n  have hEb := E_bound (u := F.u) (ue := F.ue) (ul := F.ul) (\u03b7e := F.\u03b7e) (d := (t.depth : \u211d))\n    (Dr := (D:\u211d)) (n := (X.length : \u211d)) (lo := lo) (hi := hi) hu0 hue0 hul0 h\u03b7e0 hu hul\n    (by positivity) (by positivity) hdl hn\u03b7e hdep hlh\n  have hc : 0 \u2264 3/2 * (3 * F.u + F.ue + F.ul + F.\u03b7e + F.u * max |lo| |hi| + F.u * (X.length : \u211d)) := by\n    positivity\n  have key := tree_bound (F := F) (D := D) (lo := lo) (hi := hi) (n := (X.length : \u211d))\n    (e0 := 3/2 * (F.u*(hi-lo) + F.ue + D*F.u + F.ul*(X.length : \u211d) + F.u * max |lo| |hi| + F.u*(X.length : \u211d) + (X.length : \u211d)*F.\u03b7e))\n    (c := 3/2 * (3 * F.u + F.ue + F.ul + F.\u03b7e + F.u * max |lo| |hi| + F.u * (X.length : \u211d)))\n    (E := 3/2 * (F.u*(hi-lo) + F.ue + D*F.u + F.ul*(X.length : \u211d) + F.u * max |lo| |hi| + F.u*(X.length : \u211d) + (X.length : \u211d)*F.\u03b7e) + (3/2 * (3 * F.u + F.ue + F.ul + F.\u03b7e + F.u * max |lo| |hi| + F.u * (X.length : \u211d))) * (t.depth : \u211d))\n    hu hue hul h\u03b7u hlen\n    (fun A st hA hlA hrA h => leaf_core hu hul hue hn\u03b7 hA hlA hrA h)\n    hEb hc rfl t.depth le_rfl t le_rfl (by rw [hflat]; exact hr) hleaves (by rw [hflat]) st hev\n  rw [hflat] at key\n  have hz : Real.log (znorm st) = st.s := by\n    have : znorm st = Real.exp st.s := by\n      unfold znorm; rw [one_div, \u2190 Real.exp_neg]; congr 1; ring\n    rw [this, Real.log_exp]\n  rw [hz]\n  refine key.trans (le_of_eq ?_)\n  ring\n```",
+   "subtype": "success",
+   "error": "",
+   "stage": "ok",
+   "ok": true,
+   "errors": []
+  }
+ ],
+ "proved": {
+  "model": "sonnet",
+  "axioms": [
+   "propext",
+   "Classical.choice",
+   "Quot.sound"
+  ],
+  "B": "3*(u*R + ue + D*u + ul*n + u*M + u*n + n*etae + d*(3*u + ue + ul + etae + u*M + u*n))/2",
+  "lean": "((3 : \u211d) * ((F.u * (hi - lo)) + F.ue + ((D : \u211d) * F.u) + (F.ul * (X.length : \u211d)) + (F.u * (max |lo| |hi|)) + (F.u * (X.length : \u211d)) + ((X.length : \u211d) * F.\u03b7e) + ((t.depth : \u211d) * (((3 : \u211d) * F.u) + F.ue + F.ul + F.\u03b7e + (F.u * (max |lo| |hi|)) + (F.u * (X.length : \u211d))))) * ((1 : \u211d) / 2))"
+ },
+ "cost_usd": 2.6339
+}

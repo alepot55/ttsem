@@ -739,3 +739,28 @@ the bound TorchLean proved by hand, for its left fold; here the model proposed i
 and proved it for every merge tree, R·u again once (the shifts of a maximum telescope). Four
 programs now have a proved bound (online softmax, one-field softmax, attention, sum of squares);
 Welford is with opus.
+- 11:55 UTC: the one-field elite of the `cert` run with seed 0 (digest 4fb63217) is certified too:
+  |log Ẑ − log Z| ≤ 2(d+1)(u(R + D + M + n + 3) + ue + ul(n+1)), sonnet, 84 turns, 27 min, $3.06
+  (`results/m5/proofs/Cand4fb632176b-agent.json`). The other one-field elite (4f04f566) is with
+  the agent.
+
+## 28 Nov 2026, 12:15 UTC: the τ-parametric bound not proved; a weakened statement tried (M4)
+
+- With policy statement version 4 the model proposed (11/10)(uD + 2ud + ue + ue·d + 2uR + 2uτρ +
+  3u), which survived the adversary (τ in {0, 2, 8}, right combs included). It counts the
+  rounding of the exponent shifts once, R + τρ: a reference can go down, to a stale left
+  reference, by at most τ per right step, and the ups telescope. Not proved
+  (`results/m4/v4/SoftmaxConditional-fp-agent.json`): sonnet reasoned for 31 minutes in 3 turns,
+  never ran Lean, and stopped, saying the statement is not false (its stress cases stay a factor
+  of 2 under B) but that the absolute errors η, ηe of a stale sum must be weighed element by
+  element against the surviving weights, and that no closeness relation per subtree closes under
+  the merge; opus timed out after an hour with no output. The run goes on with the next proposal.
+- **A weakened statement, named apart** (`fp-nounderflow`, the brief's rule for weakened proofs):
+  the same statement with F.η = 0 and F.ηe = 0, no subnormal result, which removes the obstacle
+  the provers named. In float32 it covers the rows whose logits span less than about 80 (no `exp`
+  result below the normal range). Same B, to the agent (`results/m4/nounderflow/`).
+- 12:20 UTC: the third elite (4f04f566, one field) is certified too: |log Ẑ − log Z| ≤
+  (3/2)(uR + ue + Du + ul·n + uM + un + n·ηe + d(3u + ue + ul + ηe + uM + un)), sonnet, 61 turns,
+  24 min, $2.63. Every final elite of M5 has a proved bound (`results/m5/elite-proofs.json`):
+  the elites the search under a certificate kept are certified, as the brief asks, and they are
+  the published forms.

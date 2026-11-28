@@ -510,7 +510,7 @@ def _exact_defs(p: ir.Pass, elem: str, params: tuple[str, ...]) -> str:
     return "\n".join(out)
 
 
-POLICY_KINDS = ("exact", "overflow", "fp")
+POLICY_KINDS = ("exact", "overflow", "fp", "fp-nounderflow")
 
 
 def export_policy(prog: ir.Program, problem: Problem, module: str, kind: str) -> FPFile:
@@ -576,6 +576,12 @@ def export_policy(prog: ir.Program, problem: Problem, module: str, kind: str) ->
             if params
             else ""
         )
+        if kind == "fp-nounderflow":
+            # A weakened statement, named apart (the brief's rule): no subnormal result, so no
+            # absolute error. Both provers named the absolute errors of a stale sum as the
+            # obstacle to the full statement (diary, 12:10 UTC). In float32 it covers the rows
+            # whose logits span less than 80: no exp result is then below the normal range.
+            stale += "\n    F.η = 0 → F.ηe = 0 →"
         template = f"""{lead}∀ (lo hi : ℝ) (X : List ℝ),
     X ≠ [] → (∀ x ∈ X, lo ≤ x ∧ x ≤ hi) → small F → {TINY} →
     ∀ (t : Discovery.Tree ℝ), t.flat = X → (∀ b ∈ t.leaves, b ≠ []) →
